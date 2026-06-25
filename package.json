@@ -10,7 +10,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "check": "vite build",
-    "build": "tauri build"
+    "build": "tauri build",
+    "postbuild": "node -e \"const{readdirSync,cpSync}=require('fs');const{join}=require('path');const dir='src-tauri/target/release/bundle/nsis';const files=readdirSync(dir).filter(f=>f.endsWith('_x64-setup.exe'));if(files.length)cpSync(join(dir,files[0]),join('dist',files[0]))\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
