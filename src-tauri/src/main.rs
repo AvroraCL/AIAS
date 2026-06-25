@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use image::{DynamicImage, ImageBuffer, Luma, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 use std::{
