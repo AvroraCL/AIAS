@@ -13,12 +13,12 @@ let mainWindow;
 function createWindow() {
   const rendererUrl = process.env.AIAS_RENDERER_URL;
   mainWindow = new BrowserWindow({
-    width: 1240,
+    width: 1320,
     height: 820,
-    minWidth: 980,
-    minHeight: 680,
+    minWidth: 1120,
+    minHeight: 820,
     title: "AIAS",
-    backgroundColor: "#17191d",
+    backgroundColor: "#121316",
     icon: path.join(app.getAppPath(), "favicon.ico"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

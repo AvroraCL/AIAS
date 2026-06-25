@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("aias", {
   skin: {
     autoDetect: () => ipcRenderer.invoke("skin:autoDetect"),
     list: (directory) => ipcRenderer.invoke("skin:list", directory),
+    import: (options) => ipcRenderer.invoke("skin:import", options),
     importFiles: (options) => ipcRenderer.invoke("skin:import", options),
     toggle: (filePath) => ipcRenderer.invoke("skin:toggle", filePath),
     delete: (filePath) => ipcRenderer.invoke("skin:delete", filePath)

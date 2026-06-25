@@ -8,193 +8,252 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
+      <header class="app-topbar">
+        <div class="brand-block">
           <div class="brand-mark">A</div>
           <div>
             <strong>AIAS</strong>
-            <span>v4.1 Electron</span>
+            <span id="current-task">PBR 多通道合成</span>
           </div>
         </div>
-        <nav class="nav" aria-label="功能导航">
-          <button class="nav-item active" data-view="merge">PBR 合成</button>
-          <button class="nav-item" data-view="split">PBR 拆分</button>
-          <button class="nav-item" data-view="mipmap">Mipmap</button>
-          <button class="nav-item" data-view="image-dds">图片转 DDS</button>
-          <button class="nav-item" data-view="skins">涂装管理</button>
+
+        <nav class="mode-tabs" aria-label="功能模式">
+          <button class="mode-tab active" data-view="merge">PBR 合成</button>
+          <button class="mode-tab" data-view="split">PBR 拆分</button>
+          <button class="mode-tab" data-view="mipmap">Mipmap</button>
+          <button class="mode-tab" data-view="image-dds">图片转 DDS</button>
+          <button class="mode-tab" data-view="skins">涂装管理</button>
         </nav>
-      </aside>
+
+        <div class="topbar-actions">
+          <span id="runtime-badge" class="runtime-badge">Ready</span>
+          <button id="settings-save" class="icon-button" title="保存配置" aria-label="保存配置">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l2 2v16H5V3Zm2 2v14h10V6.5L15.5 5H15v5H8V5H7Zm3 0v3h3V5h-3Zm-1 9h6v2H9v-2Z" /></svg>
+          </button>
+          <button class="icon-button" title="帮助" aria-label="帮助">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 17h2v-2h-2v2Zm1-14a7 7 0 0 0-7 7h2a5 5 0 1 1 6.4 4.8c-.9.3-1.4 1.1-1.4 2.2h2c0-.3.1-.4.3-.5A7 7 0 0 0 12 3Z" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <section class="status-strip">
+        <div>
+          <span class="status-label">模式</span>
+          <strong id="status-mode">PBR 合成</strong>
+        </div>
+        <div>
+          <span class="status-label">输入</span>
+          <strong id="status-input">未选择</strong>
+        </div>
+        <div>
+          <span class="status-label">输出</span>
+          <strong id="status-output">未就绪</strong>
+        </div>
+        <div>
+          <span class="status-label">状态</span>
+          <strong id="status-ready">等待配置</strong>
+        </div>
+      </section>
 
       <main class="workspace">
-        <header class="topbar">
-          <div>
-            <h1 id="view-title">PBR 多通道合成</h1>
-            <p id="view-subtitle">扫描 Blender BSDF 命名贴图并输出游戏用 DDS 通道。</p>
-          </div>
-          <button id="settings-save" class="ghost-button">保存配置</button>
-        </header>
-
-        <section class="view active" id="view-merge">
-          <div class="tool-grid">
-            <section class="panel">
-              <h2>路径</h2>
-              <label>输入文件夹</label>
-              <div class="path-row">
-                <input id="pbr-input" readonly />
-                <button data-pick-dir="pbr-input">选择</button>
-              </div>
-              <label>输出文件夹</label>
-              <div class="path-row">
-                <input id="pbr-output" readonly />
-                <button data-pick-dir="pbr-output">选择</button>
-              </div>
-            </section>
-            <section class="panel">
-              <h2>导出</h2>
-              <label>Alpha 通道</label>
-              <select id="pbr-alpha">
-                <option value="black">纯黑</option>
-                <option value="white">纯白</option>
-              </select>
-              <label>DDS 格式</label>
-              <select id="pbr-format">
-                <option value="DXT5">DXT5 / BC3</option>
-                <option value="8.8.8.8">8.8.8.8</option>
-              </select>
-              <button id="run-merge" class="primary-action">开始合成</button>
-            </section>
-          </div>
-          <section class="panel log-panel">
-            <h2>日志</h2>
-            <pre id="merge-log"></pre>
-          </section>
-        </section>
-
-        <section class="view" id="view-split">
-          <div class="tool-grid">
-            <section class="panel">
-              <h2>DDS 文件</h2>
-              <div class="button-row">
-                <button id="pick-split-files">添加 DDS</button>
-                <button id="clear-split-files">清空</button>
-              </div>
-              <ul id="split-file-list" class="file-list"></ul>
-            </section>
-            <section class="panel">
-              <h2>导出</h2>
-              <label>输出文件夹</label>
-              <div class="path-row">
-                <input id="split-output" readonly />
-                <button data-pick-dir="split-output">选择</button>
-              </div>
-              <label>格式</label>
-              <select id="split-format">
-                <option value="png">PNG</option>
-                <option value="tga">TGA</option>
-              </select>
-              <label class="checkbox-label"><input id="split-alpha" type="checkbox" checked /> 导出 _c Alpha</label>
-              <button id="run-split" class="primary-action">开始拆分</button>
-            </section>
-          </div>
-          <section class="panel log-panel">
-            <h2>日志</h2>
-            <pre id="split-log"></pre>
-          </section>
-        </section>
-
-        <section class="view" id="view-mipmap">
-          <div class="tool-grid">
-            <section class="panel">
-              <h2>路径</h2>
-              <label>输入文件夹</label>
-              <div class="path-row">
-                <input id="mipmap-input" readonly />
-                <button data-pick-dir="mipmap-input">选择</button>
-              </div>
-              <label>输出文件夹</label>
-              <div class="path-row">
-                <input id="mipmap-output" readonly />
-                <button data-pick-dir="mipmap-output">选择</button>
-              </div>
-            </section>
-            <section class="panel">
-              <h2>导出</h2>
-              <label>Alpha 通道</label>
-              <select id="mipmap-alpha">
-                <option value="keep">保留原图</option>
-                <option value="black">纯黑</option>
-                <option value="white">纯白</option>
-              </select>
-              <label>DDS 格式</label>
-              <select id="mipmap-format">
-                <option value="DXT5">DXT5 / BC3</option>
-                <option value="8.8.8.8">8.8.8.8</option>
-              </select>
-              <button id="run-mipmap" class="primary-action">生成 Mipmap</button>
-            </section>
-          </div>
-          <section class="panel log-panel">
-            <h2>日志</h2>
-            <pre id="mipmap-log"></pre>
-          </section>
-        </section>
-
-        <section class="view" id="view-image-dds">
-          <div class="tool-grid">
-            <section class="panel">
-              <h2>图片文件</h2>
-              <div class="button-row">
-                <button id="pick-image-files">添加图片</button>
-                <button id="clear-image-files">清空</button>
-              </div>
-              <ul id="image-file-list" class="file-list"></ul>
-            </section>
-            <section class="panel">
-              <h2>导出</h2>
-              <label>输出文件夹</label>
-              <div class="path-row">
-                <input id="image-output" readonly />
-                <button data-pick-dir="image-output">选择</button>
-              </div>
-              <label>Alpha 通道</label>
-              <select id="image-alpha">
-                <option value="keep">保留原图</option>
-                <option value="black">纯黑</option>
-                <option value="white">纯白</option>
-              </select>
-              <label>DDS 格式</label>
-              <select id="image-format">
-                <option value="DXT5">DXT5 / BC3</option>
-                <option value="8.8.8.8">8.8.8.8</option>
-              </select>
-              <button id="run-image-dds" class="primary-action">开始转换</button>
-            </section>
-          </div>
-          <section class="panel log-panel">
-            <h2>日志</h2>
-            <pre id="image-log"></pre>
-          </section>
-        </section>
-
-        <section class="view" id="view-skins">
-          <section class="panel">
-            <h2>War Thunder UserSkins</h2>
-            <div class="path-row">
-              <input id="skin-path" readonly />
-              <button data-pick-dir="skin-path">选择</button>
-              <button id="auto-detect-skins">自动检测</button>
+        <section class="canvas-area">
+          <div class="canvas-header">
+            <div>
+              <h1 id="view-title">PBR 多通道合成</h1>
+              <p id="view-subtitle">扫描 Blender BSDF 命名贴图并输出游戏用 DDS 通道。</p>
             </div>
-            <div class="button-row">
-              <button id="import-skins">导入文件</button>
-              <button id="refresh-skins">刷新</button>
+          </div>
+
+          <section class="mode-view active" id="view-merge">
+            <div class="drop-zone" data-pick-dir="pbr-input" role="button" tabindex="0">
+              <div class="drop-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7l2 2h7v12H4V5Zm2 4v8h12V9H6Zm5 7v-3H8l4-4 4 4h-3v3h-2Z" /></svg>
+              </div>
+              <h2>选择或拖入 PBR 贴图文件夹</h2>
+              <p>需要 BaseColor、Roughness、Metallic、Normal 四类贴图。</p>
             </div>
+            <div class="file-chip-grid" id="merge-chip-list"></div>
           </section>
-          <section class="panel skin-panel">
-            <h2>文件列表</h2>
+
+          <section class="mode-view" id="view-split">
+            <div class="drop-zone" id="pick-split-files" role="button" tabindex="0">
+              <div class="drop-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h10l4 4v14H5V3Zm9 1.5V8h3.5L14 4.5ZM8 12h8v2H8v-2Zm0 4h8v2H8v-2Z" /></svg>
+              </div>
+              <h2>添加 _c.dds / _n.dds 文件</h2>
+              <p>拆分为 BaseColor、Alpha、Roughness、Metallic 和 Normal。</p>
+            </div>
+            <div class="file-chip-grid" id="split-file-list"></div>
+          </section>
+
+          <section class="mode-view" id="view-mipmap">
+            <div class="drop-zone" data-pick-dir="mipmap-input" role="button" tabindex="0">
+              <div class="drop-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 0h6v6h-6v-6Z" /></svg>
+              </div>
+              <h2>选择 p0、p1、p2... 图片序列文件夹</h2>
+              <p>按层级组装为 DDS Mipmap 文件。</p>
+            </div>
+            <div class="file-chip-grid" id="mipmap-chip-list"></div>
+          </section>
+
+          <section class="mode-view" id="view-image-dds">
+            <div class="drop-zone" id="pick-image-files" role="button" tabindex="0">
+              <div class="drop-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5Zm2 2v10h12V7H6Zm2 8 2.5-3 2 2.4 1.5-1.8 2 2.4H8Z" /></svg>
+              </div>
+              <h2>添加 PNG、TGA、JPG 图片</h2>
+              <p>批量转换为 DDS 格式，支持 Alpha 策略。</p>
+            </div>
+            <div class="file-chip-grid" id="image-file-list"></div>
+          </section>
+
+          <section class="mode-view" id="view-skins">
+            <div class="drop-zone" data-pick-dir="skin-path" role="button" tabindex="0">
+              <div class="drop-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10l3 5-2 3v10H6V11L4 8l3-5Zm1.2 2-1.8 3 1.4 2.1V19h8.4v-8.9L17.6 8l-1.8-3H14a2 2 0 0 1-4 0H8.2Z" /></svg>
+              </div>
+              <h2>选择 War Thunder UserSkins 目录</h2>
+              <p>管理、导入、启用或禁用涂装文件。</p>
+            </div>
             <ul id="skin-list" class="skin-list"></ul>
           </section>
         </section>
+
+        <aside class="inspector">
+          <div class="inspector-title">
+            <span>Inspector</span>
+            <strong id="inspector-mode">PBR 合成</strong>
+          </div>
+
+          <section class="inspector-group" data-modes="merge mipmap skins">
+            <button class="group-toggle" type="button">输入</button>
+            <div class="group-content">
+              <label id="input-label">输入文件夹</label>
+              <div class="field-row" data-field="pbr-input">
+                <input id="pbr-input" readonly />
+                <button data-pick-dir="pbr-input">选择</button>
+              </div>
+              <div class="field-row hidden" data-field="mipmap-input">
+                <input id="mipmap-input" readonly />
+                <button data-pick-dir="mipmap-input">选择</button>
+              </div>
+              <div class="field-row hidden" data-field="skin-path">
+                <input id="skin-path" readonly />
+                <button data-pick-dir="skin-path">选择</button>
+              </div>
+              <button id="auto-detect-skins" class="secondary-action hidden">自动检测 UserSkins</button>
+            </div>
+          </section>
+
+          <section class="inspector-group" data-modes="merge split mipmap image-dds">
+            <button class="group-toggle" type="button">输出</button>
+            <div class="group-content">
+              <label>输出文件夹</label>
+              <div class="field-row" data-field="pbr-output">
+                <input id="pbr-output" readonly />
+                <button data-pick-dir="pbr-output">选择</button>
+              </div>
+              <div class="field-row hidden" data-field="split-output">
+                <input id="split-output" readonly />
+                <button data-pick-dir="split-output">选择</button>
+              </div>
+              <div class="field-row hidden" data-field="mipmap-output">
+                <input id="mipmap-output" readonly />
+                <button data-pick-dir="mipmap-output">选择</button>
+              </div>
+              <div class="field-row hidden" data-field="image-output">
+                <input id="image-output" readonly />
+                <button data-pick-dir="image-output">选择</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="inspector-group" data-modes="merge split mipmap image-dds">
+            <button class="group-toggle" type="button">格式</button>
+            <div class="group-content">
+              <div class="mode-field" data-modes="merge">
+                <label>Alpha 通道</label>
+                <select id="pbr-alpha">
+                  <option value="black">纯黑</option>
+                  <option value="white">纯白</option>
+                </select>
+                <label>DDS 格式</label>
+                <select id="pbr-format">
+                  <option value="DXT5">DXT5 / BC3</option>
+                  <option value="8.8.8.8">8.8.8.8</option>
+                </select>
+              </div>
+              <div class="mode-field hidden" data-modes="split">
+                <label>导出格式</label>
+                <select id="split-format">
+                  <option value="png">PNG</option>
+                  <option value="tga">TGA</option>
+                </select>
+                <label class="checkbox-label"><input id="split-alpha" type="checkbox" checked /> 导出 _c Alpha</label>
+              </div>
+              <div class="mode-field hidden" data-modes="mipmap">
+                <label>Alpha 通道</label>
+                <select id="mipmap-alpha">
+                  <option value="keep">保留原图</option>
+                  <option value="black">纯黑</option>
+                  <option value="white">纯白</option>
+                </select>
+                <label>DDS 格式</label>
+                <select id="mipmap-format">
+                  <option value="DXT5">DXT5 / BC3</option>
+                  <option value="8.8.8.8">8.8.8.8</option>
+                </select>
+              </div>
+              <div class="mode-field hidden" data-modes="image-dds">
+                <label>Alpha 通道</label>
+                <select id="image-alpha">
+                  <option value="keep">保留原图</option>
+                  <option value="black">纯黑</option>
+                  <option value="white">纯白</option>
+                </select>
+                <label>DDS 格式</label>
+                <select id="image-format">
+                  <option value="DXT5">DXT5 / BC3</option>
+                  <option value="8.8.8.8">8.8.8.8</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <section class="inspector-group" data-modes="split image-dds skins">
+            <button class="group-toggle" type="button">文件</button>
+            <div class="group-content">
+              <button id="clear-split-files" class="secondary-action hidden">清空 DDS 列表</button>
+              <button id="clear-image-files" class="secondary-action hidden">清空图片列表</button>
+              <button id="import-skins" class="secondary-action hidden">导入涂装文件</button>
+              <button id="refresh-skins" class="secondary-action hidden">刷新涂装列表</button>
+            </div>
+          </section>
+
+          <button id="run-merge" class="run-button">开始合成</button>
+          <button id="run-split" class="run-button hidden">开始拆分</button>
+          <button id="run-mipmap" class="run-button hidden">生成 Mipmap</button>
+          <button id="run-image-dds" class="run-button hidden">开始转换</button>
+        </aside>
       </main>
+
+      <section class="activity-panel">
+        <div class="activity-header">
+          <span>Activity</span>
+          <small>最近运行结果和预览消息</small>
+        </div>
+        <div id="activity-feed" class="activity-feed">
+          <article class="activity-item idle">
+            <strong>等待任务</strong>
+            <span>配置输入和输出后即可开始。</span>
+          </article>
+        </div>
+        <pre id="merge-log" class="hidden-log"></pre>
+        <pre id="split-log" class="hidden-log"></pre>
+        <pre id="mipmap-log" class="hidden-log"></pre>
+        <pre id="image-log" class="hidden-log"></pre>
+      </section>
     </div>
     <script src="./scripts/app.js"></script>
   </body>
