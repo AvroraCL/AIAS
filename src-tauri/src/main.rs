@@ -218,14 +218,18 @@ unsafe fn apply_dark_titlebar(hwnd: *mut std::ffi::c_void) {
       cbattribute: u32,
     ) -> i32;
   }
+  #[link(name = "uxtheme")]
+  extern "system" {
+    fn SetWindowTheme(hwnd: *mut std::ffi::c_void, subapp: *const u16, idlist: *const u16) -> i32;
+  }
+  // Use immersive dark mode (Win10 20H1+ / Win11)
   const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
-  let value: i32 = 1;
-  let _ = DwmSetWindowAttribute(
-    hwnd,
-    DWMWA_USE_IMMERSIVE_DARK_MODE,
-    &value as *const _ as *const _,
-    4,
-  );
+  let dark: i32 = 1;
+  let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as *const _, 4);
+
+  // Force dark window frame via uxtheme
+  let dark_explorer: Vec<u16> = "DarkMode_Explorer".encode_utf16().chain(std::iter::once(0)).collect();
+  let _ = SetWindowTheme(hwnd, dark_explorer.as_ptr(), std::ptr::null());
 }
 
 fn resolve_texconv_path(app: &tauri::App) -> Result<PathBuf, String> {
