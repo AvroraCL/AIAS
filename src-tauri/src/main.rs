@@ -178,6 +178,15 @@ fn main() {
         settings_path,
         texconv_path,
       });
+
+      // Apply dark title bar on Windows 10/11
+      #[cfg(target_os = "windows")]
+      if let Some(window) = app.get_webview_window("main") {
+        if let Ok(hwnd) = window.hwnd() {
+          unsafe { apply_dark_titlebar(hwnd.0); }
+        }
+      }
+
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![
@@ -196,6 +205,27 @@ fn main() {
     ])
     .run(tauri::generate_context!())
     .expect("error while running AIAS");
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn apply_dark_titlebar(hwnd: *mut std::ffi::c_void) {
+  #[link(name = "dwmapi")]
+  extern "system" {
+    fn DwmSetWindowAttribute(
+      hwnd: *mut std::ffi::c_void,
+      dwattribute: u32,
+      pvattribute: *const std::ffi::c_void,
+      cbattribute: u32,
+    ) -> i32;
+  }
+  const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+  let value: i32 = 1;
+  let _ = DwmSetWindowAttribute(
+    hwnd,
+    DWMWA_USE_IMMERSIVE_DARK_MODE,
+    &value as *const _ as *const _,
+    4,
+  );
 }
 
 fn resolve_texconv_path(app: &tauri::App) -> Result<PathBuf, String> {
