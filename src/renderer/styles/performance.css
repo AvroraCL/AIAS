@@ -1,0 +1,91 @@
+:root {
+  --glass-blur: 14px;
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-glow: 0 0 18px rgba(175, 35, 49, 0.14);
+}
+
+button,
+input,
+select,
+textarea,
+.mode-tab,
+.icon-button,
+.drop-zone,
+.drop-icon,
+.secondary-action,
+.run-button,
+.skin-card {
+  transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+}
+
+button,
+input,
+select,
+textarea,
+.app-topbar,
+.mode-tabs,
+.mode-tab.active,
+.runtime-badge,
+.icon-button,
+.status-strip,
+.status-strip > div,
+.drop-zone,
+.drop-icon,
+.file-chip,
+.inspector,
+.inspector-group,
+.group-toggle,
+.run-button,
+.activity-panel,
+.activity-item,
+.skin-card {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.status-strip > div,
+.mode-view.active,
+.file-chip,
+.activity-item,
+.skin-card {
+  animation: none;
+}
+
+.drop-zone:hover,
+.run-button:hover,
+.skin-card:hover {
+  transform: none;
+}
+
+.icon-button:hover,
+.drop-zone:hover,
+.run-button:hover,
+.skin-card:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+.preview-picker-backdrop,
+.preview-picker {
+  animation-duration: 0.14s;
+}
+
+.drop-zone,
+.inspector,
+.activity-panel,
+.file-chip,
+.activity-item,
+.skin-card,
+.preview-picker {
+  contain: layout paint;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}

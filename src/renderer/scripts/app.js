@@ -32,12 +32,42 @@ const state = {
   activeMode: "merge"
 };
 
+const ACTIVITY_FEED_LIMIT = 20;
+let closeOpenPreviewDialog = null;
+
 function $(id) {
   return document.getElementById(id);
 }
 
 function basename(value) {
   return String(value).split(/[\\/]/).pop();
+}
+
+function createPreviewDialogCloser(overlay, resolve, fallbackValue = null) {
+  if (closeOpenPreviewDialog) {
+    closeOpenPreviewDialog(fallbackValue);
+  } else {
+    document.querySelectorAll(".preview-picker-backdrop").forEach((item) => item.remove());
+  }
+
+  let closed = false;
+  const cleanup = [];
+  const close = (value = fallbackValue) => {
+    if (closed) return;
+    closed = true;
+    for (const dispose of cleanup) dispose();
+    if (closeOpenPreviewDialog === close) closeOpenPreviewDialog = null;
+    overlay.remove();
+    resolve(value);
+  };
+
+  closeOpenPreviewDialog = close;
+  return {
+    close,
+    addCleanup(dispose) {
+      cleanup.push(dispose);
+    }
+  };
 }
 
 function openPreviewPicker({ title, defaultValue = "", multiline = false }) {
@@ -68,10 +98,7 @@ function openPreviewPicker({ title, defaultValue = "", multiline = false }) {
     confirm.type = "button";
     confirm.textContent = "确定";
 
-    const close = (value) => {
-      overlay.remove();
-      resolve(value);
-    };
+    const { close } = createPreviewDialogCloser(overlay, resolve, null);
 
     cancel.addEventListener("click", () => close(null));
     confirm.addEventListener("click", () => close(input.value.trim()));
@@ -114,20 +141,18 @@ function openPreviewMessage(title, body) {
     confirm.type = "button";
     confirm.textContent = "确定";
 
-    const close = () => {
-      overlay.remove();
-      resolve();
-    };
+    const { close, addCleanup } = createPreviewDialogCloser(overlay, resolve, undefined);
 
     confirm.addEventListener("click", close);
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) close();
     });
-    document.addEventListener("keydown", function onKeydown(event) {
+    const onKeydown = (event) => {
       if (event.key !== "Escape" && event.key !== "Enter") return;
-      document.removeEventListener("keydown", onKeydown);
       close();
-    });
+    };
+    document.addEventListener("keydown", onKeydown);
+    addCleanup(() => document.removeEventListener("keydown", onKeydown));
 
     actions.append(confirm);
     dialog.append(heading, message, actions);
@@ -163,16 +188,19 @@ function openPreviewConfirm(title, body) {
     confirm.type = "button";
     confirm.textContent = "确定";
 
-    const close = (value) => {
-      overlay.remove();
-      resolve(value);
-    };
+    const { close, addCleanup } = createPreviewDialogCloser(overlay, resolve, false);
 
     cancel.addEventListener("click", () => close(false));
     confirm.addEventListener("click", () => close(true));
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) close(false);
     });
+    const onKeydown = (event) => {
+      if (event.key === "Escape") close(false);
+      if (event.key === "Enter") close(true);
+    };
+    document.addEventListener("keydown", onKeydown);
+    addCleanup(() => document.removeEventListener("keydown", onKeydown));
 
     actions.append(cancel, confirm);
     dialog.append(heading, message, actions);
@@ -265,14 +293,29 @@ function setText(id, value) {
 function addActivity(title, body, tone = "idle") {
   const feed = $("activity-feed");
   if (!feed) return;
+  const key = `${tone}\u0000${title}\u0000${body}`;
+  const latest = feed.firstElementChild;
+  if (latest?.dataset.activityKey === key) {
+    const detail = latest.querySelector("span");
+    const count = Number(latest.dataset.activityCount || "1") + 1;
+    latest.dataset.activityCount = String(count);
+    if (detail) detail.textContent = `${body} ×${count}`;
+    return;
+  }
+
   const item = document.createElement("article");
   item.className = `activity-item ${tone}`;
+  item.dataset.activityKey = key;
+  item.dataset.activityCount = "1";
   const heading = document.createElement("strong");
   heading.textContent = title;
   const detail = document.createElement("span");
   detail.textContent = body;
   item.append(heading, detail);
   feed.prepend(item);
+  while (feed.children.length > ACTIVITY_FEED_LIMIT) {
+    feed.lastElementChild?.remove();
+  }
 }
 
 function renderChips(containerId, files) {
