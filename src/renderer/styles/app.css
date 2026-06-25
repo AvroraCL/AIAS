@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "HeSimplSans VF";
+  src: url("../fonts/HeSimplSans-VF.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --bg: #060608;
   --glass-bg: rgba(18, 18, 22, 0.72);
@@ -65,7 +73,7 @@ body {
     radial-gradient(ellipse 80% 80% at 50% -20%, rgba(175, 35, 49, 0.06), transparent),
     radial-gradient(ellipse 60% 60% at 20% 80%, rgba(175, 35, 49, 0.03), transparent),
     var(--bg);
-  font: 14px/1.45 "Barlow", "SF Pro Display", "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+  font: 14px/1.45 "HeSimplSans VF", "Barlow", "SF Pro Display", "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
 }
 
 ::selection {
