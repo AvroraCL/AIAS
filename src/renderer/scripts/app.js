@@ -90,6 +90,96 @@ function openPreviewPicker({ title, defaultValue = "", multiline = false }) {
   });
 }
 
+function openPreviewMessage(title, body) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "preview-picker-backdrop";
+
+    const dialog = document.createElement("div");
+    dialog.className = "preview-picker";
+
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+
+    const message = document.createElement("p");
+    message.className = "preview-picker-message";
+    message.textContent = body;
+
+    const actions = document.createElement("div");
+    actions.className = "preview-picker-actions";
+
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.textContent = "确定";
+
+    const close = () => {
+      overlay.remove();
+      resolve();
+    };
+
+    confirm.addEventListener("click", close);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+    });
+    document.addEventListener("keydown", function onKeydown(event) {
+      if (event.key !== "Escape" && event.key !== "Enter") return;
+      document.removeEventListener("keydown", onKeydown);
+      close();
+    });
+
+    actions.append(confirm);
+    dialog.append(heading, message, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    confirm.focus();
+  });
+}
+
+function openPreviewConfirm(title, body) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "preview-picker-backdrop";
+
+    const dialog = document.createElement("div");
+    dialog.className = "preview-picker";
+
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+
+    const message = document.createElement("p");
+    message.className = "preview-picker-message";
+    message.textContent = body;
+
+    const actions = document.createElement("div");
+    actions.className = "preview-picker-actions";
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "取消";
+
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.textContent = "确定";
+
+    const close = (value) => {
+      overlay.remove();
+      resolve(value);
+    };
+
+    cancel.addEventListener("click", () => close(false));
+    confirm.addEventListener("click", () => close(true));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close(false);
+    });
+
+    actions.append(cancel, confirm);
+    dialog.append(heading, message, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    confirm.focus();
+  });
+}
+
 function createBrowserPreviewApi() {
   let settings = {
     ...defaults,
@@ -144,7 +234,7 @@ function createBrowserPreviewApi() {
     },
     skin: {
       autoDetect: async () => {
-        alert("自动检测 UserSkins 需要 Electron 窗口。");
+        addActivity("浏览器预览", "自动检测 UserSkins 需要 Electron 窗口。");
         return null;
       },
       list: async () => [
@@ -158,7 +248,7 @@ function createBrowserPreviewApi() {
       delete: async () => ({ deleted: true })
     },
     shell: {
-      openPath: async (filePath) => alert(`浏览器预览不能打开本地文件：${filePath}`)
+      openPath: async (filePath) => addActivity("浏览器预览", `不能打开本地文件：${filePath}`)
     }
   };
 }
@@ -253,8 +343,10 @@ function renderSkinList(items) {
     remove.textContent = "删除";
     remove.className = "danger";
     remove.addEventListener("click", async () => {
-      if (!confirm(`删除 ${file.name}？`)) return;
+      const confirmed = await openPreviewConfirm("删除涂装", `删除 ${file.name}？`);
+      if (!confirmed) return;
       await api.skin.delete(file.path);
+      addActivity("已删除涂装", file.name, "success");
       await refreshSkins();
     });
 
@@ -343,6 +435,7 @@ async function saveSettings() {
   state.settings = await api.settings.set(collectSettings());
   updateStatus();
   syncPathChips();
+  addActivity("配置已保存", window.aias ? "设置已写入本地配置。" : "设置已保存到浏览器预览存储。", "success");
 }
 
 function updateRunButtons(mode) {
@@ -455,6 +548,36 @@ function updateStatus() {
   setText("runtime-badge", window.aias ? "Electron" : "Browser Preview");
 }
 
+function getRunBlocker(mode) {
+  switch (mode) {
+    case "merge":
+      if (!$("pbr-input")?.value) return "请选择输入文件夹。";
+      if (!$("pbr-output")?.value) return "请选择输出文件夹。";
+      return null;
+    case "split":
+      if (!state.splitFiles.length) return "请添加 DDS 文件。";
+      if (!$("split-output")?.value) return "请选择输出文件夹。";
+      return null;
+    case "mipmap":
+      if (!$("mipmap-input")?.value) return "请选择输入文件夹。";
+      if (!$("mipmap-output")?.value) return "请选择输出文件夹。";
+      return null;
+    case "image-dds":
+      if (!state.imageFiles.length) return "请添加图片文件。";
+      if (!$("image-output")?.value) return "请选择输出文件夹。";
+      return null;
+    default:
+      return null;
+  }
+}
+
+function reportRunBlocker(message) {
+  addActivity("无法运行", message, "error");
+  if (!window.aias) {
+    openPreviewMessage("无法运行", message);
+  }
+}
+
 function applyMode(mode) {
   state.activeMode = mode;
   document.querySelectorAll(".mode-tab").forEach((button) => {
@@ -474,6 +597,27 @@ function bindTabs() {
   });
 }
 
+function bindInspectorGroups() {
+  document.querySelectorAll(".group-toggle").forEach((button) => {
+    const group = button.closest(".inspector-group");
+    if (!group) return;
+    button.setAttribute("aria-expanded", "true");
+    button.addEventListener("click", () => {
+      const collapsed = group.classList.toggle("collapsed");
+      button.setAttribute("aria-expanded", String(!collapsed));
+    });
+  });
+}
+
+function bindHelpAction() {
+  $("help-button")?.addEventListener("click", () => {
+    addActivity("帮助", "浏览器预览用于测试界面交互；真实文件处理请在 Electron 窗口中运行。");
+    if (!window.aias) {
+      openPreviewMessage("浏览器预览", "这里可以测试模式切换、路径输入、列表状态和按钮反馈。真实文件系统权限只在 Electron 窗口中可用。");
+    }
+  });
+}
+
 function bindDropZones() {
   document.querySelectorAll("[data-pick-dir]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -486,6 +630,11 @@ function bindDropZones() {
       if (button.dataset.pickDir === "skin-path") {
         await refreshSkins();
       }
+    });
+    button.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      button.click();
     });
   });
 
@@ -511,18 +660,25 @@ function bindFileControls() {
     state.splitFiles = [];
     renderChips("split-file-list", []);
     updateStatus();
+    addActivity("已清空列表", "DDS 文件列表已清空。");
   });
 
   $("clear-image-files")?.addEventListener("click", () => {
     state.imageFiles = [];
     renderChips("image-file-list", []);
     updateStatus();
+    addActivity("已清空列表", "图片文件列表已清空。");
   });
 }
 
 function bindRunActions() {
   $("run-merge")?.addEventListener("click", async (event) => {
     await saveSettings();
+    const blocker = getRunBlocker("merge");
+    if (blocker) {
+      reportRunBlocker(blocker);
+      return;
+    }
     addActivity("开始合成", $("pbr-input")?.value || "未选择输入目录");
     await withLog(
       "merge-log",
@@ -540,6 +696,11 @@ function bindRunActions() {
 
   $("run-split")?.addEventListener("click", async (event) => {
     await saveSettings();
+    const blocker = getRunBlocker("split");
+    if (blocker) {
+      reportRunBlocker(blocker);
+      return;
+    }
     addActivity("开始拆分", `${state.splitFiles.length} 个 DDS 文件`);
     await withLog(
       "split-log",
@@ -557,6 +718,11 @@ function bindRunActions() {
 
   $("run-mipmap")?.addEventListener("click", async (event) => {
     await saveSettings();
+    const blocker = getRunBlocker("mipmap");
+    if (blocker) {
+      reportRunBlocker(blocker);
+      return;
+    }
     addActivity("开始生成", $("mipmap-input")?.value || "未选择输入目录");
     await withLog(
       "mipmap-log",
@@ -574,6 +740,11 @@ function bindRunActions() {
 
   $("run-image-dds")?.addEventListener("click", async (event) => {
     await saveSettings();
+    const blocker = getRunBlocker("image-dds");
+    if (blocker) {
+      reportRunBlocker(blocker);
+      return;
+    }
     addActivity("开始转换", `${state.imageFiles.length} 张图片`);
     await withLog(
       "image-log",
@@ -598,31 +769,40 @@ function bindSkinActions() {
       await saveSettings();
       await refreshSkins();
     } else {
-      alert("未检测到 War Thunder UserSkins 目录。");
+      addActivity("未检测到目录", "未检测到 War Thunder UserSkins 目录。", "error");
+      if (!window.aias) {
+        await openPreviewMessage("浏览器预览", "自动检测 UserSkins 需要 Electron 窗口。");
+      }
     }
   });
 
-  $("refresh-skins")?.addEventListener("click", refreshSkins);
+  $("refresh-skins")?.addEventListener("click", () => refreshSkins({ notify: true }));
 
   $("import-skins")?.addEventListener("click", async () => {
     const files = await api.dialog.selectFiles();
     if (!files.length) return;
     await api.skin.import({ files, targetDirectory: $("skin-path").value });
-    await refreshSkins();
+    await refreshSkins({ notify: true });
   });
 }
 
-async function refreshSkins() {
+async function refreshSkins({ notify = false } = {}) {
   const directory = $("skin-path")?.value;
   if (!directory) {
     renderSkinList([]);
     updateStatus();
+    if (notify) {
+      addActivity("涂装列表", "请选择 UserSkins 目录后刷新。");
+    }
     return;
   }
 
   try {
     const files = await api.skin.list(directory);
     renderSkinList(files);
+    if (notify) {
+      addActivity("涂装列表已刷新", `${files.length} 个文件`, "success");
+    }
   } catch (error) {
     const list = $("skin-list");
     if (list) {
@@ -631,6 +811,9 @@ async function refreshSkins() {
       item.className = "skin-card";
       item.textContent = `读取失败：${error.message || error}`;
       list.appendChild(item);
+    }
+    if (notify) {
+      addActivity("读取失败", error.message || String(error), "error");
     }
   }
 
@@ -641,6 +824,8 @@ async function init() {
   state.settings = await api.settings.get();
   applySettingsToForm();
   bindTabs();
+  bindInspectorGroups();
+  bindHelpAction();
   bindDropZones();
   bindFileControls();
   bindRunActions();

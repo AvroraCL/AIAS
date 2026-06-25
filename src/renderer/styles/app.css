@@ -359,8 +359,26 @@ label {
   background: #1b1f25;
 }
 
+.group-toggle::after {
+  float: right;
+  color: var(--muted);
+  content: "−";
+}
+
+.inspector-group.collapsed .group-toggle {
+  border-radius: 12px;
+}
+
+.inspector-group.collapsed .group-toggle::after {
+  content: "+";
+}
+
 .group-content {
   padding: 14px;
+}
+
+.inspector-group.collapsed .group-content {
+  display: none;
 }
 
 .field-row {
@@ -426,6 +444,11 @@ label {
   padding: 18px;
   background: var(--panel);
   box-shadow: var(--shadow);
+}
+
+.preview-picker-message {
+  margin: 0;
+  color: var(--muted);
 }
 
 .preview-picker-actions {
