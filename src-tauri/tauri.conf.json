@@ -30,16 +30,13 @@
     "targets": ["nsis"],
     "icon": ["../favicon.ico"],
     "resources": {
-      "../tools/texconv.exe": "tools/texconv.exe"
+      "../tools/texconv.exe": "tools/texconv.exe",
+      "target/release/WebView2Loader.dll": "."
     },
     "windows": {
       "nsis": {
         "installMode": "both",
-        "displayLanguageSelector": true,
-        "createDesktopShortcut": true,
-        "createStartMenuShortcut": true,
-        "shortName": "AIAS",
-        "startMenuFolder": "AIAS"
+        "displayLanguageSelector": true
       }
     }
   }
