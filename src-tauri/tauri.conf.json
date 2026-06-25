@@ -34,7 +34,12 @@
     },
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "both",
+        "displayLanguageSelector": true,
+        "createDesktopShortcut": true,
+        "createStartMenuShortcut": true,
+        "shortName": "AIAS",
+        "startMenuFolder": "AIAS"
       }
     }
   }
