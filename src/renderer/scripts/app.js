@@ -34,6 +34,7 @@ const state = {
 
 const ACTIVITY_FEED_LIMIT = 20;
 let closeOpenPreviewDialog = null;
+let closeOpenCustomSelect = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -41,6 +42,135 @@ function $(id) {
 
 function basename(value) {
   return String(value).split(/[\\/]/).pop();
+}
+
+function getSelectLabel(select) {
+  return select.selectedOptions[0]?.textContent || select.options[select.selectedIndex]?.textContent || "";
+}
+
+function closeCustomSelect() {
+  if (!closeOpenCustomSelect) return;
+  closeOpenCustomSelect();
+  closeOpenCustomSelect = null;
+}
+
+function positionCustomSelectMenu(wrapper, menu) {
+  const rect = wrapper.getBoundingClientRect();
+  const gap = 6;
+  const availableBelow = window.innerHeight - rect.bottom - gap;
+  const availableAbove = rect.top - gap;
+  const menuHeight = Math.min(menu.scrollHeight || 0, 260);
+  const openAbove = availableBelow < Math.min(menuHeight, 160) && availableAbove > availableBelow;
+  const top = openAbove ? Math.max(gap, rect.top - menuHeight - gap) : Math.min(rect.bottom + gap, window.innerHeight - gap);
+
+  menu.style.left = `${Math.round(rect.left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.width = `${Math.round(rect.width)}px`;
+  menu.style.maxHeight = `${Math.max(120, Math.round(openAbove ? availableAbove : availableBelow))}px`;
+}
+
+function syncCustomSelect(select) {
+  const wrapper = select.closest(".custom-select");
+  const button = wrapper?.querySelector(".custom-select-button");
+  if (!button) return;
+  button.textContent = getSelectLabel(select);
+}
+
+function openCustomSelect(select, wrapper, button) {
+  closeCustomSelect();
+
+  const menu = document.createElement("div");
+  menu.className = "custom-select-menu";
+  menu.setAttribute("role", "listbox");
+  menu.setAttribute("aria-label", select.getAttribute("aria-label") || select.title || "选择");
+
+  [...select.options].forEach((option) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "custom-select-option";
+    item.textContent = option.textContent;
+    item.dataset.value = option.value;
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(option.selected));
+    if (option.selected) item.classList.add("selected");
+    item.addEventListener("click", () => {
+      select.value = option.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      syncCustomSelect(select);
+      closeCustomSelect();
+      button.focus();
+    });
+    menu.appendChild(item);
+  });
+
+  document.body.appendChild(menu);
+  wrapper.classList.add("open");
+  button.setAttribute("aria-expanded", "true");
+  positionCustomSelectMenu(wrapper, menu);
+
+  const onPointerDown = (event) => {
+    if (menu.contains(event.target) || wrapper.contains(event.target)) return;
+    closeCustomSelect();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCustomSelect();
+      button.focus();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const options = [...menu.querySelectorAll(".custom-select-option")];
+    const currentIndex = Math.max(0, options.findIndex((item) => item.classList.contains("selected")));
+    const nextIndex = event.key === "ArrowDown"
+      ? Math.min(options.length - 1, currentIndex + 1)
+      : Math.max(0, currentIndex - 1);
+    options[nextIndex]?.click();
+  };
+  const onReposition = () => positionCustomSelectMenu(wrapper, menu);
+
+  document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("keydown", onKeydown);
+  window.addEventListener("resize", onReposition);
+  window.addEventListener("scroll", onReposition, true);
+
+  closeOpenCustomSelect = () => {
+    document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("keydown", onKeydown);
+    window.removeEventListener("resize", onReposition);
+    window.removeEventListener("scroll", onReposition, true);
+    wrapper.classList.remove("open");
+    button.setAttribute("aria-expanded", "false");
+    menu.remove();
+  };
+}
+
+function enhanceSelectMenus() {
+  document.querySelectorAll("select").forEach((select) => {
+    if (select.closest(".custom-select")) return;
+    const wrapper = document.createElement("div");
+    wrapper.className = "custom-select";
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "custom-select-button";
+    button.setAttribute("aria-haspopup", "listbox");
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", select.getAttribute("aria-label") || select.title || "选择");
+    wrapper.appendChild(button);
+    syncCustomSelect(select);
+
+    button.addEventListener("click", () => {
+      if (wrapper.classList.contains("open")) closeCustomSelect();
+      else openCustomSelect(select, wrapper, button);
+    });
+    select.addEventListener("change", () => {
+      syncCustomSelect(select);
+    });
+  });
 }
 
 function createPreviewDialogCloser(overlay, resolve, fallbackValue = null) {
@@ -472,6 +602,7 @@ function applySettingsToForm() {
     if (!el) continue;
     if (el.type === "checkbox") el.checked = Boolean(value);
     else el.value = value || "";
+    if (el.tagName === "SELECT") syncCustomSelect(el);
   }
   syncPathChips();
 }
@@ -624,6 +755,7 @@ function reportRunBlocker(message) {
 }
 
 function applyMode(mode) {
+  closeCustomSelect();
   state.activeMode = mode;
   document.querySelectorAll(".mode-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === mode);
@@ -648,6 +780,7 @@ function bindInspectorGroups() {
     if (!group) return;
     button.setAttribute("aria-expanded", "true");
     button.addEventListener("click", () => {
+      closeCustomSelect();
       const collapsed = group.classList.toggle("collapsed");
       button.setAttribute("aria-expanded", String(!collapsed));
     });
@@ -867,6 +1000,7 @@ async function refreshSkins({ notify = false } = {}) {
 
 async function init() {
   state.settings = await api.settings.get();
+  enhanceSelectMenus();
   applySettingsToForm();
   bindTabs();
   bindInspectorGroups();

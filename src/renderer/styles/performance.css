@@ -100,6 +100,65 @@ textarea,
   z-index: 1;
 }
 
+.custom-select {
+  position: relative;
+  width: 100%;
+}
+
+.custom-select select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-height: 36px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.custom-select-button {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 32px 0 10px;
+  text-align: left;
+  color: var(--text);
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E") right 12px center / 12px 12px no-repeat,
+    rgba(12, 12, 14, 0.86);
+}
+
+.custom-select.open .custom-select-button,
+.custom-select-button:focus-visible {
+  border-color: var(--line-active);
+  box-shadow: 0 0 0 3px rgba(175, 35, 49, 0.12), var(--shadow-sm);
+  outline: none;
+}
+
+.custom-select-menu {
+  position: fixed;
+  z-index: 1000;
+  display: grid;
+  gap: 4px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--line-hover);
+  border-radius: var(--radius-sm);
+  background: #12121a;
+  box-shadow: var(--shadow-lg);
+}
+
+.custom-select-option {
+  min-height: 34px;
+  padding: 0 10px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+}
+
+.custom-select-option:hover,
+.custom-select-option.selected {
+  border-color: var(--line-active);
+  background: rgba(175, 35, 49, 0.18);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
