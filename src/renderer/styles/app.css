@@ -1,0 +1,280 @@
+:root {
+  --bg: #17191d;
+  --surface: #20242a;
+  --surface-2: #282d35;
+  --line: #363d48;
+  --line-strong: #465061;
+  --text: #edf1f7;
+  --muted: #99a3b3;
+  --accent: #5f83d6;
+  --accent-strong: #77a28a;
+  --danger: #d65f6f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 960px;
+  min-height: 680px;
+  color: var(--text);
+  background: var(--bg);
+  font: 14px/1.5 "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 14px;
+  color: var(--text);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--line-strong);
+  background: #303744;
+}
+
+input,
+select {
+  min-height: 36px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--text);
+  background: #171b21;
+}
+
+label {
+  display: block;
+  margin: 14px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: #15181d;
+  padding: 18px 12px;
+}
+
+.brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px 20px;
+}
+
+.brand-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent);
+  font-weight: 800;
+}
+
+.brand span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nav {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-item {
+  justify-content: flex-start;
+  width: 100%;
+  border-color: transparent;
+  text-align: left;
+  background: transparent;
+}
+
+.nav-item.active {
+  border-color: #6f8ed2;
+  background: #28406f;
+}
+
+.workspace {
+  overflow: auto;
+  padding: 22px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 22px;
+}
+
+h2 {
+  font-size: 14px;
+}
+
+.topbar p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+  gap: 14px;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 16px;
+}
+
+.path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.primary-action {
+  width: 100%;
+  margin-top: 18px;
+  border-color: #7e9ee5;
+  background: var(--accent);
+  font-weight: 700;
+}
+
+.ghost-button {
+  background: transparent;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.checkbox-label input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.log-panel {
+  margin-top: 14px;
+}
+
+pre {
+  min-height: 210px;
+  max-height: 300px;
+  overflow: auto;
+  margin: 12px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  color: #d8dfeb;
+  background: #111419;
+  white-space: pre-wrap;
+}
+
+.file-list,
+.skin-list {
+  min-height: 160px;
+  max-height: 280px;
+  overflow: auto;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #171b21;
+}
+
+.file-list li,
+.skin-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-list li:last-child,
+.skin-list li:last-child {
+  border-bottom: none;
+}
+
+.skin-list small {
+  color: var(--muted);
+}
+
+.skin-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.skin-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.danger {
+  border-color: #7f3944;
+  color: #ffdce1;
+  background: #5a222b;
+}
+
+@media (max-width: 1040px) {
+  .tool-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,31 @@
+# UTF-8
+# For details see https://pyinstaller.readthedocs.io/en/stable/usage.html#adding-version-information-to-windows-executables
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(4, 1, 0, 0),
+    prodvers=(4, 1, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x4,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+    ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', '赫尔塔工作室'),
+         StringStruct('FileDescription', 'AIAS'),
+         StringStruct('FileVersion', 'v4.1.0.0'),
+         StringStruct('InternalName', 'AIAS.exe'),
+         StringStruct('LegalCopyright', '© 2025 Avrora.CL'),
+         StringStruct('OriginalFilename', 'AIAS.exe'),
+         StringStruct('ProductName', 'AIAS'),
+         StringStruct('ProductVersion', 'v4.1.0.0')])
+      ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

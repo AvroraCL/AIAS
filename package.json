@@ -1,0 +1,34 @@
+{
+  "name": "aias-electron",
+  "version": "4.1.0",
+  "description": "AIAS texture processing toolbox rebuilt with Electron.",
+  "main": "src/main/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node scripts/start-electron.js",
+    "dev": "node scripts/start-electron.js",
+    "check": "node --check src/main/main.js && node --check src/main/preload.js && node --check src/main/services/texture-service.js && node --check src/main/services/settings-service.js && node --check src/main/services/skin-service.js && node --check src/renderer/scripts/app.js",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "studio.avroracl.aias",
+    "productName": "AIAS",
+    "files": [
+      "src/**/*",
+      "package.json",
+      "tools/texconv.exe",
+      "favicon.ico"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "favicon.ico"
+    }
+  }
+}
