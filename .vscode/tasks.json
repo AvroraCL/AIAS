@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "tauri: dev",
+      "type": "shell",
+      "command": "npm run tauri dev",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "renderer: dev",
+      "type": "shell",
+      "command": "npm run dev:renderer",
+      "problemMatcher": []
+    },
+    {
+      "label": "tauri: build",
+      "type": "shell",
+      "command": "npm run build",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "check",
+      "type": "shell",
+      "command": "npm run check",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

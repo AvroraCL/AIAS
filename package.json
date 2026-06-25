@@ -1,40 +1,25 @@
 {
-  "name": "aias-electron",
+  "name": "aias-tauri",
   "version": "4.1.0",
-  "description": "AIAS texture processing toolbox rebuilt with Electron.",
-  "main": "src/main/main.js",
+  "description": "AIAS texture processing toolbox rebuilt with Tauri.",
   "type": "commonjs",
   "scripts": {
-    "start": "node scripts/start-electron.js",
-    "dev": "node scripts/dev.js",
+    "start": "npm run tauri dev",
+    "dev": "npm run tauri dev",
     "dev:renderer": "vite --host 127.0.0.1",
     "preview": "vite preview --host 127.0.0.1",
-    "check": "node --check src/main/main.js && node --check src/main/preload.js && node --check src/main/services/texture-service.js && node --check src/main/services/settings-service.js && node --check src/main/services/skin-service.js && node --check src/renderer/scripts/app.js",
-    "build": "electron-builder"
+    "tauri": "tauri",
+    "check": "vite build",
+    "build": "tauri build"
   },
   "dependencies": {
-    "sharp": "^0.33.5"
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-opener": "^2.5.4"
   },
   "devDependencies": {
-    "electron": "^33.2.1",
-    "electron-builder": "^25.1.8",
+    "@tauri-apps/cli": "^2.11.3",
     "vite": "^6.0.3"
-  },
-  "build": {
-    "appId": "studio.avroracl.aias",
-    "productName": "AIAS",
-    "files": [
-      "src/**/*",
-      "package.json",
-      "tools/texconv.exe",
-      "favicon.ico"
-    ],
-    "win": {
-      "target": "nsis",
-      "icon": "favicon.ico",
-      "sign": false,
-      "verifyUpdateCodeSignature": false,
-      "signAndEditExecutable": false
-    }
   }
 }

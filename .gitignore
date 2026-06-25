@@ -8,7 +8,7 @@ __pycache__/
 venv/
 .env/
 
-# Node / Electron
+# Node / Tauri
 node_modules/
 npm-debug.log*
 yarn-debug.log*

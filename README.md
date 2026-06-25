@@ -1,13 +1,19 @@
-# AIAS Electron
+# AIAS Tauri
 
 AIAS is a Windows desktop texture toolbox for PBR channel packing, DDS conversion, mipmap generation, and War Thunder UserSkins management.
 
-This repository now contains an Electron/JavaScript rebuild beside the original Python implementation. The Python entry point remains in `AIAS.py` for reference while the active Electron app starts from `src/main/main.js`.
+This version uses Tauri 2.x for the desktop shell and a native HTML/CSS/JavaScript renderer. Legacy desktop shells and Python GUI entry points are no longer part of the active desktop app.
 
 ## Requirements
 
+- Windows
 - Node.js 20 or newer
-- Windows, for `tools/texconv.exe`
+- npm
+- Visual Studio Code
+- Rust toolchain for Tauri 2.x (`rustc` and `cargo`)
+- Microsoft Visual Studio Build Tools with the Desktop development with C++ workload
+- Microsoft Edge WebView2 Runtime
+- `tools/texconv.exe`
 
 ## Install
 
@@ -15,21 +21,21 @@ This repository now contains an Electron/JavaScript rebuild beside the original 
 npm install
 ```
 
-## Run
+## Run With Hot Reload
 
 ```powershell
-npm start
+npm run tauri dev
 ```
 
-## Live Preview
+This starts Vite at `http://127.0.0.1:5173/` and opens the Tauri desktop window against that live renderer. Changes under `src/renderer` update like a normal web app.
 
-Use the development server when editing the frontend:
+## Renderer-Only Preview
 
 ```powershell
-npm run dev
+npm run dev:renderer
 ```
 
-This starts Vite at `http://127.0.0.1:5173/` and opens Electron against that live renderer. Changes to `src/renderer` refresh like a normal web app.
+Use this when editing UI layout only. Local filesystem operations are available in the Tauri window, not in a plain browser preview.
 
 ## Check
 
@@ -37,24 +43,46 @@ This starts Vite at `http://127.0.0.1:5173/` and opens Electron against that liv
 npm run check
 ```
 
-## Build
+## Build Installer
 
 ```powershell
 npm run build
 ```
 
+The Windows installer is produced by Tauri under `src-tauri/target/release/bundle/`.
+
+## VS Code
+
+Open this folder in Visual Studio Code.
+
+- Run task `tauri: dev` for the full desktop app.
+- Run task `renderer: dev` for web-only UI preview.
+- Use launch configuration `AIAS Tauri Dev` to start the app from the Run and Debug panel.
+
 ## Project Layout
 
-- `src/main/main.js` - Electron main process and IPC wiring.
-- `src/main/preload.js` - safe renderer bridge.
-- `src/main/services/texture-service.js` - PBR packing, DDS conversion, mipmap assembly, and splitting.
-- `src/main/services/skin-service.js` - War Thunder UserSkins detection and file operations.
-- `src/main/services/settings-service.js` - JSON settings stored in Electron user data.
-- `src/renderer/index.html` - application UI.
-- `src/renderer/scripts/app.js` - renderer state and actions.
-- `src/renderer/styles/app.css` - application styling.
-- `vite.config.js` - live preview and renderer build configuration.
+```text
+AIAS/
+  src/
+    renderer/
+      index.html
+      scripts/app.js
+      styles/app.css
+      styles/performance.css
+  src-tauri/
+    Cargo.toml
+    tauri.conf.json
+    build.rs
+    capabilities/default.json
+    src/main.rs
+  tools/
+    texconv.exe
+  package.json
+  vite.config.js
+```
 
 ## Notes
 
-DDS encoding and decoding intentionally use the bundled DirectXTex `texconv.exe`. JavaScript handles orchestration and channel packing, while `texconv` handles the format-specific DDS work.
+- UI is native HTML/CSS/JavaScript. No TypeScript and no heavy frontend framework.
+- Desktop APIs use Tauri commands and official Tauri plugins.
+- DDS encoding and decoding use the bundled DirectXTex `texconv.exe`.

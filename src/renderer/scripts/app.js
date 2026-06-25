@@ -1,3 +1,7 @@
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
+
 const defaults = {
   autoUpdate: false,
   pbrInputPath: "",
@@ -356,7 +360,7 @@ function createBrowserPreviewApi() {
     completed: 0,
     total: 0,
     logs: [
-      `${feature} 需要 Electron 窗口里的本地文件权限。`,
+      `${feature} 需要 Tauri 窗口里的本地文件权限。`,
       "当前浏览器预览用于调试界面交互、布局和状态。"
     ]
   });
@@ -395,7 +399,7 @@ function createBrowserPreviewApi() {
     },
     skin: {
       autoDetect: async () => {
-        addActivity("浏览器预览", "自动检测 UserSkins 需要 Electron 窗口。");
+        addActivity("浏览器预览", "自动检测 UserSkins 需要 Tauri 窗口。");
         return null;
       },
       list: async () => [
@@ -414,7 +418,49 @@ function createBrowserPreviewApi() {
   };
 }
 
-const api = window.aias || createBrowserPreviewApi();
+function createTauriApi() {
+  return {
+    settings: {
+      get: () => invoke("settings_get"),
+      set: (patch) => invoke("settings_set", { patch })
+    },
+    dialog: {
+      selectDirectory: async () => {
+        const selected = await open({ directory: true, multiple: false });
+        return Array.isArray(selected) ? selected[0] || null : selected;
+      },
+      selectFiles: async (options = {}) => {
+        const selected = await open({
+          multiple: true,
+          filters: options.filters || []
+        });
+        if (!selected) return [];
+        return Array.isArray(selected) ? selected : [selected];
+      }
+    },
+    texture: {
+      findGroups: (inputPath) => invoke("texture_find_groups", { inputPath }),
+      mergePbr: (options) => invoke("texture_merge_pbr", { options }),
+      splitPbr: (options) => invoke("texture_split_pbr", { options }),
+      createMipmap: (options) => invoke("texture_create_mipmap", { options }),
+      convertImagesToDds: (options) => invoke("texture_convert_images_to_dds", { options })
+    },
+    skin: {
+      autoDetect: () => invoke("skin_auto_detect"),
+      list: (directory) => invoke("skin_list", { directory }),
+      import: (options) => invoke("skin_import", { options }),
+      importFiles: (options) => invoke("skin_import", { options }),
+      toggle: (filePath) => invoke("skin_toggle", { file_path: filePath }),
+      delete: (filePath) => invoke("skin_delete", { file_path: filePath })
+    },
+    shell: {
+      openPath
+    }
+  };
+}
+
+const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
+const api = isTauriRuntime ? createTauriApi() : createBrowserPreviewApi();
 
 function setText(id, value) {
   const el = $(id);
@@ -622,7 +668,7 @@ async function saveSettings() {
   state.settings = await api.settings.set(collectSettings());
   updateStatus();
   syncPathChips();
-  addActivity("配置已保存", window.aias ? "设置已写入本地配置。" : "设置已保存到浏览器预览存储。", "success");
+  addActivity("配置已保存", isTauriRuntime ? "设置已写入本地配置。" : "设置已保存到浏览器预览存储。", "success");
 }
 
 function updateRunButtons(mode) {
@@ -732,7 +778,7 @@ function updateStatus() {
   setText("view-title", modeMeta[mode][0]);
   setText("view-subtitle", modeMeta[mode][1]);
   setText("inspector-mode", modeMeta[mode][0]);
-  setText("runtime-badge", window.aias ? "Electron" : "Browser Preview");
+  setText("runtime-badge", isTauriRuntime ? "Tauri" : "Browser Preview");
 }
 
 function getRunBlocker(mode) {
@@ -760,7 +806,7 @@ function getRunBlocker(mode) {
 
 function reportRunBlocker(message) {
   addActivity("无法运行", message, "error");
-  if (!window.aias) {
+  if (!isTauriRuntime) {
     openPreviewMessage("无法运行", message);
   }
 }
@@ -800,9 +846,9 @@ function bindInspectorGroups() {
 
 function bindHelpAction() {
   $("help-button")?.addEventListener("click", () => {
-    addActivity("帮助", "浏览器预览用于测试界面交互；真实文件处理请在 Electron 窗口中运行。");
-    if (!window.aias) {
-      openPreviewMessage("浏览器预览", "这里可以测试模式切换、路径输入、列表状态和按钮反馈。真实文件系统权限只在 Electron 窗口中可用。");
+    addActivity("帮助", "浏览器预览用于测试界面交互；真实文件处理请在 Tauri 窗口中运行。");
+    if (!isTauriRuntime) {
+      openPreviewMessage("浏览器预览", "这里可以测试模式切换、路径输入、列表状态和按钮反馈。真实文件系统权限只在 Tauri 窗口中可用。");
     }
   });
 }
@@ -959,8 +1005,8 @@ function bindSkinActions() {
       await refreshSkins();
     } else {
       addActivity("未检测到目录", "未检测到 War Thunder UserSkins 目录。", "error");
-      if (!window.aias) {
-        await openPreviewMessage("浏览器预览", "自动检测 UserSkins 需要 Electron 窗口。");
+      if (!isTauriRuntime) {
+        await openPreviewMessage("浏览器预览", "自动检测 UserSkins 需要 Tauri 窗口。");
       }
     }
   });

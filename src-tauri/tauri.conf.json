@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AIAS",
+  "version": "4.1.0",
+  "identifier": "studio.avroracl.aias",
+  "build": {
+    "beforeDevCommand": "npm run dev:renderer",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "vite build",
+    "frontendDist": "../dist/renderer"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AIAS",
+        "width": 1320,
+        "height": 820,
+        "minWidth": 1120,
+        "minHeight": 820,
+        "backgroundColor": "#121316"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["../favicon.ico"],
+    "resources": {
+      "../tools/texconv.exe": "tools/texconv.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
