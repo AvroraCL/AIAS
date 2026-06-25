@@ -11,6 +11,7 @@ let skinService;
 let mainWindow;
 
 function createWindow() {
+  const rendererUrl = process.env.AIAS_RENDERER_URL;
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 820,
@@ -27,7 +28,12 @@ function createWindow() {
     }
   });
 
-  mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+  if (rendererUrl) {
+    mainWindow.loadURL(rendererUrl);
+    mainWindow.webContents.openDevTools({ mode: "detach" });
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+  }
 }
 
 function bindIpc() {

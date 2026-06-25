@@ -21,6 +21,16 @@ npm install
 npm start
 ```
 
+## Live Preview
+
+Use the development server when editing the frontend:
+
+```powershell
+npm run dev
+```
+
+This starts Vite at `http://127.0.0.1:5173/` and opens Electron against that live renderer. Changes to `src/renderer` refresh like a normal web app.
+
 ## Check
 
 ```powershell
@@ -43,6 +53,7 @@ npm run build
 - `src/renderer/index.html` - application UI.
 - `src/renderer/scripts/app.js` - renderer state and actions.
 - `src/renderer/styles/app.css` - application styling.
+- `vite.config.js` - live preview and renderer build configuration.
 
 ## Notes
 
