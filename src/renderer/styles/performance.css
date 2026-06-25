@@ -4,6 +4,14 @@
   --shadow-glow: 0 0 18px rgba(175, 35, 49, 0.14);
 }
 
+.app-shell {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.activity-panel {
+  display: none;
+}
+
 button,
 input,
 select,
@@ -157,6 +165,66 @@ textarea,
 .custom-select-option.selected {
   border-color: var(--line-active);
   background: rgba(175, 35, 49, 0.18);
+}
+
+.toast-region {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  z-index: 900;
+  display: grid;
+  gap: 10px;
+  width: min(380px, calc(100vw - 48px));
+  pointer-events: none;
+}
+
+.toast-item {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  padding: 12px 42px 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: rgba(18, 18, 24, 0.96);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+}
+
+.toast-item.success {
+  border-left-color: #6e8f7a;
+}
+
+.toast-item.error {
+  border-left-color: var(--accent);
+}
+
+.toast-item strong {
+  font-size: 13px;
+}
+
+.toast-item span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.toast-dismiss {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: transparent;
+}
+
+.toast-dismiss:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 @media (prefers-reduced-motion: reduce) {

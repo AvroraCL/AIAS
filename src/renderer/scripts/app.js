@@ -32,7 +32,8 @@ const state = {
   activeMode: "merge"
 };
 
-const ACTIVITY_FEED_LIMIT = 20;
+const TOAST_LIMIT = 4;
+const TOAST_TIMEOUT_MS = 4200;
 let closeOpenPreviewDialog = null;
 let closeOpenCustomSelect = null;
 
@@ -421,7 +422,7 @@ function setText(id, value) {
 }
 
 function addActivity(title, body, tone = "idle") {
-  const feed = $("activity-feed");
+  const feed = $("toast-region");
   if (!feed) return;
   const key = `${tone}\u0000${title}\u0000${body}`;
   const latest = feed.firstElementChild;
@@ -430,20 +431,30 @@ function addActivity(title, body, tone = "idle") {
     const count = Number(latest.dataset.activityCount || "1") + 1;
     latest.dataset.activityCount = String(count);
     if (detail) detail.textContent = `${body} ×${count}`;
+    window.clearTimeout(Number(latest.dataset.dismissTimer || "0"));
+    latest.dataset.dismissTimer = String(window.setTimeout(() => latest.remove(), TOAST_TIMEOUT_MS));
     return;
   }
 
   const item = document.createElement("article");
-  item.className = `activity-item ${tone}`;
+  item.className = `toast-item ${tone}`;
   item.dataset.activityKey = key;
   item.dataset.activityCount = "1";
   const heading = document.createElement("strong");
   heading.textContent = title;
   const detail = document.createElement("span");
   detail.textContent = body;
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "toast-dismiss";
+  dismiss.setAttribute("aria-label", "关闭通知");
+  dismiss.textContent = "×";
+  dismiss.addEventListener("click", () => item.remove());
   item.append(heading, detail);
+  item.appendChild(dismiss);
   feed.prepend(item);
-  while (feed.children.length > ACTIVITY_FEED_LIMIT) {
+  item.dataset.dismissTimer = String(window.setTimeout(() => item.remove(), TOAST_TIMEOUT_MS));
+  while (feed.children.length > TOAST_LIMIT) {
     feed.lastElementChild?.remove();
   }
 }
