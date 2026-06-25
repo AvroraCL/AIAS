@@ -70,13 +70,34 @@ textarea,
 }
 
 .drop-zone,
-.inspector,
 .activity-panel,
 .file-chip,
 .activity-item,
 .skin-card,
 .preview-picker {
   contain: layout paint;
+}
+
+.inspector,
+.inspector-group,
+.group-content,
+.mode-field {
+  contain: none;
+  overflow: visible;
+}
+
+.workspace {
+  overflow: visible;
+}
+
+.inspector {
+  position: relative;
+  z-index: 5;
+}
+
+.activity-panel {
+  position: relative;
+  z-index: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {
