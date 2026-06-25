@@ -5,6 +5,92 @@ const state = {
   activeView: "merge"
 };
 
+const defaults = {
+  autoUpdate: false,
+  pbrInputPath: "",
+  pbrOutputPath: "",
+  pbrAlpha: "black",
+  pbrFormat: "DXT5",
+  splitOutputPath: "",
+  splitExportFormat: "png",
+  splitExportAlpha: true,
+  mipmapInputPath: "",
+  mipmapOutputPath: "",
+  mipmapFormat: "DXT5",
+  mipmapAlpha: "keep",
+  imageToDdsOutputPath: "",
+  imageToDdsAlpha: "keep",
+  imageToDdsFormat: "DXT5",
+  skinManagerPath: ""
+};
+
+function createBrowserPreviewApi() {
+  let settings = {
+    ...defaults,
+    ...JSON.parse(localStorage.getItem("aias-preview-settings") || "{}")
+  };
+
+  const save = () => {
+    localStorage.setItem("aias-preview-settings", JSON.stringify(settings));
+    return { ...settings };
+  };
+
+  const previewOnly = async (feature) => ({
+    completed: 0,
+    total: 0,
+    logs: [
+      `${feature} 需要 Electron 窗口里的本地文件权限。`,
+      "当前浏览器预览用于调试界面交互、布局和状态。请在 Electron 窗口中运行真实文件处理。"
+    ]
+  });
+
+  return {
+    isPreview: true,
+    settings: {
+      get: async () => ({ ...settings }),
+      set: async (patch) => {
+        settings = { ...settings, ...patch };
+        return save();
+      }
+    },
+    dialog: {
+      selectDirectory: async () => {
+        const value = prompt("浏览器预览不能打开系统目录选择器。输入一个用于界面预览的路径：", "F:\\AIAS\\Input");
+        return value || null;
+      },
+      selectFiles: async () => {
+        const value = prompt("浏览器预览不能打开系统文件选择器。输入用于界面预览的文件名，多个文件用逗号分隔：", "sample_c.dds,sample_n.dds");
+        return value ? value.split(",").map((item) => item.trim()).filter(Boolean) : [];
+      }
+    },
+    texture: {
+      findGroups: async () => [],
+      mergePbr: () => previewOnly("PBR 合成"),
+      splitPbr: () => previewOnly("PBR 拆分"),
+      createMipmap: () => previewOnly("Mipmap 生成"),
+      convertImagesToDds: () => previewOnly("图片转 DDS")
+    },
+    skin: {
+      autoDetect: async () => {
+        alert("自动检测 UserSkins 需要 Electron 窗口。");
+        return null;
+      },
+      list: async () => [
+        { name: "sample_skin.blk", path: "sample_skin.blk", disabled: false, size: 2048 },
+        { name: "disabled_skin.blk.disabled", path: "disabled_skin.blk.disabled", disabled: true, size: 1024 }
+      ],
+      import: async () => ({ imported: 0 }),
+      toggle: async (filePath) => ({ path: filePath.endsWith(".disabled") ? filePath.slice(0, -9) : `${filePath}.disabled` }),
+      delete: async () => ({ deleted: true })
+    },
+    shell: {
+      openPath: async (filePath) => alert(`浏览器预览不能打开本地文件：${filePath}`)
+    }
+  };
+}
+
+const aias = window.aias || createBrowserPreviewApi();
+
 const viewMeta = {
   merge: ["PBR 多通道合成", "扫描 Blender BSDF 命名贴图并输出游戏用 DDS 通道。"],
   split: ["PBR 多通道拆分", "把 _c.dds 与 _n.dds 拆回 BaseColor、Roughness、Metallic、Normal。"],
@@ -88,7 +174,7 @@ function collectSettingsFromForm() {
 }
 
 async function saveSettings() {
-  state.settings = await window.aias.settings.set(collectSettingsFromForm());
+  state.settings = await aias.settings.set(collectSettingsFromForm());
 }
 
 function bindNavigation() {
@@ -108,7 +194,7 @@ function bindDirectoryPickers() {
   document.querySelectorAll("[data-pick-dir]").forEach((button) => {
     button.addEventListener("click", async () => {
       const target = $(button.dataset.pickDir);
-      const directory = await window.aias.dialog.selectDirectory();
+      const directory = await aias.dialog.selectDirectory();
       if (!directory) return;
       target.value = directory;
       await saveSettings();
@@ -129,7 +215,7 @@ function renderFileList(id, files) {
 
 function bindFilePickers() {
   $("pick-split-files").addEventListener("click", async () => {
-    const files = await window.aias.dialog.selectFiles({ filters: [{ name: "DDS", extensions: ["dds"] }] });
+    const files = await aias.dialog.selectFiles({ filters: [{ name: "DDS", extensions: ["dds"] }] });
     state.splitFiles = [...new Set([...state.splitFiles, ...files])];
     renderFileList("split-file-list", state.splitFiles);
   });
@@ -139,7 +225,7 @@ function bindFilePickers() {
   });
 
   $("pick-image-files").addEventListener("click", async () => {
-    const files = await window.aias.dialog.selectFiles({
+    const files = await aias.dialog.selectFiles({
       filters: [{ name: "Images", extensions: ["png", "tga", "jpg", "jpeg"] }]
     });
     state.imageFiles = [...new Set([...state.imageFiles, ...files])];
@@ -155,7 +241,7 @@ function bindTextureActions() {
   $("run-merge").addEventListener("click", async (event) => {
     await saveSettings();
     await withLog("merge-log", event.currentTarget, () =>
-      window.aias.texture.mergePbr({
+      aias.texture.mergePbr({
         inputPath: $("pbr-input").value,
         outputPath: $("pbr-output").value,
         alpha: $("pbr-alpha").value,
@@ -167,7 +253,7 @@ function bindTextureActions() {
   $("run-split").addEventListener("click", async (event) => {
     await saveSettings();
     await withLog("split-log", event.currentTarget, () =>
-      window.aias.texture.splitPbr({
+      aias.texture.splitPbr({
         files: state.splitFiles,
         outputPath: $("split-output").value,
         exportFormat: $("split-format").value,
@@ -179,7 +265,7 @@ function bindTextureActions() {
   $("run-mipmap").addEventListener("click", async (event) => {
     await saveSettings();
     await withLog("mipmap-log", event.currentTarget, () =>
-      window.aias.texture.createMipmap({
+      aias.texture.createMipmap({
         inputPath: $("mipmap-input").value,
         outputPath: $("mipmap-output").value,
         alpha: $("mipmap-alpha").value,
@@ -191,7 +277,7 @@ function bindTextureActions() {
   $("run-image-dds").addEventListener("click", async (event) => {
     await saveSettings();
     await withLog("image-log", event.currentTarget, () =>
-      window.aias.texture.convertImagesToDds({
+      aias.texture.convertImagesToDds({
         files: state.imageFiles,
         outputPath: $("image-output").value,
         alpha: $("image-alpha").value,
@@ -208,7 +294,7 @@ async function refreshSkins() {
   if (!directory) return;
 
   try {
-    const files = await window.aias.skin.list(directory);
+    const files = await aias.skin.list(directory);
     for (const file of files) {
       const item = document.createElement("li");
       const label = document.createElement("div");
@@ -224,18 +310,18 @@ async function refreshSkins() {
       const toggle = document.createElement("button");
       toggle.textContent = file.disabled ? "启用" : "禁用";
       toggle.addEventListener("click", async () => {
-        await window.aias.skin.toggle(file.path);
+        await aias.skin.toggle(file.path);
         await refreshSkins();
       });
       const open = document.createElement("button");
       open.textContent = "打开";
-      open.addEventListener("click", () => window.aias.shell.openPath(file.path));
+      open.addEventListener("click", () => aias.shell.openPath(file.path));
       const remove = document.createElement("button");
       remove.textContent = "删除";
       remove.className = "danger";
       remove.addEventListener("click", async () => {
         if (!confirm(`删除 ${file.name}？`)) return;
-        await window.aias.skin.delete(file.path);
+        await aias.skin.delete(file.path);
         await refreshSkins();
       });
       actions.append(toggle, open, remove);
@@ -251,7 +337,7 @@ async function refreshSkins() {
 
 function bindSkinActions() {
   $("auto-detect-skins").addEventListener("click", async () => {
-    const found = await window.aias.skin.autoDetect();
+    const found = await aias.skin.autoDetect();
     if (found) {
       $("skin-path").value = found;
       await saveSettings();
@@ -264,15 +350,15 @@ function bindSkinActions() {
   $("refresh-skins").addEventListener("click", refreshSkins);
 
   $("import-skins").addEventListener("click", async () => {
-    const files = await window.aias.dialog.selectFiles();
+    const files = await aias.dialog.selectFiles();
     if (!files.length) return;
-    await window.aias.skin.import({ files, targetDirectory: $("skin-path").value });
+    await aias.skin.import({ files, targetDirectory: $("skin-path").value });
     await refreshSkins();
   });
 }
 
 async function init() {
-  state.settings = await window.aias.settings.get();
+  state.settings = await aias.settings.get();
   applySettingsToForm();
   bindNavigation();
   bindDirectoryPickers();
