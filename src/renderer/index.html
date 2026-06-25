@@ -131,15 +131,15 @@
             <div class="group-content">
               <label id="input-label">输入文件夹</label>
               <div class="field-row" data-field="pbr-input">
-                <input id="pbr-input" readonly />
+                <input id="pbr-input" readonly aria-label="PBR 输入文件夹" title="PBR 输入文件夹" />
                 <button data-pick-dir="pbr-input">选择</button>
               </div>
               <div class="field-row hidden" data-field="mipmap-input">
-                <input id="mipmap-input" readonly />
+                <input id="mipmap-input" readonly aria-label="Mipmap 输入文件夹" title="Mipmap 输入文件夹" />
                 <button data-pick-dir="mipmap-input">选择</button>
               </div>
               <div class="field-row hidden" data-field="skin-path">
-                <input id="skin-path" readonly />
+                <input id="skin-path" readonly aria-label="UserSkins 目录" title="UserSkins 目录" />
                 <button data-pick-dir="skin-path">选择</button>
               </div>
               <button id="auto-detect-skins" class="secondary-action hidden">自动检测 UserSkins</button>
@@ -151,19 +151,19 @@
             <div class="group-content">
               <label>输出文件夹</label>
               <div class="field-row" data-field="pbr-output">
-                <input id="pbr-output" readonly />
+                <input id="pbr-output" readonly aria-label="PBR 输出文件夹" title="PBR 输出文件夹" />
                 <button data-pick-dir="pbr-output">选择</button>
               </div>
               <div class="field-row hidden" data-field="split-output">
-                <input id="split-output" readonly />
+                <input id="split-output" readonly aria-label="PBR 拆分输出文件夹" title="PBR 拆分输出文件夹" />
                 <button data-pick-dir="split-output">选择</button>
               </div>
               <div class="field-row hidden" data-field="mipmap-output">
-                <input id="mipmap-output" readonly />
+                <input id="mipmap-output" readonly aria-label="Mipmap 输出文件夹" title="Mipmap 输出文件夹" />
                 <button data-pick-dir="mipmap-output">选择</button>
               </div>
               <div class="field-row hidden" data-field="image-output">
-                <input id="image-output" readonly />
+                <input id="image-output" readonly aria-label="图片转 DDS 输出文件夹" title="图片转 DDS 输出文件夹" />
                 <button data-pick-dir="image-output">选择</button>
               </div>
             </div>
@@ -174,46 +174,46 @@
             <div class="group-content">
               <div class="mode-field" data-modes="merge">
                 <label>Alpha 通道</label>
-                <select id="pbr-alpha">
+                <select id="pbr-alpha" aria-label="PBR Alpha 通道" title="PBR Alpha 通道">
                   <option value="black">纯黑</option>
                   <option value="white">纯白</option>
                 </select>
                 <label>DDS 格式</label>
-                <select id="pbr-format">
+                <select id="pbr-format" aria-label="PBR DDS 格式" title="PBR DDS 格式">
                   <option value="DXT5">DXT5 / BC3</option>
                   <option value="8.8.8.8">8.8.8.8</option>
                 </select>
               </div>
               <div class="mode-field hidden" data-modes="split">
                 <label>导出格式</label>
-                <select id="split-format">
+                <select id="split-format" aria-label="拆分导出格式" title="拆分导出格式">
                   <option value="png">PNG</option>
                   <option value="tga">TGA</option>
                 </select>
-                <label class="checkbox-label"><input id="split-alpha" type="checkbox" checked /> 导出 _c Alpha</label>
+                <label class="checkbox-label"><input id="split-alpha" type="checkbox" checked aria-label="导出 _c Alpha" title="导出 _c Alpha" /> 导出 _c Alpha</label>
               </div>
               <div class="mode-field hidden" data-modes="mipmap">
                 <label>Alpha 通道</label>
-                <select id="mipmap-alpha">
+                <select id="mipmap-alpha" aria-label="Mipmap Alpha 通道" title="Mipmap Alpha 通道">
                   <option value="keep">保留原图</option>
                   <option value="black">纯黑</option>
                   <option value="white">纯白</option>
                 </select>
                 <label>DDS 格式</label>
-                <select id="mipmap-format">
+                <select id="mipmap-format" aria-label="Mipmap DDS 格式" title="Mipmap DDS 格式">
                   <option value="DXT5">DXT5 / BC3</option>
                   <option value="8.8.8.8">8.8.8.8</option>
                 </select>
               </div>
               <div class="mode-field hidden" data-modes="image-dds">
                 <label>Alpha 通道</label>
-                <select id="image-alpha">
+                <select id="image-alpha" aria-label="图片转 DDS Alpha 通道" title="图片转 DDS Alpha 通道">
                   <option value="keep">保留原图</option>
                   <option value="black">纯黑</option>
                   <option value="white">纯白</option>
                 </select>
                 <label>DDS 格式</label>
-                <select id="image-format">
+                <select id="image-format" aria-label="图片转 DDS 格式" title="图片转 DDS 格式">
                   <option value="DXT5">DXT5 / BC3</option>
                   <option value="8.8.8.8">8.8.8.8</option>
                 </select>

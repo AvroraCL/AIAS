@@ -52,6 +52,8 @@ function openPreviewPicker({ title, defaultValue = "", multiline = false }) {
     heading.textContent = title;
 
     const input = multiline ? document.createElement("textarea") : document.createElement("input");
+    input.setAttribute("aria-label", title);
+    input.title = title;
     input.value = defaultValue;
     input.rows = 4;
 
