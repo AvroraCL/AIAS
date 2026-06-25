@@ -488,7 +488,8 @@ class SettingsDialog(CustomDialog):
 				except requests.RequestException:
 					continue
 			self.latest_version, self.update_url = version, download_url
-			self.main_window.invoke_in_main_thread(self.finish_check)
+			if self.main_window:
+				self.main_window.invoke_in_main_thread(self.finish_check)
 
 		threading.Thread(target=do_check, daemon=True).start()
 
@@ -508,6 +509,8 @@ class SettingsDialog(CustomDialog):
 		if not self.update_available or not self.update_url:
 			QMessageBox.information(self, "提示", "没有可用的更新。")
 			return
+		update_url = self.update_url
+		main_window = self.main_window
 		self.btn_install_update.setEnabled(False)
 		self.progress_bar.setVisible(True)
 		self.progress_bar.setRange(0, 100)
@@ -516,7 +519,7 @@ class SettingsDialog(CustomDialog):
 		def do_install():
 			try:
 				self.update_path = SETTINGS_DIR / "Aias_update_tmp.exe"
-				with requests.get(self.update_url, stream=True, timeout=15) as r:
+				with requests.get(update_url, stream=True, timeout=15) as r:
 					r.raise_for_status()
 					total = int(r.headers.get('content-length', 0))
 					downloaded = 0
@@ -525,13 +528,17 @@ class SettingsDialog(CustomDialog):
 							f.write(chunk)
 							downloaded += len(chunk)
 							percent = int(downloaded * 100 / total) if total else 0
-							self.main_window.invoke_in_main_thread(lambda p=percent: self.progress_bar.setValue(p))
-				self.main_window.invoke_in_main_thread(self.prompt_for_install)
+							if main_window:
+								main_window.invoke_in_main_thread(lambda p=percent: self.progress_bar.setValue(p))
+				if main_window:
+					main_window.invoke_in_main_thread(self.prompt_for_install)
 			except Exception as e:
-				self.main_window.invoke_in_main_thread(
-					lambda: QMessageBox.warning(self, "更新失败", f"下载更新失败: {e}"))
+				if main_window:
+					main_window.invoke_in_main_thread(
+						lambda: QMessageBox.warning(self, "更新失败", f"下载更新失败: {e}"))
 			finally:
-				self.main_window.invoke_in_main_thread(self.finish_install)
+				if main_window:
+					main_window.invoke_in_main_thread(self.finish_install)
 
 		threading.Thread(target=do_install, daemon=True).start()
 
@@ -952,9 +959,9 @@ class AIASMainWindow(QMainWindow):
 		btn_manual.clicked.connect(self.select_skin_folder)
 
 		# Initial Load
-		self.skin_manager_path = self.settings.get("skin_manager_path", "")
+		self.skin_manager_path = str(self.settings.get("skin_manager_path", ""))
 		if not self.skin_manager_path or not Path(self.skin_manager_path).exists():
-			self.skin_manager_path = self.auto_detect_skins_path()
+			self.skin_manager_path = self.auto_detect_skins_path() or ""
 
 		if self.skin_manager_path and Path(self.skin_manager_path).exists():
 			self.skin_path_label.setText(self.skin_manager_path)
@@ -1232,9 +1239,9 @@ class AIASMainWindow(QMainWindow):
 	def run_mipmap(self):
 		widgets = self.mipmap_widgets
 		log, progress = widgets["log"], widgets["progress"]
-		input_path = self.settings.get("mipmap_input_path", "")
-		output_path = self.settings.get("mipmap_output_path", "")
-		if not all([input_path, output_path]):
+		input_path = str(self.settings.get("mipmap_input_path", ""))
+		output_path = str(self.settings.get("mipmap_output_path", ""))
+		if not input_path or not output_path:
 			log.append("错误: 请先选择输入和输出文件夹。")
 			return
 		input_folder, output_folder = Path(input_path), Path(output_path)
@@ -1249,7 +1256,7 @@ class AIASMainWindow(QMainWindow):
 		if not mipmap_files:
 			log.append("错误: 输入文件夹中未找到任何p0, p1, p2...文件。")
 			return
-		mipmap_files.sort(key=lambda x: int(re.search(r'p(\d+)', x.stem).group(1)))
+		mipmap_files.sort(key=lambda x: int(m.group(1)) if (m := re.search(r'p(\d+)', x.stem)) else 0)
 		log.clear()
 		progress.setValue(0)
 		log.append(f"找到 {len(mipmap_files)} 个mipmap文件，开始处理...")
@@ -1291,7 +1298,7 @@ class AIASMainWindow(QMainWindow):
 	def run_image_to_dds(self):
 		widgets = self.image_to_dds_widgets
 		log, progress = widgets["log"], widgets["progress"]
-		output_path = self.settings.get("image_to_dds_output_path", "")
+		output_path = str(self.settings.get("image_to_dds_output_path", ""))
 		if not output_path:
 			log.append("错误: 请先选择输出文件夹。")
 			return
@@ -1335,8 +1342,9 @@ class AIASMainWindow(QMainWindow):
 	def run_merge(self):
 		widgets = self.pbr_widgets
 		log, progress = widgets["log"], widgets["progress"]
-		input_path, output_path = self.settings.get("pbr_input_path", ""), self.settings.get("pbr_output_path", "")
-		if not all([input_path, output_path]): log.append("错误: 请先选择输入和输出文件夹。"); return
+		input_path = str(self.settings.get("pbr_input_path", ""))
+		output_path = str(self.settings.get("pbr_output_path", ""))
+		if not input_path or not output_path: log.append("错误: 请先选择输入和输出文件夹。"); return
 		input_folder, output_folder = Path(input_path), Path(output_path)
 		output_folder.mkdir(exist_ok=True)
 		log.clear();
@@ -1368,7 +1376,7 @@ class AIASMainWindow(QMainWindow):
 	def run_split(self):
 		widgets = self.pbr_split_widgets
 		log, progress = widgets["log"], widgets["progress"]
-		output_path = self.settings.get("pbr_split_output_path", "")
+		output_path = str(self.settings.get("pbr_split_output_path", ""))
 		if not output_path: log.append("错误: 请先选择输出文件夹。"); return
 		output_folder = Path(output_path)
 		output_folder.mkdir(exist_ok=True)
