@@ -25,3 +25,10 @@ panic = "abort"
 codegen-units = 1
 lto = true
 strip = true
+
+# 快速打包：跳过 LTO 和多线程编译（正式发布用 release）
+[profile.release-fast]
+inherits = "release"
+codegen-units = 8
+lto = false
+strip = false
