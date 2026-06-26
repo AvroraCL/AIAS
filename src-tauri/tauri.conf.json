@@ -16,8 +16,8 @@
         "title": "AIAS",
         "width": 1320,
         "height": 820,
-        "minWidth": 1120,
-        "minHeight": 820,
+        "minWidth": 1020,
+        "minHeight": 680,
         "backgroundColor": "#121316"
       }
     ],
