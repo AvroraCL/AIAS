@@ -38,34 +38,8 @@
         </div>
       </header>
 
-      <section class="status-strip">
-        <div>
-          <span class="status-label">模式</span>
-          <strong id="status-mode">PBR 合成</strong>
-        </div>
-        <div>
-          <span class="status-label">输入</span>
-          <strong id="status-input">未选择</strong>
-        </div>
-        <div>
-          <span class="status-label">输出</span>
-          <strong id="status-output">未就绪</strong>
-        </div>
-        <div>
-          <span class="status-label">状态</span>
-          <strong id="status-ready">等待配置</strong>
-        </div>
-      </section>
-
       <main class="workspace">
         <section class="canvas-area">
-          <div class="canvas-header">
-            <div>
-              <h1 id="view-title">PBR 多通道合成</h1>
-              <p id="view-subtitle">扫描 Blender BSDF 命名贴图并输出游戏用 DDS 通道。</p>
-            </div>
-          </div>
-
           <section class="mode-view active" id="view-merge">
             <div class="drop-zone" data-pick-dir="pbr-input" role="button" tabindex="0">
               <div class="drop-icon">
@@ -110,15 +84,31 @@
             <div class="file-chip-grid" id="image-file-list"></div>
           </section>
 
+          <input id="skin-path" type="hidden" />
           <section class="mode-view" id="view-skins">
-            <div class="drop-zone" data-pick-dir="skin-path" role="button" tabindex="0">
-              <div class="drop-icon">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10l3 5-2 3v10H6V11L4 8l3-5Zm1.2 2-1.8 3 1.4 2.1V19h8.4v-8.9L17.6 8l-1.8-3H14a2 2 0 0 1-4 0H8.2Z" /></svg>
+            <div id="skin-banner" class="skin-banner hidden">
+              <div class="skin-banner-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10l3 5-2 3v10H6V11L4 8l3-5Zm1.2 2-1.8 3 1.4 2.1V19h8.4v-8.9L17.6 8l-1.8-3H14a2 2 0 0 1-4 0H8.2Z"/></svg>
               </div>
-              <h2>选择 War Thunder UserSkins 目录</h2>
-              <p>管理、导入、启用或禁用涂装文件。</p>
+              <div>
+                <strong id="skin-dir-label">UserSkins 目录</strong>
+                <small id="skin-dir-path">未设置</small>
+              </div>
+              <button id="skin-dir-pick" class="secondary-action compact" type="button">选择目录</button>
+              <button id="skin-auto-detect" class="secondary-action compact" type="button">自动检测</button>
             </div>
-            <ul id="skin-list" class="skin-list"></ul>
+            <div id="skin-actions" class="skin-actions-bar hidden">
+              <button id="skin-import-btn" class="secondary-action compact" type="button">导入涂装</button>
+              <small id="skin-count" class="settings-hint"></small>
+            </div>
+            <div id="skin-grid" class="skin-grid"></div>
+            <div id="skin-empty" class="skin-empty">
+              <div class="drop-icon" style="width:48px;height:48px;border-radius:12px;">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10l3 5-2 3v10H6V11L4 8l3-5Zm1.2 2-1.8 3 1.4 2.1V19h8.4v-8.9L17.6 8l-1.8-3H14a2 2 0 0 1-4 0H8.2Z"/></svg>
+              </div>
+              <strong>尚未选择 UserSkins 目录</strong>
+              <p>点击上方按钮自动检测或手动选择</p>
+            </div>
           </section>
 
           <section class="mode-view" id="view-settings">
@@ -151,7 +141,7 @@
             <strong id="inspector-mode">PBR 合成</strong>
           </div>
 
-          <section class="inspector-group" data-modes="merge mipmap skins">
+          <section class="inspector-group" data-modes="merge mipmap">
             <button class="group-toggle" type="button">输入</button>
             <div class="group-content">
               <label id="input-label">输入文件夹</label>
@@ -163,11 +153,6 @@
                 <input id="mipmap-input" readonly aria-label="Mipmap 输入文件夹" title="Mipmap 输入文件夹" />
                 <button data-pick-dir="mipmap-input">选择</button>
               </div>
-              <div class="field-row hidden" data-field="skin-path">
-                <input id="skin-path" readonly aria-label="UserSkins 目录" title="UserSkins 目录" />
-                <button data-pick-dir="skin-path">选择</button>
-              </div>
-              <button id="auto-detect-skins" class="secondary-action hidden">自动检测 UserSkins</button>
             </div>
           </section>
 
@@ -246,13 +231,11 @@
             </div>
           </section>
 
-          <section class="inspector-group" data-modes="split image-dds skins">
+          <section class="inspector-group" data-modes="split image-dds">
             <button class="group-toggle" type="button">文件</button>
             <div class="group-content">
               <button id="clear-split-files" class="secondary-action hidden">清空 DDS 列表</button>
               <button id="clear-image-files" class="secondary-action hidden">清空图片列表</button>
-              <button id="import-skins" class="secondary-action hidden">导入涂装文件</button>
-              <button id="refresh-skins" class="secondary-action hidden">刷新涂装列表</button>
             </div>
           </section>
 
