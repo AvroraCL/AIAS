@@ -25,6 +25,14 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_ME_WITH_YOUR_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/AvroraCL/AIAS/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

@@ -519,34 +519,13 @@ label {
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   font-weight: 600;
-  transition: color var(--transition-fast);
-}
-
-.group-toggle:hover {
-  color: var(--accent);
-}
-
-.group-toggle::after {
-  float: right;
-  color: var(--muted);
-  content: "−";
-  transition: transform var(--transition-smooth);
-}
-
-.inspector-group.collapsed .group-toggle {
-  border-radius: var(--radius);
-}
-
-.inspector-group.collapsed .group-toggle::after {
-  content: "+";
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .group-content {
   padding: 14px;
-}
-
-.inspector-group.collapsed .group-content {
-  display: none;
 }
 
 .field-row {
