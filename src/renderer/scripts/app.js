@@ -28,7 +28,7 @@ const modeMeta = {
   mipmap: ["Mipmap 生成", "读取 p0、p1、p2... 图片序列并生成 DDS。"],
   "image-dds": ["图片转 DDS", "批量把 PNG、TGA、JPG 转换为 DDS。"],
   skins: ["涂装管理", "管理 War Thunder UserSkins 文件。"],
-  settings: ["设置", "配置各类功能的输入输出路径。"]
+  settings: ["设置", "自动更新、数据和关于信息。"]
 };
 
 const state = {
@@ -813,11 +813,22 @@ function reportRunBlocker(message) {
   }
 }
 
+function moveModeIndicator(tab) {
+  const track = $("modeTabsTrack");
+  const indicator = $("modeTabsIndicator");
+  if (!track || !indicator) return;
+  const tr = track.getBoundingClientRect();
+  const tr2 = tab.getBoundingClientRect();
+  indicator.style.left = (tr2.left - tr.left) + "px";
+  indicator.style.width = tr2.width + "px";
+}
+
 function applyMode(mode) {
   closeCustomSelect();
   state.activeMode = mode;
   document.querySelectorAll(".mode-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === mode);
+    if (button.dataset.view === mode) moveModeIndicator(button);
   });
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === `view-${mode}`);
@@ -1139,6 +1150,11 @@ async function init() {
   $("update-button")?.addEventListener("click", () => checkForUpdates(false));
 
   applyMode("merge");
+  // Init tab indicator position
+  setTimeout(() => {
+    const activeTab = document.querySelector(".mode-tab.active");
+    if (activeTab) moveModeIndicator(activeTab);
+  }, 50);
   renderChips("merge-chip-list", []);
   renderChips("split-file-list", []);
   renderChips("mipmap-chip-list", []);
