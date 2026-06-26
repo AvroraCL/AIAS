@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const defaults = {
   autoUpdate: false,
@@ -1136,6 +1137,51 @@ async function checkForUpdates(silent = true) {
   }
 }
 
+function bindDragDrop() {
+  if (!isTauriRuntime) return;
+
+  const dropZones = document.querySelectorAll(".drop-zone");
+  const highlight = (el, on) => el.classList.toggle("drag-over", on);
+
+  dropZones.forEach((zone) => {
+    zone.addEventListener("dragover", (e) => { e.preventDefault(); highlight(zone, true); });
+    zone.addEventListener("dragleave", () => highlight(zone, false));
+    zone.addEventListener("drop", (e) => { e.preventDefault(); highlight(zone, false); });
+  });
+
+  getCurrentWindow().onDragDropEvent((event) => {
+    if (event.payload.type !== "drop") return;
+    const paths = event.payload.paths;
+    if (!paths.length) return;
+
+    const mode = state.activeMode;
+    switch (mode) {
+      case "merge":
+        $("pbr-input").value = paths[0];
+        saveSettings().then(() => syncPathChips());
+        break;
+      case "mipmap":
+        $("mipmap-input").value = paths[0];
+        saveSettings().then(() => syncPathChips());
+        break;
+      case "skins":
+        $("skin-path").value = paths[0];
+        saveSettings().then(() => refreshSkins());
+        break;
+      case "split":
+        state.splitFiles = [...new Set([...state.splitFiles, ...paths])];
+        renderChips("split-file-list", state.splitFiles);
+        updateStatus();
+        break;
+      case "image-dds":
+        state.imageFiles = [...new Set([...state.imageFiles, ...paths])];
+        renderChips("image-file-list", state.imageFiles);
+        updateStatus();
+        break;
+    }
+  });
+}
+
 async function init() {
   state.settings = await api.settings.get();
   enhanceSelectMenus();
@@ -1143,6 +1189,7 @@ async function init() {
   bindTabs();
   bindInspectorGroups();
   bindDropZones();
+  bindDragDrop();
   bindFileControls();
   bindRunActions();
   bindSkinActions();
