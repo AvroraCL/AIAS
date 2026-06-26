@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { check } from "@tauri-apps/plugin-updater";
 
 const defaults = {
   autoUpdate: false,
@@ -833,14 +834,7 @@ function bindTabs() {
 
 function bindInspectorGroups() {
   document.querySelectorAll(".group-toggle").forEach((button) => {
-    const group = button.closest(".inspector-group");
-    if (!group) return;
     button.setAttribute("aria-expanded", "true");
-    button.addEventListener("click", () => {
-      closeCustomSelect();
-      const collapsed = group.classList.toggle("collapsed");
-      button.setAttribute("aria-expanded", String(!collapsed));
-    });
   });
 }
 
@@ -1055,6 +1049,33 @@ async function refreshSkins({ notify = false } = {}) {
   updateStatus();
 }
 
+async function checkForUpdates(silent = true) {
+  try {
+    const update = await check();
+    if (!update) {
+      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "4.1.0"), "success");
+      return;
+    }
+    $("update-button")?.classList.remove("hidden");
+    addActivity("更新可用", update.version + " — 点击下载", "success");
+    if (!silent) {
+      const confirmed = await openPreviewConfirm("发现新版本", "版本 " + update.version + " 可用。\n\n是否立即下载并安装更新？");
+      if (!confirmed) return;
+      addActivity("正在下载更新", update.version);
+      let downloaded = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Progress") {
+          downloaded = Math.round((event.data.downloaded / event.data.total) * 100);
+          $("runtime-badge").textContent = "下载 " + downloaded + "%";
+        }
+      });
+      addActivity("更新已下载", "重启应用以完成更新", "success");
+    }
+  } catch (error) {
+    if (!silent) addActivity("检查更新失败", error.message || String(error), "error");
+  }
+}
+
 async function init() {
   state.settings = await api.settings.get();
   enhanceSelectMenus();
@@ -1067,6 +1088,8 @@ async function init() {
   bindRunActions();
   bindSkinActions();
   $("settings-save")?.addEventListener("click", saveSettings);
+  $("update-button")?.addEventListener("click", () => checkForUpdates(false));
+
   applyMode("merge");
   renderChips("merge-chip-list", []);
   renderChips("split-file-list", []);
@@ -1075,6 +1098,9 @@ async function init() {
   await refreshSkins();
   syncPathChips();
   updateStatus();
+
+  // Check for updates silently on startup
+  if (isTauriRuntime) setTimeout(() => checkForUpdates(true), 2000);
 }
 
 init();
