@@ -27,7 +27,8 @@ const modeMeta = {
   split: ["PBR 多通道拆分", "把 _c.dds 与 _n.dds 拆回 BaseColor、Roughness、Metallic、Normal。"],
   mipmap: ["Mipmap 生成", "读取 p0、p1、p2... 图片序列并生成 DDS。"],
   "image-dds": ["图片转 DDS", "批量把 PNG、TGA、JPG 转换为 DDS。"],
-  skins: ["涂装管理", "管理 War Thunder UserSkins 文件。"]
+  skins: ["涂装管理", "管理 War Thunder UserSkins 文件。"],
+  settings: ["设置", "配置各类功能的输入输出路径。"]
 };
 
 const state = {
@@ -821,6 +822,14 @@ function applyMode(mode) {
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === `view-${mode}`);
   });
+  // Settings mode: hide status strip, inspector; expand to full width
+  const statusStrip = document.querySelector(".status-strip");
+  if (statusStrip) statusStrip.classList.toggle("hidden", mode === "settings");
+  const workspace = document.querySelector(".workspace");
+  if (workspace) workspace.classList.toggle("full-width", mode === "settings");
+  const inspector = document.querySelector(".inspector");
+  if (inspector) inspector.classList.toggle("hidden", mode === "settings");
+  if (mode === "settings") syncSettingsView();
   updateRunButtons(mode);
   updateInspector();
   updateStatus();
@@ -838,12 +847,52 @@ function bindInspectorGroups() {
   });
 }
 
-function bindHelpAction() {
-  $("help-button")?.addEventListener("click", () => {
-    addActivity("帮助", "浏览器预览用于测试界面交互；真实文件处理请在 Tauri 窗口中运行。");
-    if (!isTauriRuntime) {
-      openPreviewMessage("浏览器预览", "这里可以测试模式切换、路径输入、列表状态和按钮反馈。真实文件系统权限只在 Tauri 窗口中可用。");
+function syncSettingsView() {
+  const el = $("set-auto-update");
+  if (el) el.checked = state.settings.autoUpdate !== false;
+  // Show data directory
+  (async () => {
+    try {
+      const { appDataDir } = await import("@tauri-apps/api/path");
+      const dir = await appDataDir();
+      const input = $("set-data-dir");
+      if (input) input.value = dir;
+    } catch (e) { /* not in Tauri */ }
+  })();
+}
+
+function bindSettingsActions() {
+  $("set-auto-update")?.addEventListener("change", async () => {
+    state.settings.autoUpdate = $("set-auto-update")?.checked ?? true;
+    await api.settings.set({ autoUpdate: state.settings.autoUpdate });
+    addActivity("已更新", state.settings.autoUpdate ? "自动检查更新已开启" : "自动检查更新已关闭", "success");
+  });
+
+  $("set-check-update")?.addEventListener("click", () => checkForUpdates(false));
+
+  $("set-open-dir")?.addEventListener("click", async () => {
+    try {
+      const { appDataDir } = await import("@tauri-apps/api/path");
+      const dir = await appDataDir();
+      if (isTauriRuntime) await openPath(dir);
+      else addActivity("数据目录", dir);
+    } catch (e) {
+      addActivity("打开失败", e.message || String(e), "error");
     }
+  });
+
+  $("set-reset")?.addEventListener("click", async () => {
+    const confirmed = await openPreviewConfirm("重置设置", "所有路径和选项将恢复默认值，确定继续？");
+    if (!confirmed) return;
+    await api.settings.set(defaults);
+    state.settings = { ...defaults };
+    applySettingsToForm();
+    updateStatus();
+    addActivity("已重置", "所有设置已恢复默认值", "success");
+  });
+
+  $("set-license")?.addEventListener("click", () => {
+    openPreviewMessage("MIT License", "Copyright (c) 2025 Avrora.CL\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software.");
   });
 }
 
@@ -1082,12 +1131,11 @@ async function init() {
   applySettingsToForm();
   bindTabs();
   bindInspectorGroups();
-  bindHelpAction();
   bindDropZones();
   bindFileControls();
   bindRunActions();
   bindSkinActions();
-  $("settings-save")?.addEventListener("click", saveSettings);
+  bindSettingsActions();
   $("update-button")?.addEventListener("click", () => checkForUpdates(false));
 
   applyMode("merge");
