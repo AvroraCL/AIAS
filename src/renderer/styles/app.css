@@ -336,6 +336,10 @@ label {
   padding: 16px 28px 0;
 }
 
+.workspace.full-width {
+  grid-template-columns: 1fr;
+}
+
 .canvas-area {
   min-width: 0;
   min-height: 0;
@@ -464,10 +468,9 @@ label {
 .inspector {
   display: grid;
   align-content: start;
+  align-self: start;
   gap: 14px;
   min-width: 0;
-  max-height: 100%;
-  overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: 18px;
@@ -776,6 +779,75 @@ select {
 select option {
   background: #12121a;
   color: var(--text);
+}
+
+.settings-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--shadow-md);
+}
+
+.settings-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-section:first-child {
+  padding-top: 0;
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.settings-section h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-section label {
+  margin-top: 6px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.settings-row .secondary-action {
+  margin-top: 0;
+  width: auto;
+  padding: 0 14px;
+}
+
+.settings-hint {
+  color: var(--text-secondary);
+}
+
+.settings-about {
+  margin: 0 0 4px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.settings-about a {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.settings-about a:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 980px) {

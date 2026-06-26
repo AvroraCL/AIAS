@@ -24,18 +24,13 @@
           <button class="mode-tab" data-view="mipmap">Mipmap</button>
           <button class="mode-tab" data-view="image-dds">图片转 DDS</button>
           <button class="mode-tab" data-view="skins">涂装管理</button>
+          <button class="mode-tab" data-view="settings">设置</button>
         </nav>
 
         <div class="topbar-actions">
           <span id="runtime-badge" class="runtime-badge">Ready</span>
-          <button id="settings-save" class="icon-button" title="保存配置" aria-label="保存配置">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12l2 2v16H5V3Zm2 2v14h10V6.5L15.5 5H15v5H8V5H7Zm3 0v3h3V5h-3Zm-1 9h6v2H9v-2Z" /></svg>
-          </button>
           <button id="update-button" class="icon-button hidden" title="更新可用" aria-label="更新可用">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 1 7 7c0 2.4-1.2 4.5-3 5.7V17H8v-2.3c-1.8-1.2-3-3.3-3-5.7a7 7 0 0 1 7-7Zm-2 17h4v1a2 2 0 0 1-4 0v-1Zm5-10.5V7h-2v1.5a2.5 2.5 0 0 0 0 5V15h2v-1.5a2.5 2.5 0 0 0 0-5Z" /></svg>
-          </button>
-          <button id="help-button" class="icon-button" title="帮助" aria-label="帮助">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 17h2v-2h-2v2Zm1-14a7 7 0 0 0-7 7h2a5 5 0 1 1 6.4 4.8c-.9.3-1.4 1.1-1.4 2.2h2c0-.3.1-.4.3-.5A7 7 0 0 0 12 3Z" /></svg>
           </button>
         </div>
       </header>
@@ -121,6 +116,29 @@
               <p>管理、导入、启用或禁用涂装文件。</p>
             </div>
             <ul id="skin-list" class="skin-list"></ul>
+          </section>
+
+          <section class="mode-view" id="view-settings">
+            <div class="settings-card">
+              <div class="settings-section">
+                <h3>更新</h3>
+                <label class="checkbox-label"><input id="set-auto-update" type="checkbox" checked /> 启动时自动检查更新</label>
+                <div class="settings-row"><button id="set-check-update" class="secondary-action">检查更新</button><small id="set-version" class="settings-hint">当前版本 4.1.0</small></div>
+              </div>
+              <div class="settings-section">
+                <h3>数据</h3>
+                <label>配置目录</label>
+                <div class="field-row"><input id="set-data-dir" readonly /><button id="set-open-dir">打开</button></div>
+                <button id="set-reset" class="secondary-action danger">重置所有设置</button>
+              </div>
+              <div class="settings-section">
+                <h3>关于</h3>
+                <p class="settings-about">AIAS — PBR 纹理处理工具箱 · 版本 4.1.0</p>
+                <p class="settings-about">基于 Tauri 2 构建 · Windows 平台</p>
+                <p class="settings-about">© 2025 Avrora.CL</p>
+                <small class="settings-about"><a id="set-license" role="button" tabindex="0">MIT 许可证</a></small>
+              </div>
+            </div>
           </section>
         </section>
 
