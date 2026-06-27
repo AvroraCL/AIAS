@@ -246,11 +246,12 @@ textarea {
 
 .workspace.full-width {
   grid-template-columns: 1fr;
-  padding-right: 0;
+  padding-left: 20px;
+  padding-right: 20px;
 }
 
 .workspace.full-width .canvas-area {
-  max-width: 900px;
+  max-width: min(94vw, 1200px);
   margin: 0 auto;
   width: 100%;
 }
