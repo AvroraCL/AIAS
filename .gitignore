@@ -8,7 +8,11 @@ __pycache__/
 venv/
 .env/
 
-# Node / Tauri
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Node
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -20,7 +24,6 @@ yarn-error.log*
 # Build output
 build/
 dist/
-src-tauri/target/
 _internal/
 release/
 out/
