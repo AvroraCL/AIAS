@@ -679,7 +679,11 @@ label {
   gap: 12px;
 }
 
-.skin-actions-bar .sort-select {
+.skin-actions-bar .spacer {
+  flex: 1;
+}
+
+.skin-actions-bar #skin-sort-wrapper {
   width: 140px;
   flex-shrink: 0;
 }
