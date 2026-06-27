@@ -99,6 +99,14 @@
             </div>
             <div id="skin-actions" class="skin-actions-bar hidden">
               <button id="skin-import-btn" class="secondary-action compact" type="button">导入涂装</button>
+              <div class="sort-select" id="skin-sort-wrapper">
+                <select id="skin-sort" aria-label="排序方式" title="排序方式">
+                  <option value="name-asc">名称 A-Z</option>
+                  <option value="name-desc">名称 Z-A</option>
+                  <option value="size-desc">大小 ↓</option>
+                  <option value="date-desc">修改时间 ↓</option>
+                </select>
+              </div>
               <small id="skin-count" class="settings-hint"></small>
             </div>
             <div id="skin-grid" class="skin-grid"></div>

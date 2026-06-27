@@ -555,7 +555,18 @@ function renderSkinList(items) {
 
   if (!hasDir || !items.length) return;
 
-  for (const entry of items) {
+  // Apply sort
+  const sortBy = $("skin-sort")?.value || "name-asc";
+  const sorted = [...items].sort((a, b) => {
+    switch (sortBy) {
+      case "name-desc": return b.name.localeCompare(a.name);
+      case "size-desc": return (b.fileCount || 0) - (a.fileCount || 0);
+      case "date-desc": return (b.modifiedAt || 0) - (a.modifiedAt || 0);
+      default: return a.name.localeCompare(b.name); // name-asc
+    }
+  });
+
+  for (const entry of sorted) {
     const card = document.createElement("div");
     card.className = "skin-card";
 
@@ -1089,6 +1100,10 @@ function bindSkinActions() {
     const result = await api.skin.import({ sources, targetDirectory: $("skin-path").value });
     addActivity("导入完成", `已导入 ${result.imported} 个涂装`, "success");
     await refreshSkins();
+  });
+
+  $("skin-sort")?.addEventListener("change", () => {
+    refreshSkins();
   });
 }
 

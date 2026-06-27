@@ -679,6 +679,11 @@ label {
   gap: 12px;
 }
 
+.skin-actions-bar .sort-select {
+  width: 140px;
+  flex-shrink: 0;
+}
+
 .skin-grid {
   display: grid;
   gap: 6px;
