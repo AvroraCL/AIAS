@@ -250,7 +250,7 @@ textarea {
 }
 
 .workspace.full-width .canvas-area {
-  max-width: 720px;
+  max-width: 900px;
   margin: 0 auto;
   width: 100%;
 }
