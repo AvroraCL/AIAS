@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default permissions for the AIAS desktop window.","local":true,"windows":["main"],"permissions":["core:default","dialog:default","dialog:allow-open","opener:default","opener:allow-open-path","notification:default","updater:default","updater:allow-check","updater:allow-download-and-install"]}}

@@ -24,12 +24,12 @@ const defaults = {
 };
 
 const modeMeta = {
-  merge: ["PBR 多通道合成", "扫描 Blender BSDF 命名贴图并输出游戏用 DDS 通道。"],
-  split: ["PBR 多通道拆分", "把 _c.dds 与 _n.dds 拆回 BaseColor、Roughness、Metallic、Normal。"],
-  mipmap: ["Mipmap 生成", "读取 p0、p1、p2... 图片序列并生成 DDS。"],
-  "image-dds": ["图片转 DDS", "批量把 PNG、TGA、JPG 转换为 DDS。"],
-  skins: ["涂装管理", "管理 War Thunder UserSkins 文件。"],
-  settings: ["设置", "自动更新、数据和关于信息。"]
+  merge: "PBR 多通道合成",
+  split: "PBR 多通道拆分",
+  mipmap: "Mipmap 生成",
+  "image-dds": "图片转 DDS",
+  skins: "涂装管理",
+  settings: "设置"
 };
 
 const state = {
@@ -40,7 +40,7 @@ const state = {
 };
 
 const TOAST_LIMIT = 4;
-const TOAST_TIMEOUT_MS = 4200;
+const TOAST_TIMEOUT_MS = 2500;
 let closeOpenPreviewDialog = null;
 let closeOpenCustomSelect = null;
 
@@ -50,6 +50,12 @@ function $(id) {
 
 function basename(value) {
   return String(value).split(/[\\/]/).pop();
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
 }
 
 function getSelectLabel(select) {
@@ -401,18 +407,10 @@ function createBrowserPreviewApi() {
       convertImagesToDds: () => previewOnly("图片转 DDS")
     },
     skin: {
-      autoDetect: async () => {
-        addActivity("浏览器预览", "自动检测 UserSkins 需要 Tauri 窗口。");
-        return null;
-      },
-      list: async () => [
-        { name: "sample_skin.blk", path: "sample_skin.blk", disabled: false, size: 2048 },
-        { name: "disabled_skin.blk.disabled", path: "disabled_skin.blk.disabled", disabled: true, size: 1024 }
-      ],
-      import: async () => ({ imported: 0 }),
-      toggle: async (filePath) => ({
-        path: filePath.endsWith(".disabled") ? filePath.slice(0, -9) : `${filePath}.disabled`
-      }),
+      autoDetect: async () => null,
+      list: async () => [],
+      import: async () => ({ imported: 0, errors: [] }),
+      toggle: async (filePath) => ({ path: filePath }),
       delete: async () => ({ deleted: true })
     },
     shell: {
@@ -452,9 +450,8 @@ function createTauriApi() {
       autoDetect: () => invoke("skin_auto_detect"),
       list: (directory) => invoke("skin_list", { directory }),
       import: (options) => invoke("skin_import", { options }),
-      importFiles: (options) => invoke("skin_import", { options }),
-      toggle: (filePath) => invoke("skin_toggle", { file_path: filePath }),
-      delete: (filePath) => invoke("skin_delete", { file_path: filePath })
+      toggle: (filePath) => invoke("skin_toggle", { filePath }),
+      delete: (filePath) => invoke("skin_delete", { filePath })
     },
     shell: {
       openPath
@@ -481,7 +478,7 @@ function addActivity(title, body, tone = "idle") {
     latest.dataset.activityCount = String(count);
     if (detail) detail.textContent = `${body} ×${count}`;
     window.clearTimeout(Number(latest.dataset.dismissTimer || "0"));
-    latest.dataset.dismissTimer = String(window.setTimeout(() => latest.remove(), TOAST_TIMEOUT_MS));
+    latest.dataset.dismissTimer = String(window.setTimeout(() => { latest.classList.add("removing"); setTimeout(() => latest.remove(), 250); }, TOAST_TIMEOUT_MS));
     return;
   }
 
@@ -493,18 +490,23 @@ function addActivity(title, body, tone = "idle") {
   heading.textContent = title;
   const detail = document.createElement("span");
   detail.textContent = body;
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "toast-dismiss";
-  dismiss.setAttribute("aria-label", "关闭通知");
-  dismiss.textContent = "×";
-  dismiss.addEventListener("click", () => item.remove());
+  const dismissBtn = document.createElement("button");
+  dismissBtn.type = "button";
+  dismissBtn.className = "toast-dismiss";
+  dismissBtn.setAttribute("aria-label", "关闭通知");
+  dismissBtn.textContent = "×";
+  const removeToast = () => {
+    item.classList.add("removing");
+    setTimeout(() => item.remove(), 250);
+  };
+  dismissBtn.addEventListener("click", removeToast);
   item.append(heading, detail);
-  item.appendChild(dismiss);
+  item.appendChild(dismissBtn);
   feed.prepend(item);
-  item.dataset.dismissTimer = String(window.setTimeout(() => item.remove(), TOAST_TIMEOUT_MS));
+  item.dataset.dismissTimer = String(window.setTimeout(removeToast, TOAST_TIMEOUT_MS));
   while (feed.children.length > TOAST_LIMIT) {
-    feed.lastElementChild?.remove();
+    const last = feed.lastElementChild;
+    if (last) { last.classList.add("removing"); setTimeout(() => last.remove(), 250); }
   }
 }
 
@@ -536,58 +538,82 @@ function syncPathChips() {
 }
 
 function renderSkinList(items) {
-  const list = $("skin-list");
-  if (!list) return;
-  list.innerHTML = "";
+  const grid = $("skin-grid");
+  const empty = $("skin-empty");
+  const banner = $("skin-banner");
+  const actionsBar = $("skin-actions");
+  if (!grid) return;
 
-  if (!items.length) {
-    const empty = document.createElement("li");
-    empty.className = "skin-card";
-    empty.innerHTML = '<div class="skin-meta"><strong>暂无涂装</strong><small>选择目录后会显示文件</small></div>';
-    list.appendChild(empty);
-    return;
-  }
+  grid.innerHTML = "";
+  const hasDir = Boolean($("skin-path")?.value);
 
-  for (const file of items) {
-    const item = document.createElement("li");
-    item.className = "skin-card";
+  if (banner) banner.classList.toggle("hidden", !hasDir);
+  if (empty) empty.classList.toggle("hidden", hasDir);
+  if (actionsBar) actionsBar.classList.toggle("hidden", !hasDir || !items.length);
+  if ($("skin-count")) $("skin-count").textContent = `${items.length} 个涂装`;
+  if ($("skin-dir-path")) $("skin-dir-path").textContent = $("skin-path")?.value || "未设置";
 
-    const meta = document.createElement("div");
-    meta.className = "skin-meta";
-    const title = document.createElement("strong");
-    title.textContent = file.name;
-    const info = document.createElement("small");
-    info.textContent = `${file.disabled ? "已禁用" : "已启用"} · ${Math.round(file.size / 1024)} KB`;
-    meta.append(title, info);
+  if (!hasDir || !items.length) return;
 
-    const actions = document.createElement("div");
-    actions.className = "skin-actions";
+  // Apply sort
+  const sortBy = $("skin-sort")?.value || "name-asc";
+  const sorted = [...items].sort((a, b) => {
+    switch (sortBy) {
+      case "name-desc": return b.name.localeCompare(a.name);
+      case "size-desc": return (b.fileCount || 0) - (a.fileCount || 0);
+      case "date-desc": return (b.modifiedAt || 0) - (a.modifiedAt || 0);
+      default: return a.name.localeCompare(b.name); // name-asc
+    }
+  });
 
-    const toggle = document.createElement("button");
-    toggle.textContent = file.disabled ? "启用" : "禁用";
-    toggle.addEventListener("click", async () => {
-      await api.skin.toggle(file.path);
+  for (const entry of sorted) {
+    const card = document.createElement("div");
+    card.className = "skin-card";
+
+    const name = document.createElement("span");
+    name.className = "skin-card-name";
+    name.textContent = entry.name.replace(/\.disabled$/, "");
+    name.title = entry.name;
+
+    const meta = document.createElement("span");
+    meta.className = "skin-card-meta";
+    meta.textContent = formatSize(entry.fileCount);
+
+    const toggle = document.createElement("label");
+    toggle.className = "toggle-label";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !entry.disabled;
+    cb.addEventListener("change", async () => {
+      await api.skin.toggle(entry.path);
+      addActivity(cb.checked ? "已启用" : "已禁用", entry.name.replace(/\.disabled$/, ""), "success");
       await refreshSkins();
     });
+    const track = document.createElement("span");
+    track.className = "toggle-track";
+    const thumb = document.createElement("span");
+    thumb.className = "toggle-thumb";
+    track.appendChild(thumb);
+    toggle.append(cb, track);
 
-    const open = document.createElement("button");
-    open.textContent = "打开";
-    open.addEventListener("click", () => api.shell.openPath(file.path));
-
-    const remove = document.createElement("button");
-    remove.textContent = "删除";
-    remove.className = "danger";
-    remove.addEventListener("click", async () => {
-      const confirmed = await openPreviewConfirm("删除涂装", `删除 ${file.name}？`);
+    const del = document.createElement("button");
+    del.className = "skin-delete danger";
+    del.textContent = "删除";
+    del.addEventListener("click", async () => {
+      const confirmed = await openPreviewConfirm("删除涂装", `确定删除 ${entry.name.replace(/\.disabled$/, "")}？`);
       if (!confirmed) return;
-      await api.skin.delete(file.path);
-      addActivity("已删除涂装", file.name, "success");
-      await refreshSkins();
+      try {
+        await api.skin.delete(entry.path);
+        addActivity("已删除", entry.name.replace(/\.disabled$/, ""), "success");
+        await refreshSkins();
+      } catch (e) {
+        addActivity("删除失败", e.message || String(e), "error");
+      }
     });
 
-    actions.append(toggle, open, remove);
-    item.append(meta, actions);
-    list.appendChild(item);
+    card.append(name, meta, toggle, del);
+
+    grid.appendChild(card);
   }
 }
 
@@ -686,7 +712,6 @@ function updateRunButtons(mode) {
   const active = $(mapping[mode]);
   if (active) active.classList.remove("hidden");
 
-  $("auto-detect-skins")?.classList.toggle("hidden", mode !== "skins");
   $("clear-split-files")?.classList.toggle("hidden", mode !== "split");
   $("clear-image-files")?.classList.toggle("hidden", mode !== "image-dds");
   $("import-skins")?.classList.toggle("hidden", mode !== "skins");
@@ -710,8 +735,7 @@ function updateInspector() {
     "split-output": state.activeMode === "split",
     "mipmap-input": state.activeMode === "mipmap",
     "mipmap-output": state.activeMode === "mipmap",
-    "image-output": state.activeMode === "image-dds",
-    "skin-path": state.activeMode === "skins"
+    "image-output": state.activeMode === "image-dds"
   };
 
   for (const [id, visible] of Object.entries(fieldVisibility)) {
@@ -773,14 +797,8 @@ function updateStatus() {
     }
   })();
 
-  setText("status-mode", modeMeta[mode][0]);
-  setText("status-input", inputText);
-  setText("status-output", outputText);
-  setText("status-ready", ready ? "可运行" : "等待配置");
-  setText("current-task", modeMeta[mode][0]);
-  setText("view-title", modeMeta[mode][0]);
-  setText("view-subtitle", modeMeta[mode][1]);
-  setText("inspector-mode", modeMeta[mode][0]);
+  setText("current-task", modeMeta[mode]);
+  setText("inspector-mode", modeMeta[mode]);
   setText("runtime-badge", isTauriRuntime ? "Tauri" : "Browser Preview");
 }
 
@@ -834,13 +852,12 @@ function applyMode(mode) {
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === `view-${mode}`);
   });
-  // Settings mode: hide status strip, inspector; expand to full width
-  const statusStrip = document.querySelector(".status-strip");
-  if (statusStrip) statusStrip.classList.toggle("hidden", mode === "settings");
+  // Settings & skins mode: hide inspector; expand to full width
+  const isFull = mode === "settings" || mode === "skins";
   const workspace = document.querySelector(".workspace");
-  if (workspace) workspace.classList.toggle("full-width", mode === "settings");
+  if (workspace) workspace.classList.toggle("full-width", isFull);
   const inspector = document.querySelector(".inspector");
-  if (inspector) inspector.classList.toggle("hidden", mode === "settings");
+  if (inspector) inspector.classList.toggle("hidden", isFull);
   if (mode === "settings") syncSettingsView();
   updateRunButtons(mode);
   updateInspector();
@@ -1052,7 +1069,7 @@ function bindRunActions() {
 }
 
 function bindSkinActions() {
-  $("auto-detect-skins")?.addEventListener("click", async () => {
+  $("skin-auto-detect")?.addEventListener("click", async () => {
     const found = await api.skin.autoDetect();
     if (found) {
       $("skin-path").value = found;
@@ -1060,19 +1077,27 @@ function bindSkinActions() {
       await refreshSkins();
     } else {
       addActivity("未检测到目录", "未检测到 War Thunder UserSkins 目录。", "error");
-      if (!isTauriRuntime) {
-        await openPreviewMessage("浏览器预览", "自动检测 UserSkins 需要 Tauri 窗口。");
-      }
     }
   });
 
-  $("refresh-skins")?.addEventListener("click", () => refreshSkins({ notify: true }));
+  $("skin-dir-pick")?.addEventListener("click", async () => {
+    const dir = await api.dialog.selectDirectory();
+    if (!dir) return;
+    $("skin-path").value = dir;
+    await saveSettings();
+    await refreshSkins();
+  });
 
-  $("import-skins")?.addEventListener("click", async () => {
-    const files = await api.dialog.selectFiles();
-    if (!files.length) return;
-    await api.skin.import({ files, targetDirectory: $("skin-path").value });
-    await refreshSkins({ notify: true });
+  $("skin-import-btn")?.addEventListener("click", async () => {
+    const sources = await api.dialog.selectFiles();
+    if (!sources.length) return;
+    const result = await api.skin.import({ sources, targetDirectory: $("skin-path").value });
+    addActivity("导入完成", `已导入 ${result.imported} 个涂装`, "success");
+    await refreshSkins();
+  });
+
+  $("skin-sort")?.addEventListener("change", () => {
+    refreshSkins();
   });
 }
 
@@ -1081,32 +1106,17 @@ async function refreshSkins({ notify = false } = {}) {
   if (!directory) {
     renderSkinList([]);
     updateStatus();
-    if (notify) {
-      addActivity("涂装列表", "请选择 UserSkins 目录后刷新。");
-    }
     return;
   }
 
   try {
-    const files = await api.skin.list(directory);
-    renderSkinList(files);
-    if (notify) {
-      addActivity("涂装列表已刷新", `${files.length} 个文件`, "success");
-    }
+    const entries = await api.skin.list(directory);
+    renderSkinList(entries);
+    if (notify) addActivity("已刷新", `${entries.length} 个涂装`, "success");
   } catch (error) {
-    const list = $("skin-list");
-    if (list) {
-      list.innerHTML = "";
-      const item = document.createElement("li");
-      item.className = "skin-card";
-      item.textContent = `读取失败：${error.message || error}`;
-      list.appendChild(item);
-    }
-    if (notify) {
-      addActivity("读取失败", error.message || String(error), "error");
-    }
+    $("skin-grid").innerHTML = "";
+    addActivity("读取失败", error.message || String(error), "error");
   }
-
   updateStatus();
 }
 

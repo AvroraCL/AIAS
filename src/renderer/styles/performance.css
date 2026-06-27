@@ -3,7 +3,7 @@
 }
 
 .app-shell {
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .activity-panel {
@@ -16,7 +16,6 @@ button, input, select, textarea,
   transition-property: color, background-color, border-color, box-shadow, transform, opacity;
 }
 
-.status-strip > div,
 .mode-view.active, .file-chip, .activity-item, .skin-card {
   animation: none;
 }
@@ -124,6 +123,16 @@ button, input, select, textarea,
   pointer-events: none;
 }
 
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(20px); }
+}
+
 .toast-item {
   position: relative;
   display: grid;
@@ -137,6 +146,11 @@ button, input, select, textarea,
   background: var(--surface-raised);
   box-shadow: var(--shadow-lg);
   pointer-events: auto;
+  animation: toast-in .3s cubic-bezier(.25,.8,.25,1) both;
+}
+
+.toast-item.removing {
+  animation: toast-out .25s ease forwards;
 }
 
 .toast-item.success {

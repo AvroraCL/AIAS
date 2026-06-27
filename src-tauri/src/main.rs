@@ -125,24 +125,25 @@ struct ConvertImagesOptions {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SkinFile {
+struct SkinEntry {
   name: String,
   path: String,
   disabled: bool,
-  size: u64,
+  file_count: u64,
   modified_at: u128,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportSkinOptions {
-  files: Vec<String>,
+  sources: Vec<String>,
   target_directory: String,
 }
 
 #[derive(Debug, Serialize)]
 struct ImportSkinResult {
   imported: usize,
+  errors: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -486,14 +487,29 @@ fn skin_auto_detect() -> Result<Option<String>, String> {
   Ok(None)
 }
 
+fn dir_size(path: &Path) -> u64 {
+  let mut size = 0;
+  if let Ok(entries) = fs::read_dir(path) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        size += dir_size(&path);
+      } else if let Ok(meta) = entry.metadata() {
+        size += meta.len();
+      }
+    }
+  }
+  size
+}
+
 #[tauri::command]
-fn skin_list(directory: String) -> Result<Vec<SkinFile>, String> {
+fn skin_list(directory: String) -> Result<Vec<SkinEntry>, String> {
   require_directory(&directory, "涂装目录")?;
   let mut items = Vec::new();
   for entry in fs::read_dir(directory).map_err(to_string_error)? {
     let entry = entry.map_err(to_string_error)?;
     let metadata = entry.metadata().map_err(to_string_error)?;
-    if !metadata.is_file() {
+    if !metadata.is_dir() {
       continue;
     }
     let name = entry.file_name().to_string_lossy().to_string();
@@ -503,11 +519,11 @@ fn skin_list(directory: String) -> Result<Vec<SkinFile>, String> {
       .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
       .map(|duration| duration.as_millis())
       .unwrap_or_default();
-    items.push(SkinFile {
+    items.push(SkinEntry {
       disabled: name.ends_with(".disabled"),
       name,
       path: path_to_string(entry.path()),
-      size: metadata.len(),
+      file_count: dir_size(&entry.path()),
       modified_at,
     });
   }
@@ -515,22 +531,43 @@ fn skin_list(directory: String) -> Result<Vec<SkinFile>, String> {
   Ok(items)
 }
 
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+  fs::create_dir_all(dst).map_err(to_string_error)?;
+  for entry in fs::read_dir(src).map_err(to_string_error)? {
+    let entry = entry.map_err(to_string_error)?;
+    let target = dst.join(entry.file_name());
+    if entry.file_type().map_err(to_string_error)?.is_dir() {
+      copy_dir_recursive(&entry.path(), &target)?;
+    } else {
+      fs::copy(entry.path(), &target).map_err(to_string_error)?;
+    }
+  }
+  Ok(())
+}
+
 #[tauri::command]
 fn skin_import(options: ImportSkinOptions) -> Result<ImportSkinResult, String> {
   require_directory(&options.target_directory, "涂装目录")?;
   let mut imported = 0;
-  for file in options.files {
-    let source = Path::new(&file);
-    if !source.is_file() {
-      continue;
-    }
+  let mut errors = Vec::new();
+  for source_path in &options.sources {
+    let source = Path::new(source_path);
     let Some(name) = source.file_name() else {
+      errors.push(format!("无效路径: {source_path}"));
       continue;
     };
-    fs::copy(source, Path::new(&options.target_directory).join(name)).map_err(to_string_error)?;
-    imported += 1;
+    let target = Path::new(&options.target_directory).join(name);
+    if source.is_dir() {
+      match copy_dir_recursive(source, &target) {
+        Ok(()) => imported += 1,
+        Err(e) => errors.push(format!("{name:?}: {e}")),
+      }
+    } else if source.is_file() {
+      fs::copy(source, &target).map_err(to_string_error)?;
+      imported += 1;
+    }
   }
-  Ok(ImportSkinResult { imported })
+  Ok(ImportSkinResult { imported, errors })
 }
 
 #[tauri::command]
@@ -553,10 +590,22 @@ fn skin_toggle(file_path: String) -> Result<PathResult, String> {
 #[tauri::command]
 fn skin_delete(file_path: String) -> Result<DeleteResult, String> {
   let source = Path::new(&file_path);
+  eprintln!("skin_delete called with: {file_path}");
   if !source.exists() {
+    eprintln!("skin_delete: path does not exist");
     return Ok(DeleteResult { deleted: false });
   }
-  fs::remove_file(source).map_err(to_string_error)?;
+  if source.is_dir() {
+    eprintln!("skin_delete: removing directory");
+    fs::remove_dir_all(source).map_err(|e| {
+      let msg = format!("删除目录失败: {e}");
+      eprintln!("{msg}");
+      msg
+    })?;
+  } else {
+    eprintln!("skin_delete: removing file");
+    fs::remove_file(source).map_err(to_string_error)?;
+  }
   Ok(DeleteResult { deleted: true })
 }
 
