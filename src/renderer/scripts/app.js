@@ -570,20 +570,15 @@ function renderSkinList(items) {
     const card = document.createElement("div");
     card.className = "skin-card";
 
-    // Name
     const name = document.createElement("span");
     name.className = "skin-card-name";
     name.textContent = entry.name.replace(/\.disabled$/, "");
     name.title = entry.name;
-    card.appendChild(name);
 
-    // File count
     const meta = document.createElement("span");
     meta.className = "skin-card-meta";
     meta.textContent = formatSize(entry.fileCount);
-    card.appendChild(meta);
 
-    // Toggle
     const toggle = document.createElement("label");
     toggle.className = "toggle-label";
     const cb = document.createElement("input");
@@ -600,9 +595,7 @@ function renderSkinList(items) {
     thumb.className = "toggle-thumb";
     track.appendChild(thumb);
     toggle.append(cb, track);
-    card.appendChild(toggle);
 
-    // Delete
     const del = document.createElement("button");
     del.className = "skin-delete danger";
     del.textContent = "删除";
@@ -617,7 +610,8 @@ function renderSkinList(items) {
         addActivity("删除失败", e.message || String(e), "error");
       }
     });
-    card.appendChild(del);
+
+    card.append(name, meta, toggle, del);
 
     grid.appendChild(card);
   }
