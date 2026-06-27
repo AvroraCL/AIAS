@@ -712,6 +712,18 @@ label {
   transition: all var(--transition-fast);
 }
 
+.skin-card .skin-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skin-card .spacer {
+  flex: 1;
+}
+
 .skin-card:hover {
   border-color: var(--border-hover);
   background: var(--surface-raised);
