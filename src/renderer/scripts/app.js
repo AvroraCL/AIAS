@@ -3,6 +3,33 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  createIcons,
+  Layers3,
+  Split,
+  GalleryVerticalEnd,
+  Image,
+  Images,
+  Shirt,
+  Settings2,
+  History,
+  Bell,
+  FolderInput,
+  FileStack,
+  Search,
+  FolderOpen,
+  HardDrive,
+  Upload,
+  RefreshCw,
+  Database,
+  RotateCcw,
+  Info,
+  ExternalLink,
+  ChevronDown,
+  Trash2,
+  Play,
+  X
+} from "lucide";
 
 const defaults = {
   autoUpdate: false,
@@ -24,19 +51,48 @@ const defaults = {
 };
 
 const modeMeta = {
-  merge: "PBR 多通道合成",
-  split: "PBR 多通道拆分",
-  mipmap: "Mipmap 生成",
-  "image-dds": "图片转 DDS",
-  skins: "涂装管理",
-  settings: "设置"
+  merge: { title: "PBR 多通道合成", description: "生成游戏可用的 _c 与 _n 通道贴图" },
+  split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },
+  mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
+  "image-dds": { title: "图片转 DDS", description: "批量转换图片并统一 DDS 压缩格式" },
+  skins: { title: "涂装管理", description: "管理 War Thunder UserSkins 资源" },
+  settings: { title: "应用设置", description: "更新、数据路径与版本信息" }
 };
 
 const state = {
   settings: {},
   splitFiles: [],
   imageFiles: [],
-  activeMode: "merge"
+  activeMode: "merge",
+  activityCount: 0,
+  lastOutputPath: ""
+};
+
+const iconSet = {
+  Layers3,
+  Split,
+  GalleryVerticalEnd,
+  Image,
+  Images,
+  Shirt,
+  Settings2,
+  History,
+  Bell,
+  FolderInput,
+  FileStack,
+  Search,
+  FolderOpen,
+  HardDrive,
+  Upload,
+  RefreshCw,
+  Database,
+  RotateCcw,
+  Info,
+  ExternalLink,
+  ChevronDown,
+  Trash2,
+  Play,
+  X
 };
 
 const TOAST_LIMIT = 4;
@@ -48,14 +104,64 @@ function $(id) {
   return document.getElementById(id);
 }
 
+function refreshIcons(root = document) {
+  createIcons({
+    icons: iconSet,
+    attrs: { "aria-hidden": "true" },
+    nameAttr: "data-lucide",
+    root
+  });
+}
+
 function basename(value) {
   return String(value).split(/[\\/]/).pop();
+}
+
+function compactPath(value, fallback) {
+  if (!value) return fallback;
+  return basename(value) || value;
+}
+
+function getModeOutputPath(mode = state.activeMode) {
+  const fieldByMode = {
+    merge: "pbr-output",
+    split: "split-output",
+    mipmap: "mipmap-output",
+    "image-dds": "image-output",
+    skins: "skin-path"
+  };
+  return $(fieldByMode[mode])?.value || "";
+}
+
+function getModeFormat(mode = state.activeMode) {
+  switch (mode) {
+    case "merge":
+      return getSelectLabel($("pbr-format"));
+    case "split":
+      return getSelectLabel($("split-format"));
+    case "mipmap":
+      return getSelectLabel($("mipmap-format"));
+    case "image-dds":
+      return getSelectLabel($("image-format"));
+    case "skins":
+      return "UserSkins";
+    default:
+      return "应用配置";
+  }
 }
 
 function formatSize(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+function formatDate(timestamp) {
+  if (!timestamp) return "未知日期";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(timestamp));
 }
 
 function getSelectLabel(select) {
@@ -390,6 +496,14 @@ function createBrowserPreviewApi() {
         });
         return value || null;
       },
+      selectDirectories: async () => {
+        const value = await openPreviewPicker({
+          title: "输入用于预览的涂装文件夹，多项用逗号分隔",
+          defaultValue: "F:\\WarThunder\\UserSkins\\sample",
+          multiline: true
+        });
+        return value ? value.split(",").map((item) => item.trim()).filter(Boolean) : [];
+      },
       selectFiles: async () => {
         const value = await openPreviewPicker({
           title: "输入用于预览的文件名，多个文件用逗号分隔",
@@ -430,6 +544,11 @@ function createTauriApi() {
         const selected = await open({ directory: true, multiple: false });
         return Array.isArray(selected) ? selected[0] || null : selected;
       },
+      selectDirectories: async () => {
+        const selected = await open({ directory: true, multiple: true });
+        if (!selected) return [];
+        return Array.isArray(selected) ? selected : [selected];
+      },
       selectFiles: async (options = {}) => {
         const selected = await open({
           multiple: true,
@@ -467,7 +586,34 @@ function setText(id, value) {
   if (el) el.textContent = value;
 }
 
+function appendActivityHistory(title, body, tone) {
+  const feed = $("activity-feed");
+  if (!feed) return;
+
+  if (state.activityCount === 0) feed.innerHTML = "";
+
+  const item = document.createElement("article");
+  item.className = `activity-item ${tone}`;
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const detail = document.createElement("span");
+  detail.textContent = body;
+  const time = document.createElement("time");
+  time.textContent = new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date());
+  item.append(heading, detail, time);
+  feed.prepend(item);
+
+  while (feed.children.length > 40) feed.lastElementChild?.remove();
+  state.activityCount += 1;
+  setText("activity-count", String(state.activityCount));
+  setText("activity-summary", `${state.activityCount} 条记录`);
+}
+
 function addActivity(title, body, tone = "idle") {
+  appendActivityHistory(title, body, tone);
   const feed = $("toast-region");
   if (!feed) return;
   const key = `${tone}\u0000${title}\u0000${body}`;
@@ -510,14 +656,61 @@ function addActivity(title, body, tone = "idle") {
   }
 }
 
+function setActivityPanel(open) {
+  const panel = $("activity-panel");
+  if (!panel) return;
+  panel.classList.toggle("collapsed", !open);
+  $("activity-toggle")?.setAttribute("aria-expanded", String(open));
+}
+
+function syncActiveLog(mode = state.activeMode) {
+  const logByMode = {
+    merge: "merge-log",
+    split: "split-log",
+    mipmap: "mipmap-log",
+    "image-dds": "image-log"
+  };
+  document.querySelectorAll(".task-log").forEach((log) => {
+    log.classList.toggle("active", log.id === logByMode[mode]);
+  });
+}
+
+const selectionCountIds = {
+  "merge-chip-list": "merge-selection-count",
+  "split-file-list": "split-selection-count",
+  "mipmap-chip-list": "mipmap-selection-count",
+  "image-file-list": "image-selection-count"
+};
+
+async function removeSelection(containerId, file) {
+  if (containerId === "split-file-list") {
+    state.splitFiles = state.splitFiles.filter((item) => item !== file);
+    renderChips(containerId, state.splitFiles);
+  } else if (containerId === "image-file-list") {
+    state.imageFiles = state.imageFiles.filter((item) => item !== file);
+    renderChips(containerId, state.imageFiles);
+  } else if (containerId === "merge-chip-list") {
+    $("pbr-input").value = "";
+    renderChips(containerId, []);
+    await saveSettings();
+  } else if (containerId === "mipmap-chip-list") {
+    $("mipmap-input").value = "";
+    renderChips(containerId, []);
+    await saveSettings();
+  }
+  updateStatus();
+}
+
 function renderChips(containerId, files) {
   const container = $(containerId);
   if (!container) return;
   container.innerHTML = "";
+  setText(selectionCountIds[containerId], `${files.length} 项`);
+
   if (!files.length) {
     const empty = document.createElement("div");
-    empty.className = "file-chip";
-    empty.innerHTML = "<strong>暂无文件</strong><small>拖入或选择文件后会显示在这里</small>";
+    empty.className = "file-chip empty-chip";
+    empty.innerHTML = "<strong>暂无选择</strong>";
     container.appendChild(empty);
     return;
   }
@@ -525,11 +718,29 @@ function renderChips(containerId, files) {
   for (const file of files) {
     const chip = document.createElement("div");
     chip.className = "file-chip";
+    chip.title = file;
+    const copy = document.createElement("div");
     const name = document.createElement("strong");
     name.textContent = basename(file);
-    chip.appendChild(name);
+    const path = document.createElement("small");
+    path.textContent = file;
+    copy.append(name, path);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chip-remove";
+    remove.title = `移除 ${basename(file)}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.innerHTML = '<i data-lucide="x"></i>';
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      removeSelection(containerId, file);
+    });
+
+    chip.append(copy, remove);
     container.appendChild(chip);
   }
+  refreshIcons(container);
 }
 
 function syncPathChips() {
@@ -548,10 +759,13 @@ function renderSkinList(items) {
   const hasDir = Boolean($("skin-path")?.value);
 
   if (banner) banner.classList.toggle("hidden", !hasDir);
-  if (empty) empty.classList.toggle("hidden", hasDir);
-  if (actionsBar) actionsBar.classList.toggle("hidden", !hasDir || !items.length);
+  if (empty) empty.classList.toggle("hidden", items.length > 0);
+  if (actionsBar) actionsBar.classList.toggle("hidden", !hasDir);
   if ($("skin-count")) $("skin-count").textContent = `${items.length} 个涂装`;
   if ($("skin-dir-path")) $("skin-dir-path").textContent = $("skin-path")?.value || "未设置";
+
+  setText("skin-empty-title", hasDir ? "目录中暂无涂装" : "尚未连接 UserSkins 目录");
+  setText("skin-empty-description", hasDir ? "导入涂装文件夹后会显示在这里" : "选择目录后即可管理涂装");
 
   if (!hasDir || !items.length) return;
 
@@ -577,13 +791,14 @@ function renderSkinList(items) {
 
     const meta = document.createElement("span");
     meta.className = "skin-card-meta";
-    meta.textContent = formatSize(entry.fileCount);
+    meta.textContent = `${formatSize(entry.fileCount)} · ${formatDate(entry.modifiedAt)}`;
 
     const toggle = document.createElement("label");
     toggle.className = "toggle-label";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = !entry.disabled;
+    cb.setAttribute("aria-label", `${cb.checked ? "禁用" : "启用"} ${name.textContent}`);
     cb.addEventListener("change", async () => {
       await api.skin.toggle(entry.path);
       addActivity(cb.checked ? "已启用" : "已禁用", entry.name.replace(/\.disabled$/, ""), "success");
@@ -598,7 +813,10 @@ function renderSkinList(items) {
 
     const del = document.createElement("button");
     del.className = "skin-delete danger";
-    del.textContent = "删除";
+    del.type = "button";
+    del.title = `删除 ${name.textContent}`;
+    del.setAttribute("aria-label", del.title);
+    del.innerHTML = '<i data-lucide="trash-2"></i>';
     del.addEventListener("click", async () => {
       const confirmed = await openPreviewConfirm("删除涂装", `确定删除 ${entry.name.replace(/\.disabled$/, "")}？`);
       if (!confirmed) return;
@@ -615,18 +833,24 @@ function renderSkinList(items) {
 
     grid.appendChild(card);
   }
+  refreshIcons(grid);
 }
 
 function setBusy(button, busy) {
   if (!button) return;
+  const label = button.querySelector("span") || button;
+  button.dataset.busy = String(busy);
+  button.dataset.originalText ||= label.textContent;
+  label.textContent = busy ? "处理中..." : button.dataset.originalText;
+  button.classList.toggle("busy", busy);
   button.disabled = busy;
-  button.dataset.originalText ||= button.textContent;
-  button.textContent = busy ? "处理中..." : button.dataset.originalText;
 }
 
 async function withLog(logId, button, action, title) {
   const log = $(logId);
   if (log) log.textContent = "";
+  setActivityPanel(true);
+  setText("activity-summary", `${title}运行中`);
   setBusy(button, true);
   try {
     const result = await action();
@@ -635,11 +859,14 @@ async function withLog(logId, button, action, title) {
     }
     if (log) log.textContent += `完成：${result.completed} / ${result.total}`;
     addActivity(title || "任务完成", `${result.completed} / ${result.total}`, "success");
+    state.lastOutputPath = getModeOutputPath();
+    $("open-current-output")?.classList.toggle("hidden", !state.lastOutputPath);
   } catch (error) {
     if (log) log.textContent += `失败：${error.message || error}`;
     addActivity(title || "任务失败", error.message || String(error), "error");
   } finally {
     setBusy(button, false);
+    updateStatus();
   }
 }
 
@@ -693,11 +920,13 @@ function applySettingsToForm() {
   syncPathChips();
 }
 
-async function saveSettings() {
+async function saveSettings({ notify = false } = {}) {
   state.settings = await api.settings.set(collectSettings());
   updateStatus();
   syncPathChips();
-  addActivity("配置已保存", isTauriRuntime ? "设置已写入本地配置。" : "设置已保存到浏览器预览存储。", "success");
+  if (notify) {
+    addActivity("配置已保存", isTauriRuntime ? "设置已写入本地配置。" : "设置已保存到浏览器预览存储。", "success");
+  }
 }
 
 function updateRunButtons(mode) {
@@ -746,60 +975,58 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const ready = (() => {
-    switch (mode) {
-      case "merge":
-        return Boolean($("pbr-input")?.value && $("pbr-output")?.value);
-      case "split":
-        return Boolean($("split-output")?.value && state.splitFiles.length);
-      case "mipmap":
-        return Boolean($("mipmap-input")?.value && $("mipmap-output")?.value);
-      case "image-dds":
-        return Boolean($("image-output")?.value && state.imageFiles.length);
-      case "skins":
-        return Boolean($("skin-path")?.value);
-      default:
-        return false;
-    }
-  })();
+  const runnableModes = ["merge", "split", "mipmap", "image-dds"];
+  const blocker = getRunBlocker(mode);
+  const ready = runnableModes.includes(mode) && !blocker;
 
   const inputText = (() => {
     switch (mode) {
       case "merge":
-        return $("pbr-input")?.value || "未选择";
+        return compactPath($("pbr-input")?.value, "未选择");
       case "split":
         return `${state.splitFiles.length} 个 DDS`;
       case "mipmap":
-        return $("mipmap-input")?.value || "未选择";
+        return compactPath($("mipmap-input")?.value, "未选择");
       case "image-dds":
         return `${state.imageFiles.length} 张图片`;
       case "skins":
-        return $("skin-path")?.value || "未选择";
+        return compactPath($("skin-path")?.value, "未选择");
+      case "settings":
+        return "本地配置";
       default:
         return "未选择";
     }
   })();
 
-  const outputText = (() => {
-    switch (mode) {
-      case "merge":
-        return $("pbr-output")?.value || "未就绪";
-      case "split":
-        return $("split-output")?.value || "未就绪";
-      case "mipmap":
-        return $("mipmap-output")?.value || "未就绪";
-      case "image-dds":
-        return $("image-output")?.value || "未就绪";
-      case "skins":
-        return $("skin-path")?.value || "未就绪";
-      default:
-        return "未就绪";
-    }
-  })();
+  const outputPath = getModeOutputPath(mode);
+  const outputText = mode === "settings" ? "自动保存" : compactPath(outputPath, "未就绪");
+  const meta = modeMeta[mode] || modeMeta.merge;
 
-  setText("current-task", modeMeta[mode]);
-  setText("inspector-mode", modeMeta[mode]);
-  setText("runtime-badge", isTauriRuntime ? "Tauri" : "Browser Preview");
+  setText("current-task", meta.title);
+  setText("current-description", meta.description);
+  setText("inspector-mode", meta.title.replace("多通道", ""));
+  setText("runtime-badge", isTauriRuntime ? "Tauri Runtime" : "Browser Preview");
+  setText("status-input", inputText);
+  setText("status-output", outputText);
+  setText("status-format", getModeFormat(mode));
+  setText("run-readiness", ready ? "已就绪" : "待配置");
+  setText("run-hint", ready ? "配置完成，可开始运行" : blocker || "当前模式无需运行");
+
+  $("run-readiness")?.classList.toggle("ready", ready);
+  $("run-hint")?.classList.toggle("ready", ready);
+
+  const runButtonByMode = {
+    merge: "run-merge",
+    split: "run-split",
+    mipmap: "run-mipmap",
+    "image-dds": "run-image-dds"
+  };
+  const activeRunButton = $(runButtonByMode[mode]);
+  if (activeRunButton && activeRunButton.dataset.busy !== "true") {
+    activeRunButton.disabled = !ready;
+  }
+
+  $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnableModes.includes(mode));
 }
 
 function getRunBlocker(mode) {
@@ -832,22 +1059,13 @@ function reportRunBlocker(message) {
   }
 }
 
-function moveModeIndicator(tab) {
-  const track = $("modeTabsTrack");
-  const indicator = $("modeTabsIndicator");
-  if (!track || !indicator) return;
-  const tr = track.getBoundingClientRect();
-  const tr2 = tab.getBoundingClientRect();
-  indicator.style.left = (tr2.left - tr.left) + "px";
-  indicator.style.width = tr2.width + "px";
-}
-
 function applyMode(mode) {
   closeCustomSelect();
   state.activeMode = mode;
+  localStorage.setItem("aias-active-mode", mode);
   document.querySelectorAll(".mode-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === mode);
-    if (button.dataset.view === mode) moveModeIndicator(button);
+    button.setAttribute("aria-current", button.dataset.view === mode ? "page" : "false");
   });
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === `view-${mode}`);
@@ -859,6 +1077,7 @@ function applyMode(mode) {
   const inspector = document.querySelector(".inspector");
   if (inspector) inspector.classList.toggle("hidden", isFull);
   if (mode === "settings") syncSettingsView();
+  syncActiveLog(mode);
   updateRunButtons(mode);
   updateInspector();
   updateStatus();
@@ -866,6 +1085,7 @@ function applyMode(mode) {
 
 function bindTabs() {
   document.querySelectorAll(".mode-tab").forEach((button) => {
+    button.title = button.textContent.trim();
     button.addEventListener("click", () => applyMode(button.dataset.view));
   });
 }
@@ -873,6 +1093,52 @@ function bindTabs() {
 function bindInspectorGroups() {
   document.querySelectorAll(".group-toggle").forEach((button) => {
     button.setAttribute("aria-expanded", "true");
+    button.addEventListener("click", () => {
+      const expanded = button.getAttribute("aria-expanded") !== "false";
+      button.setAttribute("aria-expanded", String(!expanded));
+    });
+  });
+}
+
+function bindWorkspaceActions() {
+  $("activity-toggle")?.addEventListener("click", () => {
+    const open = $("activity-panel")?.classList.contains("collapsed") ?? true;
+    setActivityPanel(open);
+  });
+  $("activity-close")?.addEventListener("click", () => setActivityPanel(false));
+  $("clear-activity")?.addEventListener("click", () => {
+    const feed = $("activity-feed");
+    if (feed) {
+      feed.innerHTML = '<article class="activity-item idle"><strong>暂无记录</strong><span>新的任务会显示在这里</span></article>';
+    }
+    document.querySelectorAll(".task-log").forEach((log) => { log.textContent = ""; });
+    state.activityCount = 0;
+    setText("activity-count", "0");
+    setText("activity-summary", "暂无任务");
+  });
+  $("open-current-output")?.addEventListener("click", async () => {
+    const outputPath = getModeOutputPath();
+    if (!outputPath) return;
+    try {
+      await api.shell.openPath(outputPath);
+    } catch (error) {
+      addActivity("无法打开目录", error.message || String(error), "error");
+    }
+  });
+
+  document.querySelectorAll(".inspector select, .inspector input[type='checkbox']").forEach((control) => {
+    control.addEventListener("change", () => {
+      updateStatus();
+      saveSettings();
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.key !== "Enter") return;
+    const activeButton = document.querySelector(".run-button:not(.hidden)");
+    if (!activeButton || activeButton.disabled) return;
+    event.preventDefault();
+    activeButton.click();
   });
 }
 
@@ -938,6 +1204,7 @@ function bindDropZones() {
         await refreshSkins();
       }
     });
+    if (button.tagName === "BUTTON") return;
     button.addEventListener("keydown", async (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -1089,7 +1356,7 @@ function bindSkinActions() {
   });
 
   $("skin-import-btn")?.addEventListener("click", async () => {
-    const sources = await api.dialog.selectFiles();
+    const sources = await api.dialog.selectDirectories();
     if (!sources.length) return;
     const result = await api.skin.import({ sources, targetDirectory: $("skin-path").value });
     addActivity("导入完成", `已导入 ${result.imported} 个涂装`, "success");
@@ -1124,7 +1391,7 @@ async function checkForUpdates(silent = true) {
   try {
     const update = await check();
     if (!update) {
-      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.0.0"), "success");
+      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.0.1"), "success");
       return;
     }
     $("update-button")?.classList.remove("hidden");
@@ -1194,10 +1461,12 @@ function bindDragDrop() {
 
 async function init() {
   state.settings = await api.settings.get();
+  refreshIcons();
   enhanceSelectMenus();
   applySettingsToForm();
   bindTabs();
   bindInspectorGroups();
+  bindWorkspaceActions();
   bindDropZones();
   bindDragDrop();
   bindFileControls();
@@ -1206,19 +1475,14 @@ async function init() {
   bindSettingsActions();
   $("update-button")?.addEventListener("click", () => checkForUpdates(false));
 
-  applyMode("merge");
-  // Init tab indicator position
-  setTimeout(() => {
-    const activeTab = document.querySelector(".mode-tab.active");
-    if (activeTab) moveModeIndicator(activeTab);
-  }, 50);
   renderChips("merge-chip-list", []);
   renderChips("split-file-list", []);
   renderChips("mipmap-chip-list", []);
   renderChips("image-file-list", []);
   await refreshSkins();
   syncPathChips();
-  updateStatus();
+  const savedMode = localStorage.getItem("aias-active-mode");
+  applyMode(modeMeta[savedMode] ? savedMode : "merge");
 
   // Check for updates silently on startup
   if (isTauriRuntime) setTimeout(() => checkForUpdates(true), 2000);

@@ -13,7 +13,6 @@ This version uses Tauri 2.x for the desktop shell and a native HTML/CSS/JavaScri
 - Rust toolchain for Tauri 2.x (`rustc` and `cargo`)
 - Microsoft Visual Studio Build Tools with the Desktop development with C++ workload
 - Microsoft Edge WebView2 Runtime
-- `tools/texconv.exe`
 
 ## Install
 
@@ -75,8 +74,6 @@ AIAS/
     build.rs
     capabilities/default.json
     src/main.rs
-  tools/
-    texconv.exe
   package.json
   vite.config.js
 ```
@@ -85,4 +82,4 @@ AIAS/
 
 - UI is native HTML/CSS/JavaScript. No TypeScript and no heavy frontend framework.
 - Desktop APIs use Tauri commands and official Tauri plugins.
-- DDS encoding and decoding use the bundled DirectXTex `texconv.exe`.
+- DDS encoding, decoding, and mipmap generation run inside the Rust application. No external texture tools are required at runtime.
