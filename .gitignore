@@ -20,6 +20,8 @@ yarn-error.log*
 
 # IDE
 .idea/
+.vscode/
+.kilo/
 
 # Build output
 build/
