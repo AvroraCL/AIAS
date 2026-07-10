@@ -269,22 +269,6 @@ textarea:focus { border-color: var(--accent); }
   place-items: center;
 }
 
-.workflow-status {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) 1px minmax(120px, 1fr) 1px minmax(120px, 0.65fr);
-  min-height: 55px;
-  align-items: center;
-  padding: 8px 24px;
-  border-bottom: 1px solid var(--border);
-  background: #0f0f11;
-}
-
-.status-item { min-width: 0; padding-right: 18px; }
-.status-item span { display: block; color: var(--text-dim); font-size: 10px; }
-.status-item strong { display: block; overflow: hidden; margin-top: 1px; color: var(--text-soft); font-size: 12px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
-.status-separator { width: 1px; height: 25px; background: var(--border); }
-.status-separator + .status-item { padding-left: 18px; }
-
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--inspector-width);
@@ -542,20 +526,14 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
   .mode-tab { grid-template-columns: 1fr; place-items: center; padding: 0; }
   .runtime-row { justify-content: center; }
   .runtime-row #runtime-badge { display: none; }
-  .status-item { padding-right: 10px; }
-  .status-separator + .status-item { padding-left: 10px; }
 }
 
 @media (max-width: 880px) {
   :root { --inspector-width: 294px; }
   .context-bar,
-  .workflow-status,
   .canvas-area { padding-inline: 16px; }
   .workspace.full-width .canvas-area { padding-right: 16px; }
   .context-copy p { display: none; }
-  .workflow-status { grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr); }
-  .workflow-status .status-separator:last-of-type,
-  .workflow-status .status-item:last-child { display: none; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-section { padding: 18px 0; border-right: none; border-bottom: 1px solid var(--border); }
   .settings-section:first-child { padding-top: 0; }

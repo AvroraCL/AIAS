@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aias"
-version = "5.1.2"
+version = "5.1.3"
 dependencies = [
  "dirs 5.0.1",
  "image",

@@ -1,6 +1,6 @@
 {
   "name": "aias-tauri",
-  "version": "5.1.2",
+  "version": "5.1.3",
   "description": "AIAS texture processing toolbox rebuilt with Tauri.",
   "type": "commonjs",
   "scripts": {

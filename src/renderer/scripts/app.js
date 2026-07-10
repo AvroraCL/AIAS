@@ -134,23 +134,6 @@ function getModeOutputPath(mode = state.activeMode) {
   return $(fieldByMode[mode])?.value || "";
 }
 
-function getModeFormat(mode = state.activeMode) {
-  switch (mode) {
-    case "merge":
-      return getSelectLabel($("pbr-format"));
-    case "split":
-      return getSelectLabel($("split-format"));
-    case "mipmap":
-      return getSelectLabel($("mipmap-format"));
-    case "image-dds":
-      return getSelectLabel($("image-format"));
-    case "skins":
-      return "UserSkins";
-    default:
-      return "应用配置";
-  }
-}
-
 function formatSize(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
@@ -980,36 +963,13 @@ function updateStatus() {
   const blocker = getRunBlocker(mode);
   const ready = runnableModes.includes(mode) && !blocker;
 
-  const inputText = (() => {
-    switch (mode) {
-      case "merge":
-        return compactPath($("pbr-input")?.value, "未选择");
-      case "split":
-        return `${state.splitFiles.length} 个 DDS`;
-      case "mipmap":
-        return compactPath($("mipmap-input")?.value, "未选择");
-      case "image-dds":
-        return `${state.imageFiles.length} 张图片`;
-      case "skins":
-        return compactPath($("skin-path")?.value, "未选择");
-      case "settings":
-        return "本地配置";
-      default:
-        return "未选择";
-    }
-  })();
-
   const outputPath = getModeOutputPath(mode);
-  const outputText = mode === "settings" ? "自动保存" : compactPath(outputPath, "未就绪");
   const meta = modeMeta[mode] || modeMeta.merge;
 
   setText("current-task", meta.title);
   setText("current-description", meta.description);
   setText("inspector-mode", meta.title.replace("多通道", ""));
   setText("runtime-badge", isTauriRuntime ? "Tauri Runtime" : "Browser Preview");
-  setText("status-input", inputText);
-  setText("status-output", outputText);
-  setText("status-format", getModeFormat(mode));
   setText("run-readiness", ready ? "已就绪" : "待配置");
   setText("run-hint", ready ? "配置完成，可开始运行" : blocker || "当前模式无需运行");
 
@@ -1394,7 +1354,7 @@ async function checkForUpdates(silent = true) {
   try {
     const update = await check();
     if (!update) {
-      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.1.2"), "success");
+      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.1.3"), "success");
       return;
     }
     $("update-button")?.classList.remove("hidden");
