@@ -1354,7 +1354,7 @@ async function checkForUpdates(silent = true) {
   try {
     const update = await check();
     if (!update) {
-      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.1.3"), "success");
+      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.1.4"), "success");
       return;
     }
     $("update-button")?.classList.remove("hidden");
