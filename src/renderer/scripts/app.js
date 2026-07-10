@@ -65,7 +65,8 @@ const state = {
   imageFiles: [],
   activeMode: "merge",
   activityCount: 0,
-  lastOutputPath: ""
+  lastOutputPath: "",
+  updateInProgress: false
 };
 
 const iconSet = {
@@ -1388,10 +1389,12 @@ async function refreshSkins({ notify = false } = {}) {
 }
 
 async function checkForUpdates(silent = true) {
+  if (state.updateInProgress) return;
+
   try {
     const update = await check();
     if (!update) {
-      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.1.1"), "success");
+      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.1.2"), "success");
       return;
     }
     $("update-button")?.classList.remove("hidden");
@@ -1399,18 +1402,38 @@ async function checkForUpdates(silent = true) {
     if (!silent) {
       const confirmed = await openPreviewConfirm("发现新版本", "版本 " + update.version + " 可用。\n\n是否立即下载并安装更新？");
       if (!confirmed) return;
+      state.updateInProgress = true;
+      $("update-button")?.setAttribute("disabled", "");
       addActivity("正在下载更新", update.version);
       let downloaded = 0;
+      let total = 0;
       await update.downloadAndInstall((event) => {
-        if (event.event === "Progress") {
-          downloaded = Math.round((event.data.downloaded / event.data.total) * 100);
-          $("runtime-badge").textContent = "下载 " + downloaded + "%";
+        if (event.event === "Started") {
+          total = Number(event.data.contentLength) || 0;
+          $("runtime-badge").textContent = total ? "下载 0%" : "正在下载";
+        } else if (event.event === "Progress") {
+          downloaded += Number(event.data.chunkLength) || 0;
+          $("runtime-badge").textContent = total
+            ? "下载 " + Math.min(100, Math.round((downloaded / total) * 100)) + "%"
+            : "已下载 " + formatSize(downloaded);
+        } else if (event.event === "Finished") {
+          $("runtime-badge").textContent = "正在验签并启动安装器";
+          addActivity("下载完成", "正在验证更新并启动安装器");
         }
       });
-      addActivity("更新已下载", "重启应用以完成更新", "success");
+      addActivity("更新安装器已启动", "应用将退出以完成更新", "success");
     }
   } catch (error) {
-    if (!silent) addActivity("检查更新失败", error.message || String(error), "error");
+    if (!silent) {
+      const message = error.message || String(error);
+      $("runtime-badge").textContent = "更新失败";
+      addActivity("更新失败", message, "error");
+      setActivityPanel(true);
+      await openPreviewMessage("更新失败", message);
+    }
+  } finally {
+    state.updateInProgress = false;
+    $("update-button")?.removeAttribute("disabled");
   }
 }
 
