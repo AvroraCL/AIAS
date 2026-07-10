@@ -11,7 +11,7 @@ use std::{
   path::{Path, PathBuf},
   process::Command,
 };
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use texpresso::{Algorithm, Format as BcFormat, Params as BcParams};
 
 #[derive(Clone)]
@@ -156,6 +156,14 @@ struct DeleteResult {
   deleted: bool,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TaskProgress {
+  completed: usize,
+  total: usize,
+  message: String,
+}
+
 #[derive(Debug, Clone)]
 struct MipmapLevel {
   width: u32,
@@ -298,7 +306,13 @@ fn texture_find_groups(input_path: String) -> Result<Vec<TextureGroup>, String> 
 }
 
 #[tauri::command]
-fn texture_merge_pbr(options: MergePbrOptions) -> Result<TaskResult, String> {
+async fn texture_merge_pbr(app: AppHandle, options: MergePbrOptions) -> Result<TaskResult, String> {
+  tauri::async_runtime::spawn_blocking(move || texture_merge_pbr_inner(&app, options))
+    .await
+    .map_err(to_string_error)?
+}
+
+fn texture_merge_pbr_inner(app: &AppHandle, options: MergePbrOptions) -> Result<TaskResult, String> {
   require_directory(&options.input_path, "输入目录")?;
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let groups = find_texture_groups(Path::new(&options.input_path))?;
@@ -320,6 +334,7 @@ fn texture_merge_pbr(options: MergePbrOptions) -> Result<TaskResult, String> {
     )?;
     completed += 1;
     logs.push(format!("完成 {}", group.prefix));
+    emit_task_progress(app, completed, groups.len(), format!("完成 {}", group.prefix));
   }
 
   Ok(TaskResult {
@@ -330,7 +345,13 @@ fn texture_merge_pbr(options: MergePbrOptions) -> Result<TaskResult, String> {
 }
 
 #[tauri::command]
-fn texture_split_pbr(options: SplitPbrOptions) -> Result<TaskResult, String> {
+async fn texture_split_pbr(app: AppHandle, options: SplitPbrOptions) -> Result<TaskResult, String> {
+  tauri::async_runtime::spawn_blocking(move || texture_split_pbr_inner(&app, options))
+    .await
+    .map_err(to_string_error)?
+}
+
+fn texture_split_pbr_inner(app: &AppHandle, options: SplitPbrOptions) -> Result<TaskResult, String> {
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let export_format = options.export_format.as_deref().unwrap_or("png");
   let export_alpha = options.export_alpha.unwrap_or(true);
@@ -381,6 +402,7 @@ fn texture_split_pbr(options: SplitPbrOptions) -> Result<TaskResult, String> {
       logs.push(format!("拆分 {stem}: Roughness / Metallic / Normal"));
     }
     completed += 1;
+    emit_task_progress(app, completed, options.files.len(), format!("完成 {stem}"));
   }
 
   Ok(TaskResult {
@@ -391,7 +413,13 @@ fn texture_split_pbr(options: SplitPbrOptions) -> Result<TaskResult, String> {
 }
 
 #[tauri::command]
-fn texture_create_mipmap(options: MipmapOptions) -> Result<TaskResult, String> {
+async fn texture_create_mipmap(app: AppHandle, options: MipmapOptions) -> Result<TaskResult, String> {
+  tauri::async_runtime::spawn_blocking(move || texture_create_mipmap_inner(&app, options))
+    .await
+    .map_err(to_string_error)?
+}
+
+fn texture_create_mipmap_inner(app: &AppHandle, options: MipmapOptions) -> Result<TaskResult, String> {
   require_directory(&options.input_path, "输入目录")?;
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let alpha = options.alpha.as_deref().unwrap_or("keep");
@@ -417,6 +445,7 @@ fn texture_create_mipmap(options: MipmapOptions) -> Result<TaskResult, String> {
     let image = prepare_image(file, alpha)?;
     validate_mipmap_dimensions(&image, images.first(), index as u32)?;
     images.push(image);
+    emit_task_progress(app, index + 1, files.len(), format!("处理 {}", file.file_name().and_then(|value| value.to_str()).unwrap_or("mipmap")));
   }
 
   let output_file = Path::new(&options.output_path).join("Mipmap.dds");
@@ -429,7 +458,13 @@ fn texture_create_mipmap(options: MipmapOptions) -> Result<TaskResult, String> {
 }
 
 #[tauri::command]
-fn texture_convert_images_to_dds(options: ConvertImagesOptions) -> Result<TaskResult, String> {
+async fn texture_convert_images_to_dds(app: AppHandle, options: ConvertImagesOptions) -> Result<TaskResult, String> {
+  tauri::async_runtime::spawn_blocking(move || texture_convert_images_to_dds_inner(&app, options))
+    .await
+    .map_err(to_string_error)?
+}
+
+fn texture_convert_images_to_dds_inner(app: &AppHandle, options: ConvertImagesOptions) -> Result<TaskResult, String> {
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let alpha = options.alpha.as_deref().unwrap_or("keep");
   let format = options.format.as_deref().unwrap_or("DXT5");
@@ -446,6 +481,7 @@ fn texture_convert_images_to_dds(options: ConvertImagesOptions) -> Result<TaskRe
       input.file_name().and_then(|value| value.to_str()).unwrap_or(file),
       output_file.file_name().and_then(|value| value.to_str()).unwrap_or("output.dds")
     ));
+    emit_task_progress(app, logs.len(), options.files.len(), format!("完成 {}", input.file_name().and_then(|value| value.to_str()).unwrap_or(file)));
   }
 
   Ok(TaskResult {
@@ -649,6 +685,10 @@ fn process_base_color(base_color: &Path, output: &Path, alpha: &str, format: &st
     pixel[3] = alpha_value;
   }
   write_dds(&image, output, format)
+}
+
+fn emit_task_progress(app: &AppHandle, completed: usize, total: usize, message: String) {
+  let _ = app.emit("task-progress", TaskProgress { completed, total, message });
 }
 
 fn process_roughness_metallic_normal(

@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import {
   createIcons,
   Layers3,
@@ -66,7 +67,8 @@ const state = {
   activeMode: "merge",
   activityCount: 0,
   lastOutputPath: "",
-  updateInProgress: false
+  updateInProgress: false,
+  taskProgressActive: false
 };
 
 const iconSet = {
@@ -830,18 +832,31 @@ function setBusy(button, busy) {
   button.disabled = busy;
 }
 
+function setTaskProgress(completed, total, message) {
+  const panel = $("task-progress");
+  if (!panel) return;
+  const percent = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  panel.classList.remove("hidden");
+  setText("task-progress-label", message || "正在处理");
+  setText("task-progress-value", `${percent}%`);
+  $("task-progress-fill")?.style.setProperty("width", `${percent}%`);
+}
+
 async function withLog(logId, button, action, title) {
   const log = $(logId);
   if (log) log.textContent = "";
   setActivityPanel(true);
   setText("activity-summary", `${title}运行中`);
   setBusy(button, true);
+  state.taskProgressActive = true;
+  setTaskProgress(0, 1, "正在准备任务");
   try {
     const result = await action();
     for (const line of result.logs || []) {
       if (log) log.textContent += `${line}\n`;
     }
     if (log) log.textContent += `完成：${result.completed} / ${result.total}`;
+    setTaskProgress(result.completed, result.total, "任务完成");
     addActivity(title || "任务完成", `${result.completed} / ${result.total}`, "success");
     state.lastOutputPath = getModeOutputPath();
     $("open-current-output")?.classList.toggle("hidden", !state.lastOutputPath);
@@ -849,6 +864,7 @@ async function withLog(logId, button, action, title) {
     if (log) log.textContent += `失败：${error.message || error}`;
     addActivity(title || "任务失败", error.message || String(error), "error");
   } finally {
+    state.taskProgressActive = false;
     setBusy(button, false);
     updateStatus();
   }
@@ -1456,6 +1472,13 @@ async function init() {
   bindRunActions();
   bindSkinActions();
   bindSettingsActions();
+  if (isTauriRuntime) {
+    await listen("task-progress", (event) => {
+      if (!state.taskProgressActive) return;
+      const progress = event.payload;
+      setTaskProgress(progress.completed, progress.total, progress.message);
+    });
+  }
   $("update-button")?.addEventListener("click", () => checkForUpdates(false));
 
   renderChips("merge-chip-list", []);

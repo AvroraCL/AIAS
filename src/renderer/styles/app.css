@@ -414,6 +414,11 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .run-button:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
 .run-button:disabled { border-color: #512029; color: #96777c; background: #35151b; opacity: 1; }
 .run-button.busy svg { animation: spin 0.8s linear infinite; }
+.task-progress { margin-top: 10px; }
+.task-progress > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--text-dim); font-size: 10px; }
+.task-progress strong { color: var(--text-soft); font-size: 10px; }
+.task-progress-track { height: 5px; overflow: hidden; border-radius: 999px; background: #2a2a2f; }
+.task-progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent-strong); transition: width 180ms ease; }
 .output-action { width: 100%; margin-top: 8px; }
 
 .secondary-action,

@@ -45,8 +45,11 @@
       "nsis": {
         "installMode": "both",
         "displayLanguageSelector": true,
+        "headerImage": "icons/installer-header.bmp",
+        "sidebarImage": "icons/installer-sidebar.bmp",
         "installerIcon": "icons/icon.ico",
-        "uninstallerIcon": "icons/icon.ico"
+        "uninstallerIcon": "icons/icon.ico",
+        "uninstallerHeaderImage": "icons/installer-header.bmp"
       }
     }
   }
