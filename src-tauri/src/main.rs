@@ -183,6 +183,12 @@ fn main() {
         if let Ok(hwnd) = window.hwnd() {
           unsafe { apply_dark_titlebar(hwnd.0); }
         }
+        window.show().map_err(to_string_error)?;
+      }
+
+      #[cfg(not(target_os = "windows"))]
+      if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(to_string_error)?;
       }
 
       Ok(())
@@ -220,9 +226,16 @@ unsafe fn apply_dark_titlebar(hwnd: *mut std::ffi::c_void) {
   extern "system" {
     fn SetWindowTheme(hwnd: *mut std::ffi::c_void, subapp: *const u16, idlist: *const u16) -> i32;
   }
-  // Use immersive dark mode (Win10 20H1+ / Win11)
+  // Windows 10 uses attribute 19; Windows 11 uses 20.
+  const DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1: u32 = 19;
   const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
   let dark: i32 = 1;
+  let _ = DwmSetWindowAttribute(
+    hwnd,
+    DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1,
+    &dark as *const _ as *const _,
+    4,
+  );
   let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as *const _, 4);
 
   // Force dark window frame via uxtheme
