@@ -1,6 +1,6 @@
 {
   "name": "aias-tauri",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "description": "AIAS texture processing toolbox rebuilt with Tauri.",
   "type": "commonjs",
   "scripts": {
@@ -12,14 +12,15 @@
     "check": "vite build",
     "build": "tauri build",
     "build:fast": "tauri build --debug",
-    "postbuild": "node -e \"const{readdirSync,cpSync}=require('fs');const{join}=require('path');const dir='src-tauri/target/release/bundle/nsis';const files=readdirSync(dir).filter(f=>f.endsWith('_x64-setup.exe'));if(files.length)cpSync(join(dir,files[0]),join('dist',files[0]))\""
+    "postbuild": "node -e \"const{readdirSync,cpSync}=require('fs');const{join}=require('path');const dir='src-tauri/target/release/bundle/nsis';const version=require('./package.json').version;const file=`AIAS_${version}_x64-setup.exe`;if(readdirSync(dir).includes(file))cpSync(join(dir,file),join('dist',file))\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-opener": "^2.5.4",
-    "@tauri-apps/plugin-updater": "^2.5.1"
+    "@tauri-apps/plugin-updater": "^2.5.1",
+    "lucide": "^1.24.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.3",

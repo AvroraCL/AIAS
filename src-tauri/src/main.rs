@@ -1,22 +1,22 @@
 #![windows_subsystem = "windows"]
 
 use image::{DynamicImage, ImageBuffer, Luma, Rgba, RgbaImage};
+use image_dds::{image_from_dds, mip_dimension};
+use image_dds::ddsfile::Dds;
 use serde::{Deserialize, Serialize};
 use std::{
   collections::BTreeMap,
   fs,
+  io::BufReader,
   path::{Path, PathBuf},
-  process::{Command, Stdio},
+  process::Command,
 };
 use tauri::{Manager, State};
-use tempfile::TempDir;
-
-const DDS_EXT: &str = ".dds";
+use texpresso::{Algorithm, Format as BcFormat, Params as BcParams};
 
 #[derive(Clone)]
 struct AppState {
   settings_path: PathBuf,
-  texconv_path: PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -175,11 +175,7 @@ fn main() {
         .app_data_dir()
         .map_err(|error| format!("Cannot resolve app data directory: {error}"))?;
       let settings_path = app_data.join("settings.json");
-      let texconv_path = resolve_texconv_path(app)?;
-      app.manage(AppState {
-        settings_path,
-        texconv_path,
-      });
+      app.manage(AppState { settings_path });
 
       // Apply dark title bar on Windows 10/11
       #[cfg(target_os = "windows")]
@@ -232,21 +228,6 @@ unsafe fn apply_dark_titlebar(hwnd: *mut std::ffi::c_void) {
   // Force dark window frame via uxtheme
   let dark_explorer: Vec<u16> = "DarkMode_Explorer".encode_utf16().chain(std::iter::once(0)).collect();
   let _ = SetWindowTheme(hwnd, dark_explorer.as_ptr(), std::ptr::null());
-}
-
-fn resolve_texconv_path(app: &tauri::App) -> Result<PathBuf, String> {
-  let resource_path = app.path().resource_dir().ok();
-  let current_dir = std::env::current_dir().ok();
-  let candidates = [
-    resource_path.map(|path| path.join("tools").join("texconv.exe")),
-    current_dir.as_ref().map(|path| path.join("tools").join("texconv.exe")),
-    current_dir.as_ref().map(|path| path.join("texconv.exe")),
-  ];
-  candidates
-    .into_iter()
-    .flatten()
-    .find(|path| path.exists())
-    .ok_or_else(|| "未找到 texconv.exe。请确认 tools/texconv.exe 存在。".to_string())
 }
 
 #[tauri::command]
@@ -304,7 +285,7 @@ fn texture_find_groups(input_path: String) -> Result<Vec<TextureGroup>, String> 
 }
 
 #[tauri::command]
-fn texture_merge_pbr(state: State<AppState>, options: MergePbrOptions) -> Result<TaskResult, String> {
+fn texture_merge_pbr(options: MergePbrOptions) -> Result<TaskResult, String> {
   require_directory(&options.input_path, "输入目录")?;
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let groups = find_texture_groups(Path::new(&options.input_path))?;
@@ -316,9 +297,8 @@ fn texture_merge_pbr(state: State<AppState>, options: MergePbrOptions) -> Result
   for group in &groups {
     let c_path = Path::new(&options.output_path).join(format!("{}_c.dds", group.prefix));
     let n_path = Path::new(&options.output_path).join(format!("{}_n.dds", group.prefix));
-    process_base_color(&state.texconv_path, Path::new(&group.files.basecolor), &c_path, alpha, format)?;
+    process_base_color(Path::new(&group.files.basecolor), &c_path, alpha, format)?;
     process_roughness_metallic_normal(
-      &state.texconv_path,
       Path::new(&group.files.roughness),
       Path::new(&group.files.metallic),
       Path::new(&group.files.normal),
@@ -337,7 +317,7 @@ fn texture_merge_pbr(state: State<AppState>, options: MergePbrOptions) -> Result
 }
 
 #[tauri::command]
-fn texture_split_pbr(state: State<AppState>, options: SplitPbrOptions) -> Result<TaskResult, String> {
+fn texture_split_pbr(options: SplitPbrOptions) -> Result<TaskResult, String> {
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let export_format = options.export_format.as_deref().unwrap_or("png");
   let export_alpha = options.export_alpha.unwrap_or(true);
@@ -356,7 +336,7 @@ fn texture_split_pbr(state: State<AppState>, options: SplitPbrOptions) -> Result
       .trim_end_matches("_C")
       .trim_end_matches("_n")
       .trim_end_matches("_N");
-    let image = dds_to_image(&state.texconv_path, file_path)?;
+    let image = dds_to_image(file_path)?;
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     let lower = stem.to_lowercase();
@@ -398,7 +378,7 @@ fn texture_split_pbr(state: State<AppState>, options: SplitPbrOptions) -> Result
 }
 
 #[tauri::command]
-fn texture_create_mipmap(state: State<AppState>, options: MipmapOptions) -> Result<TaskResult, String> {
+fn texture_create_mipmap(options: MipmapOptions) -> Result<TaskResult, String> {
   require_directory(&options.input_path, "输入目录")?;
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let alpha = options.alpha.as_deref().unwrap_or("keep");
@@ -419,22 +399,15 @@ fn texture_create_mipmap(state: State<AppState>, options: MipmapOptions) -> Resu
     return Err("未找到 p0、p1、p2... mipmap 文件。".into());
   }
 
-  let temp_dir = TempDir::new().map_err(to_string_error)?;
-  let mut levels = Vec::new();
+  let mut images = Vec::new();
   for (index, file) in files.iter().enumerate() {
-    let temp_png = temp_dir.path().join(format!("p{index}.png"));
-    prepare_image(file, &temp_png, alpha)?;
-    let dds = png_to_dds_buffer(&state.texconv_path, &temp_png, format)?;
-    let image = image::open(&temp_png).map_err(to_string_error)?;
-    levels.push(MipmapLevel {
-      width: image.width(),
-      height: image.height(),
-      payload: extract_dds_payload(&dds)?,
-    });
+    let image = prepare_image(file, alpha)?;
+    validate_mipmap_dimensions(&image, images.first(), index as u32)?;
+    images.push(image);
   }
 
   let output_file = Path::new(&options.output_path).join("Mipmap.dds");
-  fs::write(&output_file, build_dds_with_mipmaps(&levels, format)?).map_err(to_string_error)?;
+  write_dds_with_mipmaps(&images, &output_file, format)?;
   Ok(TaskResult {
     completed: files.len(),
     total: files.len(),
@@ -443,7 +416,7 @@ fn texture_create_mipmap(state: State<AppState>, options: MipmapOptions) -> Resu
 }
 
 #[tauri::command]
-fn texture_convert_images_to_dds(state: State<AppState>, options: ConvertImagesOptions) -> Result<TaskResult, String> {
+fn texture_convert_images_to_dds(options: ConvertImagesOptions) -> Result<TaskResult, String> {
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let alpha = options.alpha.as_deref().unwrap_or("keep");
   let format = options.format.as_deref().unwrap_or("DXT5");
@@ -454,7 +427,7 @@ fn texture_convert_images_to_dds(state: State<AppState>, options: ConvertImagesO
     let output_file = Path::new(&options.output_path)
       .join(input.file_stem().and_then(|value| value.to_str()).unwrap_or("output"))
       .with_extension("dds");
-    image_to_dds(&state.texconv_path, input, &output_file, alpha, format)?;
+    image_to_dds(input, &output_file, alpha, format)?;
     logs.push(format!(
       "转换 {} -> {}",
       input.file_name().and_then(|value| value.to_str()).unwrap_or(file),
@@ -656,17 +629,16 @@ fn find_texture_groups(folder: &Path) -> Result<Vec<TextureGroup>, String> {
     .collect())
 }
 
-fn process_base_color(texconv: &Path, base_color: &Path, output: &Path, alpha: &str, format: &str) -> Result<(), String> {
+fn process_base_color(base_color: &Path, output: &Path, alpha: &str, format: &str) -> Result<(), String> {
   let mut image = image::open(base_color).map_err(to_string_error)?.to_rgba8();
   let alpha_value = if alpha == "white" { 255 } else { 0 };
   for pixel in image.pixels_mut() {
     pixel[3] = alpha_value;
   }
-  raw_to_dds(texconv, &image, output, format)
+  write_dds(&image, output, format)
 }
 
 fn process_roughness_metallic_normal(
-  texconv: &Path,
   roughness_path: &Path,
   metallic_path: &Path,
   normal_path: &Path,
@@ -699,24 +671,15 @@ fn process_roughness_metallic_normal(
       );
     }
   }
-  raw_to_dds(texconv, &combined, output, format)
+  write_dds(&combined, output, format)
 }
 
-fn raw_to_dds(texconv: &Path, image: &RgbaImage, output: &Path, format: &str) -> Result<(), String> {
-  let temp_dir = TempDir::new().map_err(to_string_error)?;
-  let temp_png = temp_dir.path().join("source.png");
-  image.save(&temp_png).map_err(to_string_error)?;
-  convert_png_to_dds(texconv, &temp_png, output, format)
+fn image_to_dds(input: &Path, output: &Path, alpha: &str, format: &str) -> Result<(), String> {
+  let image = prepare_image(input, alpha)?;
+  write_dds(&image, output, format)
 }
 
-fn image_to_dds(texconv: &Path, input: &Path, output: &Path, alpha: &str, format: &str) -> Result<(), String> {
-  let temp_dir = TempDir::new().map_err(to_string_error)?;
-  let temp_png = temp_dir.path().join("source.png");
-  prepare_image(input, &temp_png, alpha)?;
-  convert_png_to_dds(texconv, &temp_png, output, format)
-}
-
-fn prepare_image(input: &Path, output: &Path, alpha: &str) -> Result<(), String> {
+fn prepare_image(input: &Path, alpha: &str) -> Result<RgbaImage, String> {
   let mut image = image::open(input).map_err(to_string_error)?.to_rgba8();
   if alpha == "black" || alpha == "white" {
     let alpha_value = if alpha == "white" { 255 } else { 0 };
@@ -724,48 +687,108 @@ fn prepare_image(input: &Path, output: &Path, alpha: &str) -> Result<(), String>
       pixel[3] = alpha_value;
     }
   }
-  image.save(output).map_err(to_string_error)
+  Ok(image)
 }
 
-fn convert_png_to_dds(texconv: &Path, input_png: &Path, output: &Path, format: &str) -> Result<(), String> {
-  let buffer = png_to_dds_buffer(texconv, input_png, format)?;
-  fs::write(output, buffer).map_err(to_string_error)
+fn is_rgba8_format(format: &str) -> bool {
+  format == "8.8.8.8" || format == "R8G8B8A8_UNORM"
 }
 
-fn png_to_dds_buffer(texconv: &Path, input_png: &Path, format: &str) -> Result<Vec<u8>, String> {
-  let temp_dir = TempDir::new().map_err(to_string_error)?;
-  run_command(
-    texconv,
-    &[
-      "-y",
-      "-f",
-      to_texconv_format(format),
-      "-m",
-      "1",
-      "-o",
-      temp_dir.path().to_str().ok_or_else(|| "临时目录路径无效。".to_string())?,
-      input_png.to_str().ok_or_else(|| "输入文件路径无效。".to_string())?,
-    ],
-  )?;
-  let generated = temp_dir.path().join(input_png.file_stem().unwrap()).with_extension("dds");
-  fs::read(generated).map_err(to_string_error)
+fn encode_image_payload(image: &RgbaImage, format: &str) -> Vec<u8> {
+  if is_rgba8_format(format) {
+    return image.as_raw().clone();
+  }
+  let mut payload = vec![0; BcFormat::Bc3.compressed_size(image.width() as usize, image.height() as usize)];
+  BcFormat::Bc3.compress(
+    image.as_raw(),
+    image.width() as usize,
+    image.height() as usize,
+    BcParams {
+      algorithm: Algorithm::RangeFit,
+      ..BcParams::default()
+    },
+    &mut payload,
+  );
+  payload
 }
 
-fn dds_to_image(texconv: &Path, dds_path: &Path) -> Result<DynamicImage, String> {
-  let temp_dir = TempDir::new().map_err(to_string_error)?;
-  run_command(
-    texconv,
-    &[
-      "-y",
-      "-ft",
-      "png",
-      "-o",
-      temp_dir.path().to_str().ok_or_else(|| "临时目录路径无效。".to_string())?,
-      dds_path.to_str().ok_or_else(|| "DDS 文件路径无效。".to_string())?,
-    ],
-  )?;
-  let png_path = temp_dir.path().join(dds_path.file_stem().unwrap()).with_extension("png");
-  image::open(png_path).map_err(to_string_error)
+fn build_dds(levels: &[MipmapLevel], format: &str) -> Result<Vec<u8>, String> {
+  let first = levels.first().ok_or_else(|| "没有可写入的 mipmap 层级。".to_string())?;
+  let compressed = !is_rgba8_format(format);
+  let mut header = vec![0_u8; 128];
+  header[0..4].copy_from_slice(b"DDS ");
+  write_u32(&mut header, 4, 124);
+  write_u32(&mut header, 8, 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | if compressed { 0x80000 } else { 0x8 });
+  write_u32(&mut header, 12, first.height);
+  write_u32(&mut header, 16, first.width);
+  write_u32(&mut header, 20, if compressed { calculate_bc3_size(first.width, first.height) } else { first.width * 4 });
+  write_u32(&mut header, 28, levels.len() as u32);
+  write_u32(&mut header, 76, 32);
+  if compressed {
+    write_u32(&mut header, 80, 0x4);
+    header[84..88].copy_from_slice(b"DXT5");
+  } else {
+    write_u32(&mut header, 80, 0x40 | 0x1);
+    write_u32(&mut header, 88, 32);
+    write_u32(&mut header, 92, 0x000000ff);
+    write_u32(&mut header, 96, 0x0000ff00);
+    write_u32(&mut header, 100, 0x00ff0000);
+    write_u32(&mut header, 104, 0xff000000);
+  }
+  write_u32(&mut header, 108, 0x1000 | if levels.len() > 1 { 0x400000 | 0x8 } else { 0 });
+  for level in levels {
+    header.extend_from_slice(&level.payload);
+  }
+  Ok(header)
+}
+
+fn encode_dds(image: &RgbaImage, format: &str) -> Result<Vec<u8>, String> {
+  build_dds(
+    &[MipmapLevel {
+      width: image.width(),
+      height: image.height(),
+      payload: encode_image_payload(image, format),
+    }],
+    format,
+  )
+}
+
+fn write_dds(image: &RgbaImage, output: &Path, format: &str) -> Result<(), String> {
+  fs::write(output, encode_dds(image, format)?).map_err(to_string_error)
+}
+
+fn validate_mipmap_dimensions(image: &RgbaImage, base: Option<&RgbaImage>, level: u32) -> Result<(), String> {
+  let Some(base) = base else {
+    return Ok(());
+  };
+  let expected_width = mip_dimension(base.width(), level);
+  let expected_height = mip_dimension(base.height(), level);
+  if image.width() != expected_width || image.height() != expected_height {
+    return Err(format!(
+      "p{level} 尺寸应为 {expected_width}x{expected_height}，实际为 {}x{}。",
+      image.width(),
+      image.height()
+    ));
+  }
+  Ok(())
+}
+
+fn write_dds_with_mipmaps(images: &[RgbaImage], output: &Path, format: &str) -> Result<(), String> {
+  let levels = images
+    .iter()
+    .map(|image| MipmapLevel {
+      width: image.width(),
+      height: image.height(),
+      payload: encode_image_payload(image, format),
+    })
+    .collect::<Vec<_>>();
+  fs::write(output, build_dds(&levels, format)?).map_err(to_string_error)
+}
+
+fn dds_to_image(dds_path: &Path) -> Result<DynamicImage, String> {
+  let file = fs::File::open(dds_path).map_err(to_string_error)?;
+  let dds = Dds::read(&mut BufReader::new(file)).map_err(to_string_error)?;
+  image_from_dds(&dds, 0).map(DynamicImage::ImageRgba8).map_err(to_string_error)
 }
 
 fn save_rgb_image(bytes: &[u8], width: u32, height: u32, output: PathBuf, format: &str) -> Result<(), String> {
@@ -787,63 +810,6 @@ fn save_dynamic_image(image: &DynamicImage, output: PathBuf, format: &str) -> Re
   }
 }
 
-fn extract_dds_payload(dds: &[u8]) -> Result<Vec<u8>, String> {
-  if dds.len() < 128 || &dds[0..4] != b"DDS " {
-    return Err("DDS 数据无效。".into());
-  }
-  let header_size = u32::from_le_bytes(dds[4..8].try_into().unwrap()) as usize;
-  let pixel_flags = u32::from_le_bytes(dds[80..84].try_into().unwrap());
-  let four_cc = &dds[84..88];
-  let mut header_end = 4 + header_size;
-  if pixel_flags & 0x4 != 0 && four_cc == b"DX10" {
-    header_end += 20;
-  }
-  Ok(dds[header_end..].to_vec())
-}
-
-fn build_dds_with_mipmaps(levels: &[MipmapLevel], format: &str) -> Result<Vec<u8>, String> {
-  let first = levels.first().ok_or_else(|| "没有可写入的 mipmap 层级。".to_string())?;
-  let compressed = !matches!(format, "8.8.8.8" | "R8G8B8A8_UNORM");
-  let mut header = vec![0_u8; 128];
-  header[0..4].copy_from_slice(b"DDS ");
-  write_u32(&mut header, 4, 124);
-  write_u32(&mut header, 8, 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | if compressed { 0x80000 } else { 0x8 });
-  write_u32(&mut header, 12, first.height);
-  write_u32(&mut header, 16, first.width);
-  write_u32(&mut header, 20, if compressed { calculate_bc3_size(first.width, first.height) } else { first.width * 4 });
-  write_u32(&mut header, 28, levels.len() as u32);
-  write_u32(&mut header, 76, 32);
-  if compressed {
-    write_u32(&mut header, 80, 0x4);
-    header[84..88].copy_from_slice(b"DXT5");
-  } else {
-    write_u32(&mut header, 80, 0x40 | 0x1);
-    write_u32(&mut header, 88, 32);
-    write_u32(&mut header, 92, 0x00ff0000);
-    write_u32(&mut header, 96, 0x0000ff00);
-    write_u32(&mut header, 100, 0x000000ff);
-    write_u32(&mut header, 104, 0xff000000);
-  }
-  write_u32(&mut header, 108, 0x1000 | 0x400000 | 0x8);
-  let mut output = header;
-  for level in levels {
-    output.extend_from_slice(&level.payload);
-  }
-  Ok(output)
-}
-
-fn run_command(command: &Path, args: &[&str]) -> Result<(), String> {
-  let output = Command::new(command)
-    .args(args)
-    .stdin(Stdio::null())
-    .output()
-    .map_err(to_string_error)?;
-  if output.status.success() {
-    Ok(())
-  } else {
-    Err(String::from_utf8_lossy(if output.stderr.is_empty() { &output.stdout } else { &output.stderr }).to_string())
-  }
-}
 
 fn find_steam_path() -> Result<Option<PathBuf>, String> {
   if cfg!(target_os = "windows") {
@@ -914,14 +880,6 @@ fn image_exts() -> Vec<&'static str> {
   vec![".png", ".tga", ".jpg", ".jpeg"]
 }
 
-fn to_texconv_format(format: &str) -> &'static str {
-  if format == "8.8.8.8" || format == "R8G8B8A8_UNORM" {
-    "R8G8B8A8_UNORM"
-  } else {
-    "BC3_UNORM"
-  }
-}
-
 fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
   buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
@@ -936,4 +894,55 @@ fn path_to_string(path: impl AsRef<Path>) -> String {
 
 fn to_string_error(error: impl std::fmt::Display) -> String {
   error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io::Cursor;
+
+  fn sample_image(width: u32, height: u32) -> RgbaImage {
+    RgbaImage::from_fn(width, height, |x, y| {
+      Rgba([
+        (x * 37 % 256) as u8,
+        (y * 59 % 256) as u8,
+        ((x + y) * 23 % 256) as u8,
+        255,
+      ])
+    })
+  }
+
+  #[test]
+  fn rgba8_dds_round_trip_preserves_pixels() {
+    let image = sample_image(4, 4);
+    let dds = Dds::read(&mut Cursor::new(encode_dds(&image, "8.8.8.8").unwrap())).unwrap();
+    let decoded = image_from_dds(&dds, 0).unwrap();
+    assert_eq!(decoded, image);
+  }
+
+  #[test]
+  fn bc3_dds_round_trip_preserves_dimensions() {
+    let image = sample_image(8, 8);
+    let dds = Dds::read(&mut Cursor::new(encode_dds(&image, "DXT5").unwrap())).unwrap();
+    let decoded = image_from_dds(&dds, 0).unwrap();
+    assert_eq!(decoded.dimensions(), image.dimensions());
+  }
+
+  #[test]
+  fn supplied_mipmaps_are_encoded_as_separate_levels() {
+    let base = sample_image(4, 4);
+    let mip = sample_image(2, 2);
+    let dds = Dds::read(&mut Cursor::new(
+      build_dds(
+        &[
+          MipmapLevel { width: 4, height: 4, payload: base.into_raw() },
+          MipmapLevel { width: 2, height: 2, payload: mip.into_raw() },
+        ],
+        "8.8.8.8",
+      )
+      .unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(image_from_dds(&dds, 1).unwrap().dimensions(), (2, 2));
+  }
 }
