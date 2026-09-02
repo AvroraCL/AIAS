@@ -37,6 +37,7 @@ struct Settings {
   image_to_dds_output_path: String,
   image_to_dds_alpha: String,
   image_to_dds_format: String,
+  scale_target: String,
   skin_manager_path: String,
 }
 
@@ -58,6 +59,7 @@ impl Default for Settings {
       image_to_dds_output_path: String::new(),
       image_to_dds_alpha: "keep".into(),
       image_to_dds_format: "DXT5".into(),
+      scale_target: "none".into(),
       skin_manager_path: String::new(),
     }
   }
@@ -94,6 +96,7 @@ struct MergePbrOptions {
   output_path: String,
   alpha: Option<String>,
   format: Option<String>,
+  scale: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +106,7 @@ struct SplitPbrOptions {
   output_path: String,
   export_format: Option<String>,
   export_alpha: Option<bool>,
+  scale: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,6 +116,7 @@ struct MipmapOptions {
   output_path: String,
   alpha: Option<String>,
   format: Option<String>,
+  scale: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +126,7 @@ struct ConvertImagesOptions {
   output_path: String,
   alpha: Option<String>,
   format: Option<String>,
+  scale: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -319,18 +325,20 @@ fn texture_merge_pbr_inner(app: &AppHandle, options: MergePbrOptions) -> Result<
   let mut logs = vec![format!("找到 {} 组完整 PBR 贴图。", groups.len())];
   let format = options.format.as_deref().unwrap_or("DXT5");
   let alpha = options.alpha.as_deref().unwrap_or("black");
+  let scale = options.scale.as_deref().unwrap_or("none");
   let mut completed = 0;
 
   for group in &groups {
     let c_path = Path::new(&options.output_path).join(format!("{}_c.dds", group.prefix));
     let n_path = Path::new(&options.output_path).join(format!("{}_n.dds", group.prefix));
-    process_base_color(Path::new(&group.files.basecolor), &c_path, alpha, format)?;
+    process_base_color(Path::new(&group.files.basecolor), &c_path, alpha, format, scale)?;
     process_roughness_metallic_normal(
       Path::new(&group.files.roughness),
       Path::new(&group.files.metallic),
       Path::new(&group.files.normal),
       &n_path,
       format,
+      scale,
     )?;
     completed += 1;
     logs.push(format!("完成 {}", group.prefix));
@@ -355,6 +363,7 @@ fn texture_split_pbr_inner(app: &AppHandle, options: SplitPbrOptions) -> Result<
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let export_format = options.export_format.as_deref().unwrap_or("png");
   let export_alpha = options.export_alpha.unwrap_or(true);
+  let scale = options.scale.as_deref().unwrap_or("none");
   let output_dir = Path::new(&options.output_path);
   let mut logs = Vec::new();
   let mut completed = 0;
@@ -371,7 +380,7 @@ fn texture_split_pbr_inner(app: &AppHandle, options: SplitPbrOptions) -> Result<
       .trim_end_matches("_n")
       .trim_end_matches("_N");
     let image = dds_to_image(file_path)?;
-    let rgba = image.to_rgba8();
+    let rgba = apply_scale(image.to_rgba8(), scale);
     let (width, height) = rgba.dimensions();
     let lower = stem.to_lowercase();
 
@@ -424,6 +433,7 @@ fn texture_create_mipmap_inner(app: &AppHandle, options: MipmapOptions) -> Resul
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let alpha = options.alpha.as_deref().unwrap_or("keep");
   let format = options.format.as_deref().unwrap_or("DXT5");
+  let scale = options.scale.as_deref().unwrap_or("none");
   let mut files = Vec::new();
 
   for index in 0..1000 {
@@ -442,7 +452,7 @@ fn texture_create_mipmap_inner(app: &AppHandle, options: MipmapOptions) -> Resul
 
   let mut images = Vec::new();
   for (index, file) in files.iter().enumerate() {
-    let image = prepare_image(file, alpha)?;
+    let image = prepare_image(file, alpha, scale)?;
     validate_mipmap_dimensions(&image, images.first(), index as u32)?;
     images.push(image);
     emit_task_progress(app, index + 1, files.len(), format!("处理 {}", file.file_name().and_then(|value| value.to_str()).unwrap_or("mipmap")));
@@ -468,6 +478,7 @@ fn texture_convert_images_to_dds_inner(app: &AppHandle, options: ConvertImagesOp
   fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
   let alpha = options.alpha.as_deref().unwrap_or("keep");
   let format = options.format.as_deref().unwrap_or("DXT5");
+  let scale = options.scale.as_deref().unwrap_or("none");
   let mut logs = Vec::new();
 
   for file in &options.files {
@@ -475,7 +486,7 @@ fn texture_convert_images_to_dds_inner(app: &AppHandle, options: ConvertImagesOp
     let output_file = Path::new(&options.output_path)
       .join(input.file_stem().and_then(|value| value.to_str()).unwrap_or("output"))
       .with_extension("dds");
-    image_to_dds(input, &output_file, alpha, format)?;
+    image_to_dds(input, &output_file, alpha, format, scale)?;
     logs.push(format!(
       "转换 {} -> {}",
       input.file_name().and_then(|value| value.to_str()).unwrap_or(file),
@@ -678,8 +689,8 @@ fn find_texture_groups(folder: &Path) -> Result<Vec<TextureGroup>, String> {
     .collect())
 }
 
-fn process_base_color(base_color: &Path, output: &Path, alpha: &str, format: &str) -> Result<(), String> {
-  let mut image = image::open(base_color).map_err(to_string_error)?.to_rgba8();
+fn process_base_color(base_color: &Path, output: &Path, alpha: &str, format: &str, scale: &str) -> Result<(), String> {
+  let mut image = apply_scale(image::open(base_color).map_err(to_string_error)?.to_rgba8(), scale);
   let alpha_value = if alpha == "white" { 255 } else { 0 };
   for pixel in image.pixels_mut() {
     pixel[3] = alpha_value;
@@ -697,8 +708,9 @@ fn process_roughness_metallic_normal(
   normal_path: &Path,
   output: &Path,
   format: &str,
+  scale: &str,
 ) -> Result<(), String> {
-  let normal = image::open(normal_path).map_err(to_string_error)?.to_rgba8();
+  let normal = apply_scale(image::open(normal_path).map_err(to_string_error)?.to_rgba8(), scale);
   let (width, height) = normal.dimensions();
   let roughness = image::open(roughness_path)
     .map_err(to_string_error)?
@@ -727,13 +739,34 @@ fn process_roughness_metallic_normal(
   write_dds(&combined, output, format)
 }
 
-fn image_to_dds(input: &Path, output: &Path, alpha: &str, format: &str) -> Result<(), String> {
-  let image = prepare_image(input, alpha)?;
+fn image_to_dds(input: &Path, output: &Path, alpha: &str, format: &str, scale: &str) -> Result<(), String> {
+  let image = prepare_image(input, alpha, scale)?;
   write_dds(&image, output, format)
 }
 
-fn prepare_image(input: &Path, alpha: &str) -> Result<RgbaImage, String> {
-  let mut image = image::open(input).map_err(to_string_error)?.to_rgba8();
+fn apply_scale(image: RgbaImage, scale: &str) -> RgbaImage {
+  let target = match scale {
+    "6k" => 6144,
+    "4k" => 4096,
+    _ => return image,
+  };
+  let (width, height) = image.dimensions();
+  let longest = width.max(height);
+  if longest == 0 || longest <= target {
+    return image;
+  }
+  let new_width = ((width as f64 * target as f64) / longest as f64).round() as u32;
+  let new_height = ((height as f64 * target as f64) / longest as f64).round() as u32;
+  image::imageops::resize(
+    &image,
+    new_width.max(1),
+    new_height.max(1),
+    image::imageops::FilterType::Lanczos3,
+  )
+}
+
+fn prepare_image(input: &Path, alpha: &str, scale: &str) -> Result<RgbaImage, String> {
+  let mut image = apply_scale(image::open(input).map_err(to_string_error)?.to_rgba8(), scale);
   if alpha == "black" || alpha == "white" {
     let alpha_value = if alpha == "white" { 255 } else { 0 };
     for pixel in image.pixels_mut() {
@@ -997,5 +1030,15 @@ mod tests {
     ))
     .unwrap();
     assert_eq!(image_from_dds(&dds, 1).unwrap().dimensions(), (2, 2));
+  }
+
+  #[test]
+  fn scale_option_downscales_longest_side_only() {
+    let scaled = apply_scale(sample_image(8192, 4096), "4k");
+    assert_eq!(scaled.dimensions(), (4096, 2048));
+    let scaled_six = apply_scale(sample_image(8192, 8192), "6k");
+    assert_eq!(scaled_six.dimensions(), (6144, 6144));
+    let untouched = apply_scale(sample_image(2048, 1024), "4k");
+    assert_eq!(untouched.dimensions(), (2048, 1024));
   }
 }

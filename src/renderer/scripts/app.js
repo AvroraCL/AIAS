@@ -48,6 +48,7 @@ const defaults = {
   imageToDdsOutputPath: "",
   imageToDdsAlpha: "keep",
   imageToDdsFormat: "DXT5",
+  scaleTarget: "none",
   skinManagerPath: ""
 };
 
@@ -886,6 +887,7 @@ function collectSettings() {
     imageToDdsOutputPath: $("image-output")?.value || "",
     imageToDdsAlpha: $("image-alpha")?.value || "keep",
     imageToDdsFormat: $("image-format")?.value || "DXT5",
+    scaleTarget: $("scale-target")?.value || "none",
     skinManagerPath: $("skin-path")?.value || ""
   };
 }
@@ -907,6 +909,7 @@ function applySettingsToForm() {
     "image-output": settings.imageToDdsOutputPath,
     "image-alpha": settings.imageToDdsAlpha,
     "image-format": settings.imageToDdsFormat,
+    "scale-target": settings.scaleTarget,
     "skin-path": settings.skinManagerPath
   };
 
@@ -1044,6 +1047,7 @@ function applyMode(mode) {
     button.classList.toggle("active", button.dataset.view === mode);
     button.setAttribute("aria-current", button.dataset.view === mode ? "page" : "false");
   });
+  $("footer-settings")?.classList.toggle("active", mode === "settings");
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === `view-${mode}`);
   });
@@ -1065,6 +1069,7 @@ function bindTabs() {
     button.title = button.textContent.trim();
     button.addEventListener("click", () => applyMode(button.dataset.view));
   });
+  $("footer-settings")?.addEventListener("click", () => applyMode("settings"));
 }
 
 function bindInspectorGroups() {
@@ -1239,7 +1244,8 @@ function bindRunActions() {
           inputPath: $("pbr-input").value,
           outputPath: $("pbr-output").value,
           alpha: $("pbr-alpha").value,
-          format: $("pbr-format").value
+          format: $("pbr-format").value,
+          scale: $("scale-target")?.value || "none"
         }),
       "PBR 合成"
     );
@@ -1261,7 +1267,8 @@ function bindRunActions() {
           files: state.splitFiles,
           outputPath: $("split-output").value,
           exportFormat: $("split-format").value,
-          exportAlpha: $("split-alpha").checked
+          exportAlpha: $("split-alpha").checked,
+          scale: $("scale-target")?.value || "none"
         }),
       "PBR 拆分"
     );
@@ -1283,7 +1290,8 @@ function bindRunActions() {
           inputPath: $("mipmap-input").value,
           outputPath: $("mipmap-output").value,
           alpha: $("mipmap-alpha").value,
-          format: $("mipmap-format").value
+          format: $("mipmap-format").value,
+          scale: $("scale-target")?.value || "none"
         }),
       "Mipmap 生成"
     );
@@ -1305,7 +1313,8 @@ function bindRunActions() {
           files: state.imageFiles,
           outputPath: $("image-output").value,
           alpha: $("image-alpha").value,
-          format: $("image-format").value
+          format: $("image-format").value,
+          scale: $("scale-target")?.value || "none"
         }),
       "图片转 DDS"
     );

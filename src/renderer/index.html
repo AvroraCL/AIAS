@@ -41,19 +41,16 @@
             <button class="mode-tab" data-view="skins" type="button">
               <i data-lucide="shirt" aria-hidden="true"></i><span>涂装管理</span>
             </button>
-            <button class="mode-tab" data-view="settings" type="button">
-              <i data-lucide="settings-2" aria-hidden="true"></i><span>设置</span>
-            </button>
           </div>
         </nav>
 
-        <div class="sidebar-footer">
-          <div class="runtime-row">
-            <span class="runtime-dot" aria-hidden="true"></span>
-            <span id="runtime-badge">Ready</span>
-          </div>
-          <small>Version 5.1.8</small>
-        </div>
+        <button class="sidebar-footer" id="footer-settings" type="button">
+          <span class="footer-icon"><i data-lucide="settings-2" aria-hidden="true"></i></span>
+          <span class="footer-copy">
+            <strong>设置</strong>
+            <small id="runtime-badge">Ready</small>
+          </span>
+        </button>
       </aside>
 
       <section class="app-main">
@@ -243,6 +240,14 @@
                   <div class="field-row hidden" data-field="split-output"><input id="split-output" readonly aria-label="PBR 拆分输出文件夹" title="PBR 拆分输出文件夹" /><button data-pick-dir="split-output" type="button">选择</button></div>
                   <div class="field-row hidden" data-field="mipmap-output"><input id="mipmap-output" readonly aria-label="Mipmap 输出文件夹" title="Mipmap 输出文件夹" /><button data-pick-dir="mipmap-output" type="button">选择</button></div>
                   <div class="field-row hidden" data-field="image-output"><input id="image-output" readonly aria-label="图片转 DDS 输出文件夹" title="图片转 DDS 输出文件夹" /><button data-pick-dir="image-output" type="button">选择</button></div>
+                </div>
+              </section>
+
+              <section class="inspector-group" data-modes="merge split mipmap image-dds">
+                <button class="group-toggle" type="button"><span>分辨率</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content">
+                  <label>输出尺寸</label>
+                  <select id="scale-target" aria-label="输出尺寸" title="将超过目标尺寸的贴图等比缩小（如 8K → 6K / 4K），小图不放大"><option value="none">保持原始</option><option value="6k">8K → 6K</option><option value="4k">8K → 4K</option></select>
                 </div>
               </section>
 
