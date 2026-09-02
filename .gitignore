@@ -22,6 +22,7 @@ yarn-error.log*
 .idea/
 .vscode/
 .kilo/
+.zcode/
 
 # Build output
 build/
@@ -55,3 +56,4 @@ CDK/
 # Sensitive files
 .ssh/
 id_rsa*
+.Tauri私钥口令*.txt

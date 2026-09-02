@@ -64,6 +64,24 @@
             <p id="current-description">生成游戏可用的 _c 与 _n 通道贴图</p>
           </div>
           <div class="context-actions">
+            <div class="system-monitor" id="system-monitor" role="img" aria-label="系统资源监视器">
+              <div class="monitor-item">
+                <div class="monitor-donut" id="monitor-cpu" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-cpu-value">--%</span></div>
+                <small>CPU</small>
+              </div>
+              <div class="monitor-item">
+                <div class="monitor-donut" id="monitor-memory" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-memory-value">--%</span></div>
+                <small>内存</small>
+              </div>
+              <div class="monitor-item">
+                <div class="monitor-donut" id="monitor-gpu" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-gpu-value">--%</span></div>
+                <small>GPU</small>
+              </div>
+              <div class="monitor-item">
+                <div class="monitor-donut" id="monitor-vram" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-vram-value">--%</span></div>
+                <small>显存</small>
+              </div>
+            </div>
             <button id="activity-toggle" class="toolbar-button" type="button" aria-controls="activity-panel" aria-expanded="false">
               <i data-lucide="history" aria-hidden="true"></i>
               <span>运行记录</span>
@@ -272,47 +290,14 @@
                 </div>
               </section>
 
-              <section class="inspector-group" data-modes="merge split mipmap image-dds anime-cutout">
-                <button class="group-toggle" type="button"><span>资源监视器</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
-                <div class="group-content">
-                  <div class="system-monitor">
-                    <div class="monitor-item">
-                      <div class="monitor-donut" id="monitor-cpu" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-cpu-value">--%</span></div>
-                      <small>CPU</small>
-                    </div>
-                    <div class="monitor-item">
-                      <div class="monitor-donut" id="monitor-memory" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-memory-value">--%</span></div>
-                      <small>内存</small>
-                    </div>
-                    <div class="monitor-item">
-                      <div class="monitor-donut" id="monitor-gpu" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-gpu-value">--%</span></div>
-                      <small>GPU</small>
-                    </div>
-                    <div class="monitor-item">
-                      <div class="monitor-donut" id="monitor-vram" style="--usage: 0%"><span class="monitor-donut-value" id="monitor-vram-value">--%</span></div>
-                      <small>显存</small>
-                    </div>
-                  </div>
-                  <small id="monitor-memory-detail" class="settings-hint">内存：读取中…</small>
-                  <small id="monitor-gpu-detail" class="settings-hint"></small>
-                  <div hidden>
-                    <label>输出文件夹</label>
-                    <div class="field-row" data-field="pbr-output"><input id="pbr-output" readonly aria-label="PBR 输出文件夹" title="PBR 输出文件夹" /><button data-pick-dir="pbr-output" type="button">选择</button></div>
-                    <div class="field-row hidden" data-field="split-output"><input id="split-output" readonly aria-label="PBR 拆分输出文件夹" title="PBR 拆分输出文件夹" /><button data-pick-dir="split-output" type="button">选择</button></div>
-                    <div class="field-row hidden" data-field="mipmap-output"><input id="mipmap-output" readonly aria-label="Mipmap 输出文件夹" title="Mipmap 输出文件夹" /><button data-pick-dir="mipmap-output" type="button">选择</button></div>
-                    <div class="field-row hidden" data-field="image-output"><input id="image-output" readonly aria-label="图片转 DDS 输出文件夹" title="图片转 DDS 输出文件夹" /><button data-pick-dir="image-output" type="button">选择</button></div>
-                    <div class="field-row hidden" data-field="anime-output"><input id="anime-output" readonly aria-label="动漫抠图输出文件夹" title="动漫抠图输出文件夹" /><button data-pick-dir="anime-output" type="button">选择</button></div>
-                  </div>
-                </div>
-              </section>
-
               <section class="inspector-group" data-modes="anime-cutout">
                 <button class="group-toggle" type="button"><span>抠图模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
                   <label>模型</label>
-                  <select id="anime-model" aria-label="抠图模型" title="标准抠图速度更快；精细抠图使用 RTMDet 检测 + ISNet 精修，边缘更准">
+                  <select id="anime-model" aria-label="抠图模型" title="标准抠图速度更快；精细抠图使用 RTMDet 检测 + ISNet 精修；ToonOut 为动漫特化模型，发丝与半透明细节最好">
                     <option value="simple">标准抠图（ISNet）</option>
                     <option value="advanced">精细抠图（RTMDet + 精修）</option>
+                    <option value="toonout">动漫特化（ToonOut）</option>
                   </select>
                   <div class="model-status-row">
                     <small id="anime-model-status" class="settings-hint">正在读取模型状态…</small>
@@ -344,6 +329,17 @@
                   <div class="mode-field hidden" data-modes="split"><label>导出格式</label><select id="split-format" aria-label="拆分导出格式" title="拆分导出格式"><option value="png">PNG</option><option value="tga">TGA</option></select><label class="toggle-label"><input id="split-alpha" type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span><span>导出 _c Alpha</span></label></div>
                   <div class="mode-field hidden" data-modes="mipmap"><label>Alpha 通道</label><select id="mipmap-alpha" aria-label="Mipmap Alpha 通道" title="Mipmap Alpha 通道"><option value="keep">保留原图</option><option value="black">纯黑</option><option value="white">纯白</option></select><label>DDS 格式</label><select id="mipmap-format" aria-label="Mipmap DDS 格式" title="Mipmap DDS 格式"><option value="DXT5">DXT5 / BC3</option><option value="8.8.8.8">8.8.8.8</option></select></div>
                   <div class="mode-field hidden" data-modes="image-dds"><label>Alpha 通道</label><select id="image-alpha" aria-label="图片转 DDS Alpha 通道" title="图片转 DDS Alpha 通道"><option value="keep">保留原图</option><option value="black">纯黑</option><option value="white">纯白</option></select><label>DDS 格式</label><select id="image-format" aria-label="图片转 DDS 格式" title="图片转 DDS 格式"><option value="DXT5">DXT5 / BC3</option><option value="8.8.8.8">8.8.8.8</option></select></div>
+                </div>
+              </section>
+
+              <section class="inspector-group" data-modes="merge split mipmap image-dds anime-cutout">
+                <button class="group-toggle" type="button"><span>导出文件夹</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content">
+                  <div class="field-row" data-field="pbr-output"><input id="pbr-output" readonly aria-label="PBR 输出文件夹" title="PBR 输出文件夹" /><button data-pick-dir="pbr-output" type="button">选择</button></div>
+                  <div class="field-row hidden" data-field="split-output"><input id="split-output" readonly aria-label="PBR 拆分输出文件夹" title="PBR 拆分输出文件夹" /><button data-pick-dir="split-output" type="button">选择</button></div>
+                  <div class="field-row hidden" data-field="mipmap-output"><input id="mipmap-output" readonly aria-label="Mipmap 输出文件夹" title="Mipmap 输出文件夹" /><button data-pick-dir="mipmap-output" type="button">选择</button></div>
+                  <div class="field-row hidden" data-field="image-output"><input id="image-output" readonly aria-label="图片转 DDS 输出文件夹" title="图片转 DDS 输出文件夹" /><button data-pick-dir="image-output" type="button">选择</button></div>
+                  <div class="field-row hidden" data-field="anime-output"><input id="anime-output" readonly aria-label="动漫抠图输出文件夹" title="动漫抠图输出文件夹" /><button data-pick-dir="anime-output" type="button">选择</button></div>
                 </div>
               </section>
 

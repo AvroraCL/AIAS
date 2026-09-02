@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AIAS",
-  "version": "5.2.0",
+  "version": "5.3.0",
   "identifier": "studio.avroracl.aias",
   "build": {
     "beforeDevCommand": "npm run dev:renderer",
@@ -34,14 +34,21 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk5NTZFNkQ1NzZFMTYwMwpSV1FERm01WGJXNlZDYVNGanhyeTNUY0UyOGVhVjZMT2xka0FJRlFnSXVaSGVUSXdMazRoZHFmQwo=",
       "endpoints": [
-        "https://github.com/AvroraCL/AIAS/releases/latest/download/latest.json"
+        "https://github.com/AvroraCL/AIAS/releases/latest/download/latest.json",
+        "https://gitcode.com/HelenaSG/Aias/releases/download/stable/latest.json"
       ]
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["../Aias.png"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "resources": {
       "target/release/WebView2Loader.dll": "."
     },

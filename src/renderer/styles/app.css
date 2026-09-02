@@ -615,7 +615,19 @@ textarea:focus { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .monitor-donut { transition: none; }
 }
-#monitor-memory-detail { display: block; margin-top: 2px; }
+
+/* 顶栏紧凑版监视器（位于“运行记录”左侧） */
+.context-actions .system-monitor {
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 0;
+  margin-right: 4px;
+}
+.context-actions .monitor-item { gap: 3px; }
+.context-actions .monitor-item small { font-size: 9px; }
+.context-actions .monitor-donut { width: 40px; height: 40px; }
+.context-actions .monitor-donut::before { width: 30px; height: 30px; }
+.context-actions .monitor-donut-value { font-size: 9px; }
 
 
 .inspector {
@@ -782,6 +794,10 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .preview-picker-message { margin: 0; color: var(--text-soft); white-space: pre-wrap; }
 .preview-picker-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .preview-picker-actions button { min-height: 36px; padding: 0 14px; }
+.preview-picker.danger .confirm-glyph { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 999px; color: #e5484d; background: rgba(229, 72, 77, 0.13); }
+.preview-picker.danger .confirm-glyph svg { width: 18px; height: 18px; }
+button.danger-action { border-color: #e5484d; background: #e5484d; color: #fff; }
+button.danger-action:hover:not(:disabled) { border-color: #ef6a6d; background: #ef6a6d; }
 
 .hidden { display: none !important; }
 

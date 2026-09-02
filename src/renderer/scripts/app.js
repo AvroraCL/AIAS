@@ -34,7 +34,8 @@ import {
   ImagePlus,
   ChevronsLeftRight,
   ImageOff,
-  Check
+  Check,
+  AlertTriangle
 } from "lucide";
 
 const defaults = {
@@ -61,7 +62,8 @@ const defaults = {
 
 const animeModelCatalog = {
   simple: { label: "标准抠图（ISNet）" },
-  advanced: { label: "精细抠图（RTMDet + 精修）" }
+  advanced: { label: "精细抠图（RTMDet + 精修）" },
+  toonout: { label: "动漫特化（ToonOut）" }
 };
 
 const modeMeta = {
@@ -121,7 +123,8 @@ const iconSet = {
   ImagePlus,
   ChevronsLeftRight,
   ImageOff,
-  Check
+  Check,
+  AlertTriangle
 };
 
 const TOAST_LIMIT = 4;
@@ -425,13 +428,15 @@ function openPreviewMessage(title, body) {
   });
 }
 
-function openPreviewConfirm(title, body) {
+function openPreviewConfirm(title, body, options = {}) {
+  const { confirmText = "确定", danger = false } = options;
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "preview-picker-backdrop";
 
     const dialog = document.createElement("div");
     dialog.className = "preview-picker";
+    if (danger) dialog.classList.add("danger");
 
     const heading = document.createElement("strong");
     heading.textContent = title;
@@ -449,9 +454,17 @@ function openPreviewConfirm(title, body) {
 
     const confirm = document.createElement("button");
     confirm.type = "button";
-    confirm.textContent = "确定";
+    confirm.textContent = confirmText;
+    if (danger) confirm.className = "danger-action";
 
     const { close, addCleanup } = createPreviewDialogCloser(overlay, resolve, false);
+
+    if (danger) {
+      const glyph = document.createElement("span");
+      glyph.className = "confirm-glyph";
+      glyph.innerHTML = '<i data-lucide="alert-triangle"></i>';
+      dialog.append(glyph);
+    }
 
     cancel.addEventListener("click", () => close(false));
     confirm.addEventListener("click", () => close(true));
@@ -469,6 +482,7 @@ function openPreviewConfirm(title, body) {
     dialog.append(heading, message, actions);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+    if (danger) refreshIcons(dialog);
     confirm.focus();
   });
 }
@@ -536,7 +550,8 @@ function createBrowserPreviewApi() {
     anime: {
       modelsStatus: async () => [
         { id: "simple", label: "标准抠图（ISNet）", installed: true, totalSize: 176069933, files: [{ name: "isnetis.onnx", present: true, size: 176069933, expectedSize: 176069933 }] },
-        { id: "advanced", label: "精细抠图（RTMDet + 精修）", installed: false, totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", present: false, size: 0, expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", present: false, size: 0, expectedSize: 176197192 }] }
+        { id: "advanced", label: "精细抠图（RTMDet + 精修）", installed: false, totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", present: false, size: 0, expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", present: false, size: 0, expectedSize: 176197192 }] },
+        { id: "toonout", label: "动漫特化（ToonOut）", installed: false, totalSize: 492381880, files: [{ name: "birefnet-toonout-fp16.onnx", present: false, size: 0, expectedSize: 492381880 }] }
       ],
       modelDownload: () => previewOnly("模型下载（需要 Tauri 运行时）"),
       modelUninstall: () => previewOnly("模型卸载（需要 Tauri 运行时）"),
@@ -702,30 +717,38 @@ function setMonitorDonut(donutId, valueId, percent, labelOverride) {
   requestAnimationFrame(step);
 }
 
+const monitorDetails = { memory: "", gpu: "" };
+
+function updateMonitorTitle() {
+  const text = [monitorDetails.memory, monitorDetails.gpu].filter(Boolean).join("\n");
+  $("system-monitor")?.setAttribute("title", text || "系统资源读取中…");
+}
+
 function renderSystemStats(stats) {
   if (!stats) return;
   setMonitorDonut("monitor-cpu", "monitor-cpu-value", Number(stats.cpuUsage) || 0);
   const total = Number(stats.memoryTotal) || 0;
   const used = Number(stats.memoryUsed) || 0;
   setMonitorDonut("monitor-memory", "monitor-memory-value", total > 0 ? (used / total) * 100 : 0);
-  setText("monitor-memory-detail", total > 0 ? `已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : "内存：读取中…");
+  monitorDetails.memory = total > 0 ? `内存：已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : "内存：读取中…";
+  updateMonitorTitle();
 }
 
 function renderGpuStats(stats) {
   if (!stats?.available) {
     setMonitorDonut("monitor-gpu", "monitor-gpu-value", 0, "--");
     setMonitorDonut("monitor-vram", "monitor-vram-value", 0, "--");
-    setText("monitor-gpu-detail", "未检测到 GPU（需要 NVIDIA 驱动）");
+    monitorDetails.gpu = "未检测到 GPU（需要 NVIDIA 驱动）";
+    updateMonitorTitle();
     return;
   }
   setMonitorDonut("monitor-gpu", "monitor-gpu-value", Number(stats.utilization) || 0);
   const total = Number(stats.memoryTotal) || 0;
   const used = Number(stats.memoryUsed) || 0;
   setMonitorDonut("monitor-vram", "monitor-vram-value", total > 0 ? (used / total) * 100 : 0);
-  setText(
-    "monitor-gpu-detail",
-    total > 0 ? `${stats.name} · 已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : stats.name
-  );
+  monitorDetails.gpu =
+    total > 0 ? `${stats.name} · 显存已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : stats.name;
+  updateMonitorTitle();
 }
 
 function startSystemMonitor() {
@@ -812,6 +835,14 @@ async function downloadAnimeModel() {
 async function uninstallAnimeModel() {
   const modelId = $("anime-model")?.value || "simple";
   if (state.animeDownloading) return;
+  const model = animeModelById(modelId);
+  const label = model?.label || animeModelCatalog[modelId]?.label || modelId;
+  const confirmed = await openPreviewConfirm(
+    "卸载模型",
+    `即将删除「${label}」的本地模型文件（共 ${formatBytes(model?.totalSize || 0)}）。卸载后需要重新下载才能使用该模型，确定继续吗？`,
+    { confirmText: "卸载", danger: true }
+  );
+  if (!confirmed) return;
   state.animeDownloading = true;
   renderAnimeModelStatus();
   try {

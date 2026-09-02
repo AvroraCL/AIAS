@@ -32,6 +32,7 @@ pub struct ModelSpec {
 const ISNETIS_SIZE: u64 = 176_069_933;
 const RTMDET_SIZE: u64 = 238_686_077;
 const REFINER_SIZE: u64 = 176_197_192;
+const TOONOUT_SIZE: u64 = 492_381_880;
 
 pub const MODELS: &[ModelSpec] = &[
     ModelSpec {
@@ -61,6 +62,16 @@ pub const MODELS: &[ModelSpec] = &[
                 origin_url: "https://huggingface.co/Faor-Mati/anime-character-segmentation/resolve/main/mask_refiner_isnetdis_refine_last_simplified.onnx",
             },
         ],
+    },
+    ModelSpec {
+        id: "toonout",
+        label: "动漫特化（ToonOut）",
+        files: &[ModelFileSpec {
+            name: "birefnet-toonout-fp16.onnx",
+            size: TOONOUT_SIZE,
+            mirror_url: "https://hf-mirror.com/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
+            origin_url: "https://huggingface.co/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
+        }],
     },
 ];
 
@@ -390,6 +401,9 @@ pub fn uninstall_model(base: &Path, id: &str) -> Result<(), String> {
         "advanced" => {
             advanced_slot().lock().map_err(lock_error)?.take();
         }
+        "toonout" => {
+            toonout_slot().lock().map_err(lock_error)?.take();
+        }
         _ => return Err(format!("未知模型：{id}")),
     }
     let mut errors = Vec::new();
@@ -427,6 +441,7 @@ struct AdvancedSessions {
 
 static SIMPLE_SESSION: OnceLock<Mutex<Option<SimpleSessions>>> = OnceLock::new();
 static ADVANCED_SESSIONS: OnceLock<Mutex<Option<AdvancedSessions>>> = OnceLock::new();
+static TOONOUT_SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
 
 fn simple_slot() -> &'static Mutex<Option<SimpleSessions>> {
     SIMPLE_SESSION.get_or_init(|| Mutex::new(None))
@@ -434,6 +449,10 @@ fn simple_slot() -> &'static Mutex<Option<SimpleSessions>> {
 
 fn advanced_slot() -> &'static Mutex<Option<AdvancedSessions>> {
     ADVANCED_SESSIONS.get_or_init(|| Mutex::new(None))
+}
+
+fn toonout_slot() -> &'static Mutex<Option<Session>> {
+    TOONOUT_SESSION.get_or_init(|| Mutex::new(None))
 }
 
 fn build_session(path: &Path) -> Result<Session, String> {
@@ -948,6 +967,92 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
 }
 
 // ---------------------------------------------------------------------------
+// ToonOut (BiRefNet anime fine-tune) — port of the sprited ONNX usage
+// ---------------------------------------------------------------------------
+
+const TOONOUT_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+const TOONOUT_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
+fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
+    ensure_ort_runtime(base)?;
+    let mut guard = toonout_slot().lock().map_err(lock_error)?;
+    if guard.is_none() {
+        let path = models_dir(base).join("birefnet-toonout-fp16.onnx");
+        if !path.exists() {
+            return Err("ToonOut 模型未安装，请先在参数面板下载。".into());
+        }
+        *guard = Some(build_session(&path)?);
+    }
+    let session = guard.as_mut().expect("session initialized");
+    let (w, h) = rgb.dimensions();
+
+    // Export fixes the input at 1024x1024; fall back if a rebuild is dynamic.
+    let (seg_h, seg_w) = input_size(session).unwrap_or((1024, 1024));
+
+    // Plain square resize (stretch) to the model input, then /255 and
+    // ImageNet normalization in RGB order.
+    let resized = if w == seg_w as u32 && h == seg_h as u32 {
+        rgb.clone()
+    } else {
+        image::imageops::resize(rgb, seg_w as u32, seg_h as u32, FilterType::Triangle)
+    };
+    let plane = seg_h * seg_w;
+    let mut input = vec![0_f32; 3 * plane];
+    for y in 0..seg_h as u32 {
+        for x in 0..seg_w as u32 {
+            let pixel = resized.get_pixel(x, y);
+            let dst = y as usize * seg_w + x as usize;
+            input[dst] = (pixel[0] as f32 / 255.0 - TOONOUT_MEAN[0]) / TOONOUT_STD[0];
+            input[plane + dst] = (pixel[1] as f32 / 255.0 - TOONOUT_MEAN[1]) / TOONOUT_STD[1];
+            input[2 * plane + dst] = (pixel[2] as f32 / 255.0 - TOONOUT_MEAN[2]) / TOONOUT_STD[2];
+        }
+    }
+
+    let input_name = session.inputs()[0].name().to_string();
+    let output_name = session.outputs()[0].name().to_string();
+    let tensor =
+        Tensor::from_array((vec![1_usize, 3, seg_h, seg_w], input)).map_err(to_string_error)?;
+    let outputs = session
+        .run(ort::inputs![input_name.as_str() => tensor])
+        .map_err(to_string_error)?;
+    let (shape, mask) = outputs[output_name.as_str()]
+        .try_extract_tensor::<f32>()
+        .map_err(to_string_error)?;
+    let mask_h = (*shape.get(2).ok_or("模型输出 shape 无效")?) as u32;
+    let mask_w = (*shape.get(3).ok_or("模型输出 shape 无效")?) as u32;
+    let mask_len = mask_h as usize * mask_w as usize;
+
+    // The export already applies sigmoid; the range guard just keeps an
+    // un-sigmoided rebuild from producing a fully transparent result.
+    let needs_sigmoid = mask[..mask_len]
+        .iter()
+        .any(|value| *value < -0.01 || *value > 1.01);
+
+    // Input was stretched (not padded), so stretching the matte back to the
+    // original size restores the aspect ratio.
+    let resized_mask = if mask_h == h && mask_w == w {
+        mask[..mask_len].to_vec()
+    } else {
+        let source = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(mask_w, mask_h, mask[..mask_len].to_vec())
+            .ok_or("掩码缓冲无效")?;
+        image::imageops::resize(&source, w, h, FilterType::Triangle).into_raw()
+    };
+    let resized_mask = if needs_sigmoid {
+        resized_mask
+            .into_iter()
+            .map(stable_sigmoid)
+            .collect::<Vec<f32>>()
+    } else {
+        resized_mask
+    };
+
+    Ok(resized_mask
+        .into_iter()
+        .map(|value| value.clamp(0.0, 1.0))
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
 // Public entry: cut a single image
 // ---------------------------------------------------------------------------
 
@@ -967,6 +1072,7 @@ pub fn cutout(
     let mask = match model_id {
         "simple" => run_simple(base, &rgb)?,
         "advanced" => run_advanced(base, &rgb)?,
+        "toonout" => run_toonout(base, &rgb)?,
         other => return Err(format!("未知模型：{other}")),
     };
 
@@ -996,4 +1102,46 @@ fn exif_orientation(input: &Path) -> Result<Option<image::metadata::Orientation>
 
 fn to_string_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod toonout_tests {
+    use super::*;
+
+    /// 端到端验证 ToonOut：下载 470MB 模型 + 真实推理，仅在手动运行：
+    /// `cargo test toonout -- --ignored --nocapture`
+    #[test]
+    #[ignore = "下载并运行 470MB 模型，手动执行"]
+    fn toonout_end_to_end() {
+        let base = std::env::temp_dir().join("aias-toonout-e2e");
+        fs::create_dir_all(&base).unwrap();
+        download_model(None, &base, "toonout").unwrap();
+
+        // 深蓝背景上一块亮橙色圆角主体，模型应保留主体、清除背景。
+        let mut img = RgbImage::new(512, 384);
+        for y in 0..384 {
+            for x in 0..512 {
+                img.put_pixel(x, y, image::Rgb([28, 34, 58]));
+            }
+        }
+        for y in 96..288 {
+            for x in 128..384 {
+                img.put_pixel(x, y, image::Rgb([244, 150, 58]));
+            }
+        }
+        let input = base.join("in.png");
+        let output = base.join("out.png");
+        img.save(&input).unwrap();
+
+        cutout(&base, "toonout", &input, &output).unwrap();
+        let out = image::open(&output).unwrap().to_rgba8();
+        assert_eq!(out.dimensions(), (512, 384));
+
+        let alpha = |x: u32, y: u32| out.get_pixel(x, y)[3];
+        let center = alpha(256, 192);
+        let corner = alpha(8, 8);
+        assert!(center > 220, "主体中心应不透明，实际 {center}");
+        assert!(corner < 60, "背景角应接近透明，实际 {corner}");
+        println!("center={center} corner={corner}");
+    }
 }

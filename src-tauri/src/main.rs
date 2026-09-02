@@ -1400,9 +1400,10 @@ mod tests {
       return;
     };
     let status = anime::models_status(&base);
-    assert_eq!(status.len(), 2);
+    assert_eq!(status.len(), 3);
     assert_eq!(status[0].id, "simple");
     assert_eq!(status[1].id, "advanced");
+    assert_eq!(status[2].id, "toonout");
     for model in &status {
       assert!(!model.label.is_empty());
       assert!(model.total_size > 0);
