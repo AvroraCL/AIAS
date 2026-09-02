@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
@@ -12,6 +12,7 @@ import {
   Image,
   Images,
   Shirt,
+  Scissors,
   Settings2,
   History,
   Bell,
@@ -29,7 +30,11 @@ import {
   ChevronDown,
   Trash2,
   Play,
-  X
+  X,
+  ImagePlus,
+  ChevronsLeftRight,
+  ImageOff,
+  Check
 } from "lucide";
 
 const defaults = {
@@ -49,7 +54,14 @@ const defaults = {
   imageToDdsAlpha: "keep",
   imageToDdsFormat: "DXT5",
   scaleTarget: "none",
-  skinManagerPath: ""
+  skinManagerPath: "",
+  animeModel: "simple",
+  animeCutoutOutputPath: ""
+};
+
+const animeModelCatalog = {
+  simple: { label: "标准抠图（ISNet）" },
+  advanced: { label: "精细抠图（RTMDet + 精修）" }
 };
 
 const modeMeta = {
@@ -57,6 +69,7 @@ const modeMeta = {
   split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },
   mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
   "image-dds": { title: "图片转 DDS", description: "批量转换图片并统一 DDS 压缩格式" },
+  "anime-cutout": { title: "动漫抠图", description: "内置模型离线推理，输出透明背景 PNG" },
   skins: { title: "涂装管理", description: "管理 War Thunder UserSkins 资源" },
   settings: { title: "应用设置", description: "更新、数据路径与版本信息" }
 };
@@ -65,6 +78,13 @@ const state = {
   settings: {},
   splitFiles: [],
   imageFiles: [],
+  animeFiles: [],
+  animeModels: [],
+  animeDownloading: false,
+  animeResults: new Map(),
+  animeProbed: new Set(),
+  animeActiveIndex: 0,
+  animeComparePos: 50,
   activeMode: "merge",
   activityCount: 0,
   lastOutputPath: "",
@@ -79,6 +99,7 @@ const iconSet = {
   Image,
   Images,
   Shirt,
+  Scissors,
   Settings2,
   History,
   Bell,
@@ -96,7 +117,11 @@ const iconSet = {
   ChevronDown,
   Trash2,
   Play,
-  X
+  X,
+  ImagePlus,
+  ChevronsLeftRight,
+  ImageOff,
+  Check
 };
 
 const TOAST_LIMIT = 4;
@@ -132,6 +157,7 @@ function getModeOutputPath(mode = state.activeMode) {
     split: "split-output",
     mipmap: "mipmap-output",
     "image-dds": "image-output",
+    "anime-cutout": "anime-output",
     skins: "skin-path"
   };
   return $(fieldByMode[mode])?.value || "";
@@ -507,12 +533,43 @@ function createBrowserPreviewApi() {
       createMipmap: () => previewOnly("Mipmap 生成"),
       convertImagesToDds: () => previewOnly("图片转 DDS")
     },
+    anime: {
+      modelsStatus: async () => [
+        { id: "simple", label: "标准抠图（ISNet）", installed: true, totalSize: 176069933, files: [{ name: "isnetis.onnx", present: true, size: 176069933, expectedSize: 176069933 }] },
+        { id: "advanced", label: "精细抠图（RTMDet + 精修）", installed: false, totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", present: false, size: 0, expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", present: false, size: 0, expectedSize: 176197192 }] }
+      ],
+      modelDownload: () => previewOnly("模型下载（需要 Tauri 运行时）"),
+      modelUninstall: () => previewOnly("模型卸载（需要 Tauri 运行时）"),
+      cutout: () => previewOnly("动漫抠图（需要 Tauri 运行时）")
+    },
     skin: {
       autoDetect: async () => null,
       list: async () => [],
       import: async () => ({ imported: 0, errors: [] }),
       toggle: async (filePath) => ({ path: filePath }),
       delete: async () => ({ deleted: true })
+    },
+    system: {
+      stats: async () => {
+        const total = 32 * 1024 ** 3;
+        return {
+          cpuUsage: Math.round(18 + Math.random() * 45),
+          memoryUsed: Math.round(total * (0.35 + Math.random() * 0.35)),
+          memoryTotal: total
+        };
+      }
+    },
+    gpu: {
+      stats: async () => {
+        const total = 12 * 1024 ** 3;
+        return {
+          available: true,
+          name: "NVIDIA GeForce RTX 4070",
+          utilization: Math.round(10 + Math.random() * 70),
+          memoryUsed: Math.round(total * (0.2 + Math.random() * 0.5)),
+          memoryTotal: total
+        };
+      }
     },
     shell: {
       openPath: async (filePath) => addActivity("浏览器预览", `不能打开本地文件：${filePath}`)
@@ -552,12 +609,24 @@ function createTauriApi() {
       createMipmap: (options) => invoke("texture_create_mipmap", { options }),
       convertImagesToDds: (options) => invoke("texture_convert_images_to_dds", { options })
     },
+    anime: {
+      modelsStatus: () => invoke("anime_models_status"),
+      modelDownload: (modelId) => invoke("anime_model_download", { modelId }),
+      modelUninstall: (modelId) => invoke("anime_model_uninstall", { modelId }),
+      cutout: (options) => invoke("anime_cutout", { options })
+    },
     skin: {
       autoDetect: () => invoke("skin_auto_detect"),
       list: (directory) => invoke("skin_list", { directory }),
       import: (options) => invoke("skin_import", { options }),
       toggle: (filePath) => invoke("skin_toggle", { filePath }),
       delete: (filePath) => invoke("skin_delete", { filePath })
+    },
+    system: {
+      stats: () => invoke("system_stats")
+    },
+    gpu: {
+      stats: () => invoke("gpu_stats")
     },
     shell: {
       openPath
@@ -597,6 +666,357 @@ function appendActivityHistory(title, body, tone) {
   state.activityCount += 1;
   setText("activity-count", String(state.activityCount));
   setText("activity-summary", `${state.activityCount} 条记录`);
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(0)} KB`;
+  return `${value} B`;
+}
+
+const MONITOR_VALUE_ANIM_MS = 700;
+
+function setMonitorDonut(donutId, valueId, percent, labelOverride) {
+  const donut = $(donutId);
+  if (!donut) return;
+  const clamped = Math.min(100, Math.max(0, Math.round(percent)));
+  donut.style.setProperty("--usage", `${clamped}%`);
+  const label = $(valueId);
+  if (!label) return;
+  if (labelOverride !== undefined) {
+    label.textContent = labelOverride;
+    return;
+  }
+  // 数字与 CSS 弧线过渡同步缓动。
+  const from = Number(label.dataset.usage || "0");
+  label.dataset.usage = String(clamped);
+  const startedAt = performance.now();
+  const step = () => {
+    const t = Math.min(1, (performance.now() - startedAt) / MONITOR_VALUE_ANIM_MS);
+    const eased = 1 - (1 - t) ** 3;
+    label.textContent = `${Math.round(from + (clamped - from) * eased)}%`;
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function renderSystemStats(stats) {
+  if (!stats) return;
+  setMonitorDonut("monitor-cpu", "monitor-cpu-value", Number(stats.cpuUsage) || 0);
+  const total = Number(stats.memoryTotal) || 0;
+  const used = Number(stats.memoryUsed) || 0;
+  setMonitorDonut("monitor-memory", "monitor-memory-value", total > 0 ? (used / total) * 100 : 0);
+  setText("monitor-memory-detail", total > 0 ? `已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : "内存：读取中…");
+}
+
+function renderGpuStats(stats) {
+  if (!stats?.available) {
+    setMonitorDonut("monitor-gpu", "monitor-gpu-value", 0, "--");
+    setMonitorDonut("monitor-vram", "monitor-vram-value", 0, "--");
+    setText("monitor-gpu-detail", "未检测到 GPU（需要 NVIDIA 驱动）");
+    return;
+  }
+  setMonitorDonut("monitor-gpu", "monitor-gpu-value", Number(stats.utilization) || 0);
+  const total = Number(stats.memoryTotal) || 0;
+  const used = Number(stats.memoryUsed) || 0;
+  setMonitorDonut("monitor-vram", "monitor-vram-value", total > 0 ? (used / total) * 100 : 0);
+  setText(
+    "monitor-gpu-detail",
+    total > 0 ? `${stats.name} · 已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : stats.name
+  );
+}
+
+function startSystemMonitor() {
+  const poll = async () => {
+    try {
+      renderSystemStats(await api.system.stats());
+    } catch {
+      // 轮询失败静默跳过，下一轮继续
+    }
+    try {
+      renderGpuStats(await api.gpu.stats());
+    } catch {
+      renderGpuStats(null);
+    }
+  };
+  poll();
+  window.setInterval(poll, 2000);
+}
+
+function animeModelById(id) {
+  return state.animeModels.find((model) => model.id === id) || null;
+}
+
+function isAnimeModelReady(id) {
+  const model = animeModelById(id);
+  return Boolean(model?.installed);
+}
+
+function describeAnimeModel(model) {
+  if (!model) return "状态未知";
+  const size = formatBytes(model.totalSize);
+  if (model.installed) return `已安装 · ${size}`;
+  const missing = model.files.filter((file) => !file.present || file.size !== file.expectedSize);
+  if (!model.files.some((file) => file.present)) return `未安装 · 共 ${size}`;
+  return `未完整 · 缺 ${formatBytes(missing.reduce((sum, file) => sum + Math.max(0, file.expectedSize - file.size), 0))}`;
+}
+
+async function refreshAnimeModelStatus() {
+  try {
+    state.animeModels = await api.anime.modelsStatus();
+  } catch (error) {
+    state.animeModels = [];
+    setText("anime-model-status", `无法读取模型状态：${error.message || error}`);
+    return;
+  }
+  renderAnimeModelStatus();
+}
+
+function renderAnimeModelStatus() {
+  const model = animeModelById($("anime-model")?.value || "simple");
+  setText("anime-model-status", describeAnimeModel(model));
+  const ready = Boolean(model?.installed);
+  const downloading = state.animeDownloading;
+  $("anime-model-download")?.classList.toggle("hidden", ready || downloading);
+  $("anime-model-uninstall")?.classList.toggle("hidden", !ready || downloading);
+  $("anime-model-progress")?.classList.toggle("hidden", !downloading);
+  const runButton = $("run-anime-cutout");
+  if (runButton) runButton.disabled = downloading;
+  if (downloading) {
+    $("anime-model-progress")?.classList.remove("hidden");
+  } else {
+    $("anime-model-progress-fill")?.style.setProperty("width", "0%");
+    setText("anime-model-progress-text", "");
+  }
+  updateStatus();
+}
+
+async function downloadAnimeModel() {
+  const modelId = $("anime-model")?.value || "simple";
+  if (state.animeDownloading) return;
+  state.animeDownloading = true;
+  renderAnimeModelStatus();
+  addActivity("开始下载模型", animeModelCatalog[modelId]?.label || modelId);
+  try {
+    state.animeModels = await api.anime.modelDownload(modelId);
+    addActivity("模型下载完成", animeModelCatalog[modelId]?.label || modelId, "success");
+  } catch (error) {
+    addActivity("模型下载失败", error.message || String(error), "error");
+  }
+  state.animeDownloading = false;
+  renderAnimeModelStatus();
+}
+
+async function uninstallAnimeModel() {
+  const modelId = $("anime-model")?.value || "simple";
+  if (state.animeDownloading) return;
+  state.animeDownloading = true;
+  renderAnimeModelStatus();
+  try {
+    state.animeModels = await api.anime.modelUninstall(modelId);
+    addActivity("模型已卸载", animeModelCatalog[modelId]?.label || modelId, "success");
+  } catch (error) {
+    addActivity("模型卸载失败", error.message || String(error), "error");
+  }
+  state.animeDownloading = false;
+  renderAnimeModelStatus();
+}
+
+// ---------------------------------------------------------------- 动漫抠图画廊
+
+function animeStem(file) {
+  const name = basename(file);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+function animeLocalSrc(path) {
+  return isTauriRuntime && path ? convertFileSrc(path) : "";
+}
+
+function expectedAnimeOutput(file) {
+  const dir = $("anime-output")?.value?.trim();
+  if (!dir) return "";
+  return `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}.png`;
+}
+
+function applyAnimeOutputs(paths) {
+  for (const path of paths || []) {
+    state.animeResults.set(animeStem(path), path);
+  }
+  renderAnimeGallery();
+}
+
+function resetAnimeResults() {
+  state.animeResults.clear();
+  state.animeProbed.clear();
+}
+
+function probeAnimeResult(file) {
+  const stem = animeStem(file);
+  if (state.animeResults.has(stem) || state.animeProbed.has(stem)) return;
+  state.animeProbed.add(stem);
+  const candidate = expectedAnimeOutput(file);
+  if (!candidate || !isTauriRuntime) return;
+  const probe = new Image();
+  probe.onload = () => {
+    if (!state.animeFiles.some((item) => animeStem(item) === stem)) return;
+    state.animeResults.set(stem, candidate);
+    renderAnimeGallery();
+  };
+  probe.onerror = () => state.animeResults.delete(stem);
+  probe.src = candidate;
+}
+
+function renderAnimeGallery() {
+  const files = state.animeFiles;
+  if (state.animeActiveIndex >= files.length) state.animeActiveIndex = Math.max(0, files.length - 1);
+  const hasFiles = files.length > 0;
+  $("anime-empty")?.classList.toggle("hidden", hasFiles);
+  $("anime-gallery")?.classList.toggle("hidden", !hasFiles);
+  setText("anime-toolbar-count", hasFiles ? `${files.length} 张图片` : "尚未添加图片");
+  if (!hasFiles) return;
+  renderAnimeThumbs(files);
+  renderAnimeCompare(files[state.animeActiveIndex]);
+  files.forEach((file) => probeAnimeResult(file));
+}
+
+function renderAnimeThumbs(files) {
+  const strip = $("anime-thumbs");
+  if (!strip) return;
+  strip.innerHTML = "";
+  files.forEach((file, index) => {
+    const thumb = document.createElement("button");
+    thumb.type = "button";
+    thumb.className = "anime-thumb";
+    thumb.classList.toggle("active", index === state.animeActiveIndex);
+    thumb.title = file;
+
+    const img = document.createElement("img");
+    img.alt = basename(file);
+    img.draggable = false;
+    const src = animeLocalSrc(file);
+    if (src) {
+      img.src = src;
+    } else {
+      thumb.classList.add("placeholder");
+    }
+
+    const done = state.animeResults.has(animeStem(file));
+    const badge = document.createElement("span");
+    badge.className = `thumb-badge ${done ? "done" : "pending"}`;
+    badge.title = done ? "已有抠图结果" : "待处理";
+    badge.innerHTML = done ? '<i data-lucide="check"></i>' : "";
+
+    const remove = document.createElement("span");
+    remove.className = "thumb-remove";
+    remove.title = `移除 ${basename(file)}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.innerHTML = '<i data-lucide="x"></i>';
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      removeAnimeFile(file);
+    });
+
+    thumb.addEventListener("click", () => {
+      state.animeActiveIndex = index;
+      renderAnimeGallery();
+    });
+
+    thumb.append(img, badge, remove);
+    strip.appendChild(thumb);
+  });
+  refreshIcons(strip);
+}
+
+function removeAnimeFile(file) {
+  state.animeFiles = state.animeFiles.filter((item) => item !== file);
+  state.animeResults.delete(animeStem(file));
+  renderAnimeGallery();
+  updateStatus();
+}
+
+function renderAnimeCompare(file) {
+  const stage = $("anime-compare");
+  if (!stage || !file) return;
+  const result = state.animeResults.get(animeStem(file)) || "";
+  const hasResult = Boolean(result);
+  const hasLocal = Boolean(animeLocalSrc(file));
+  stage.classList.toggle("no-result", !hasResult);
+  stage.classList.toggle("no-file", !hasLocal);
+
+  const original = $("anime-compare-original");
+  const after = $("anime-compare-after");
+  const originalSrc = animeLocalSrc(file);
+  const resultSrc = animeLocalSrc(result);
+  if (original) {
+    if (originalSrc) original.src = originalSrc;
+    else original.removeAttribute("src");
+  }
+  if (after) {
+    if (resultSrc) after.src = resultSrc;
+    else after.removeAttribute("src");
+  }
+
+  if (hasResult) {
+    stage.style.setProperty("--compare-pos", `${state.animeComparePos}%`);
+  } else {
+    stage.style.setProperty("--compare-pos", "100%");
+  }
+  const hint = $("anime-compare-hint");
+  if (hint) hint.hidden = hasResult || !hasLocal;
+  const empty = $("anime-compare-empty");
+  if (empty) empty.hidden = hasLocal;
+  $("anime-compare-divider")?.setAttribute("aria-valuenow", String(Math.round(hasResult ? state.animeComparePos : 100)));
+}
+
+function setAnimeComparePosition(percent) {
+  const stage = $("anime-compare");
+  if (!stage) return;
+  state.animeComparePos = Math.min(100, Math.max(0, percent));
+  stage.style.setProperty("--compare-pos", `${state.animeComparePos}%`);
+  $("anime-compare-divider")?.setAttribute("aria-valuenow", String(Math.round(state.animeComparePos)));
+}
+
+function bindAnimeGallery() {
+  const stage = $("anime-compare");
+  const divider = $("anime-compare-divider");
+  if (!stage || !divider) return;
+
+  const positionFromEvent = (event) => {
+    const rect = stage.getBoundingClientRect();
+    if (!rect.width) return state.animeComparePos;
+    return ((event.clientX - rect.left) / rect.width) * 100;
+  };
+
+  stage.addEventListener("pointerdown", (event) => {
+    if (stage.classList.contains("no-result") || stage.classList.contains("no-file")) return;
+    event.preventDefault();
+    stage.setPointerCapture(event.pointerId);
+    setAnimeComparePosition(positionFromEvent(event));
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!stage.hasPointerCapture(event.pointerId)) return;
+    setAnimeComparePosition(positionFromEvent(event));
+  });
+  const release = (event) => {
+    if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+  };
+  stage.addEventListener("pointerup", release);
+  stage.addEventListener("pointercancel", release);
+
+  divider.addEventListener("keydown", (event) => {
+    if (stage.classList.contains("no-result") || stage.classList.contains("no-file")) return;
+    const step = event.shiftKey ? 10 : 2;
+    if (event.key === "ArrowLeft") setAnimeComparePosition(state.animeComparePos - step);
+    else if (event.key === "ArrowRight") setAnimeComparePosition(state.animeComparePos + step);
+    else if (event.key === "Home") setAnimeComparePosition(0);
+    else if (event.key === "End") setAnimeComparePosition(100);
+    else return;
+    event.preventDefault();
+  });
 }
 
 function addActivity(title, body, tone = "idle") {
@@ -655,7 +1075,8 @@ function syncActiveLog(mode = state.activeMode) {
     merge: "merge-log",
     split: "split-log",
     mipmap: "mipmap-log",
-    "image-dds": "image-log"
+    "image-dds": "image-log",
+    "anime-cutout": "anime-log"
   };
   document.querySelectorAll(".task-log").forEach((log) => {
     log.classList.toggle("active", log.id === logByMode[mode]);
@@ -861,9 +1282,11 @@ async function withLog(logId, button, action, title) {
     addActivity(title || "任务完成", `${result.completed} / ${result.total}`, "success");
     state.lastOutputPath = getModeOutputPath();
     $("open-current-output")?.classList.toggle("hidden", !state.lastOutputPath);
+    return result;
   } catch (error) {
     if (log) log.textContent += `失败：${error.message || error}`;
     addActivity(title || "任务失败", error.message || String(error), "error");
+    return null;
   } finally {
     state.taskProgressActive = false;
     setBusy(button, false);
@@ -888,7 +1311,9 @@ function collectSettings() {
     imageToDdsAlpha: $("image-alpha")?.value || "keep",
     imageToDdsFormat: $("image-format")?.value || "DXT5",
     scaleTarget: $("scale-target")?.value || "none",
-    skinManagerPath: $("skin-path")?.value || ""
+    skinManagerPath: $("skin-path")?.value || "",
+    animeModel: $("anime-model")?.value || "simple",
+    animeCutoutOutputPath: $("anime-output")?.value || ""
   };
 }
 
@@ -910,7 +1335,9 @@ function applySettingsToForm() {
     "image-alpha": settings.imageToDdsAlpha,
     "image-format": settings.imageToDdsFormat,
     "scale-target": settings.scaleTarget,
-    "skin-path": settings.skinManagerPath
+    "skin-path": settings.skinManagerPath,
+    "anime-model": settings.animeModel || "simple",
+    "anime-output": settings.animeCutoutOutputPath
   };
 
   for (const [id, value] of Object.entries(map)) {
@@ -937,7 +1364,8 @@ function updateRunButtons(mode) {
     merge: "run-merge",
     split: "run-split",
     mipmap: "run-mipmap",
-    "image-dds": "run-image-dds"
+    "image-dds": "run-image-dds",
+    "anime-cutout": "run-anime-cutout"
   };
 
   document.querySelectorAll(".run-button").forEach((button) => button.classList.add("hidden"));
@@ -946,6 +1374,7 @@ function updateRunButtons(mode) {
 
   $("clear-split-files")?.classList.toggle("hidden", mode !== "split");
   $("clear-image-files")?.classList.toggle("hidden", mode !== "image-dds");
+  $("clear-anime-files")?.classList.toggle("hidden", mode !== "anime-cutout");
   $("import-skins")?.classList.toggle("hidden", mode !== "skins");
   $("refresh-skins")?.classList.toggle("hidden", mode !== "skins");
 }
@@ -967,7 +1396,8 @@ function updateInspector() {
     "split-output": state.activeMode === "split",
     "mipmap-input": state.activeMode === "mipmap",
     "mipmap-output": state.activeMode === "mipmap",
-    "image-output": state.activeMode === "image-dds"
+    "image-output": state.activeMode === "image-dds",
+    "anime-output": state.activeMode === "anime-cutout"
   };
 
   for (const [id, visible] of Object.entries(fieldVisibility)) {
@@ -978,7 +1408,7 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const runnableModes = ["merge", "split", "mipmap", "image-dds"];
+  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout"];
   const blocker = getRunBlocker(mode);
   const ready = runnableModes.includes(mode) && !blocker;
 
@@ -999,7 +1429,8 @@ function updateStatus() {
     merge: "run-merge",
     split: "run-split",
     mipmap: "run-mipmap",
-    "image-dds": "run-image-dds"
+    "image-dds": "run-image-dds",
+    "anime-cutout": "run-anime-cutout"
   };
   const activeRunButton = $(runButtonByMode[mode]);
   if (activeRunButton && activeRunButton.dataset.busy !== "true") {
@@ -1026,6 +1457,13 @@ function getRunBlocker(mode) {
     case "image-dds":
       if (!state.imageFiles.length) return "请添加图片文件。";
       if (!$("image-output")?.value) return "请选择输出文件夹。";
+      return null;
+    case "anime-cutout":
+      if (!state.animeFiles.length) return "请添加动漫图片。";
+      if (!$("anime-output")?.value) return "请选择输出文件夹。";
+      if (!isTauriRuntime) return null;
+      if (state.animeDownloading) return "模型正在下载中，请稍候。";
+      if (!isAnimeModelReady($("anime-model")?.value || "simple")) return "当前模型未安装，请先在「抠图模型」中下载。";
       return null;
     default:
       return null;
@@ -1058,6 +1496,10 @@ function applyMode(mode) {
   const inspector = document.querySelector(".inspector");
   if (inspector) inspector.classList.toggle("hidden", isFull);
   if (mode === "settings") syncSettingsView();
+  if (mode === "anime-cutout") {
+    refreshAnimeModelStatus();
+    renderAnimeGallery();
+  }
   syncActiveLog(mode);
   updateRunButtons(mode);
   updateInspector();
@@ -1114,6 +1556,15 @@ function bindWorkspaceActions() {
       saveSettings();
     });
   });
+
+  $("anime-model")?.addEventListener("change", () => {
+    updateStatus();
+    saveSettings();
+    renderAnimeModelStatus();
+  });
+
+  $("anime-model-download")?.addEventListener("click", () => downloadAnimeModel());
+  $("anime-model-uninstall")?.addEventListener("click", () => uninstallAnimeModel());
 
   document.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey) || event.key !== "Enter") return;
@@ -1185,6 +1636,10 @@ function bindDropZones() {
       if (button.dataset.pickDir === "skin-path") {
         await refreshSkins();
       }
+      if (button.dataset.pickDir === "anime-output") {
+        resetAnimeResults();
+        renderAnimeGallery();
+      }
     });
     if (button.tagName === "BUTTON") return;
     button.addEventListener("keydown", async (event) => {
@@ -1209,6 +1664,15 @@ function bindDropZones() {
     renderChips("image-file-list", state.imageFiles);
     updateStatus();
   });
+
+  $("pick-anime-files")?.addEventListener("click", async () => {
+    const files = await api.dialog.selectFiles({
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }]
+    });
+    state.animeFiles = [...new Set([...state.animeFiles, ...files])];
+    renderAnimeGallery();
+    updateStatus();
+  });
 }
 
 function bindFileControls() {
@@ -1224,6 +1688,15 @@ function bindFileControls() {
     renderChips("image-file-list", []);
     updateStatus();
     addActivity("已清空列表", "图片文件列表已清空。");
+  });
+
+  $("clear-anime-files")?.addEventListener("click", () => {
+    state.animeFiles = [];
+    resetAnimeResults();
+    state.animeActiveIndex = 0;
+    renderAnimeGallery();
+    updateStatus();
+    addActivity("已清空列表", "动漫图片列表已清空。");
   });
 }
 
@@ -1319,6 +1792,29 @@ function bindRunActions() {
       "图片转 DDS"
     );
   });
+
+  $("run-anime-cutout")?.addEventListener("click", async (event) => {
+    await saveSettings();
+    const blocker = getRunBlocker("anime-cutout");
+    if (blocker) {
+      reportRunBlocker(blocker);
+      return;
+    }
+    const modelId = $("anime-model")?.value || "simple";
+    addActivity("开始抠图", `${state.animeFiles.length} 张图片 · ${animeModelCatalog[modelId]?.label || modelId}`);
+    const result = await withLog(
+      "anime-log",
+      event.currentTarget,
+      () =>
+        api.anime.cutout({
+          files: state.animeFiles,
+          outputPath: $("anime-output").value,
+          model: modelId
+        }),
+      "动漫抠图"
+    );
+    if (result?.outputs?.length) applyAnimeOutputs(result.outputs);
+  });
 }
 
 function bindSkinActions() {
@@ -1379,7 +1875,7 @@ async function checkForUpdates(silent = true) {
   try {
     const update = await check();
     if (!update) {
-      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.1.8"), "success");
+      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.2.0"), "success");
       return;
     }
     $("update-button")?.classList.remove("hidden");
@@ -1463,6 +1959,11 @@ function bindDragDrop() {
         renderChips("image-file-list", state.imageFiles);
         updateStatus();
         break;
+      case "anime-cutout":
+        state.animeFiles = [...new Set([...state.animeFiles, ...paths])];
+        renderAnimeGallery();
+        updateStatus();
+        break;
     }
   });
 }
@@ -1479,6 +1980,7 @@ async function init() {
   bindDragDrop();
   bindFileControls();
   bindRunActions();
+  bindAnimeGallery();
   bindSkinActions();
   bindSettingsActions();
   if (isTauriRuntime) {
@@ -1487,13 +1989,23 @@ async function init() {
       const progress = event.payload;
       setTaskProgress(progress.completed, progress.total, progress.message);
     });
+    await listen("model-progress", (event) => {
+      const { modelId, file, completed, total } = event.payload;
+      if (modelId !== ($("anime-model")?.value || "simple")) return;
+      const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+      const fill = $("anime-model-progress-fill");
+      if (fill) fill.style.width = `${percent}%`;
+      setText("anime-model-progress-text", `${file} · ${percent}%（${formatBytes(completed)} / ${formatBytes(total)}）`);
+    });
   }
   $("update-button")?.addEventListener("click", () => checkForUpdates(false));
+  startSystemMonitor();
 
   renderChips("merge-chip-list", []);
   renderChips("split-file-list", []);
   renderChips("mipmap-chip-list", []);
   renderChips("image-file-list", []);
+  renderAnimeGallery();
   await refreshSkins();
   syncPathChips();
   const savedMode = localStorage.getItem("aias-active-mode");

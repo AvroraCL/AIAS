@@ -1,6 +1,6 @@
 # AIAS Tauri
 
-AIAS is a Windows desktop texture toolbox for PBR channel packing, DDS conversion, mipmap generation, and War Thunder UserSkins management.
+AIAS is a Windows desktop texture toolbox for PBR channel packing, DDS conversion, mipmap generation, anime background removal (built-in offline ONNX inference), and War Thunder UserSkins management.
 
 This version uses Tauri 2.x for the desktop shell and a native HTML/CSS/JavaScript renderer. Legacy desktop shells and Python GUI entry points are no longer part of the active desktop app.
 
@@ -74,6 +74,7 @@ AIAS/
     build.rs
     capabilities/default.json
     src/main.rs
+    src/anime.rs
   package.json
   vite.config.js
 ```

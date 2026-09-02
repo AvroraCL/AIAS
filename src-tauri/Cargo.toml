@@ -1,6 +1,6 @@
 [package]
 name = "aias"
-version = "5.1.8"
+version = "5.2.0"
 description = "AIAS texture processing toolbox"
 authors = ["AvroraCL"]
 edition = "2021"
@@ -10,15 +10,18 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 dirs = "5"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "webp"] }
 image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
+# load-dynamic + api-17：任意 >= 1.17 的 onnxruntime.dll 均可加载（含 ComfyUI venv 的 1.23.x）
+ort = { version = "2.0.0-rc", default-features = false, features = ["std", "load-dynamic", "api-17"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
+sysinfo = "0.33"
 texpresso = "2.0.2"
 
 [profile.release]

@@ -1,5 +1,7 @@
 #![windows_subsystem = "windows"]
 
+mod anime;
+
 use image::{DynamicImage, ImageBuffer, Luma, Rgba, RgbaImage};
 use image_dds::{image_from_dds, mip_dimension};
 use image_dds::ddsfile::Dds;
@@ -39,6 +41,20 @@ struct Settings {
   image_to_dds_format: String,
   scale_target: String,
   skin_manager_path: String,
+  // 保留历史设置键，前端不再使用；新增 anime_model 供抠图选择器
+  #[serde(default = "default_comfyui_address")]
+  comfyui_address: String,
+  anime_cutout_output_path: String,
+  #[serde(default = "default_anime_model")]
+  anime_model: String,
+}
+
+fn default_comfyui_address() -> String {
+  "127.0.0.1:8188".into()
+}
+
+fn default_anime_model() -> String {
+  "simple".into()
 }
 
 impl Default for Settings {
@@ -61,6 +77,9 @@ impl Default for Settings {
       image_to_dds_format: "DXT5".into(),
       scale_target: "none".into(),
       skin_manager_path: String::new(),
+      comfyui_address: default_comfyui_address(),
+      anime_cutout_output_path: String::new(),
+      anime_model: default_anime_model(),
     }
   }
 }
@@ -87,6 +106,8 @@ struct TaskResult {
   completed: usize,
   total: usize,
   logs: Vec<String>,
+  #[serde(default)]
+  outputs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +148,116 @@ struct ConvertImagesOptions {
   alpha: Option<String>,
   format: Option<String>,
   scale: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnimeCutoutOptions {
+  files: Vec<String>,
+  output_path: String,
+  model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemStats {
+  cpu_usage: f32,
+  memory_used: u64,
+  memory_total: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuStats {
+  available: bool,
+  name: String,
+  utilization: f32,
+  memory_used: u64,
+  memory_total: u64,
+}
+
+impl GpuStats {
+  fn unavailable() -> Self {
+    Self {
+      available: false,
+      name: String::new(),
+      utilization: 0.0,
+      memory_used: 0,
+      memory_total: 0,
+    }
+  }
+}
+
+static MONITOR_SYSTEM: std::sync::OnceLock<std::sync::Mutex<sysinfo::System>> = std::sync::OnceLock::new();
+static GPU_UNAVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+async fn system_stats() -> Result<SystemStats, String> {
+  tauri::async_runtime::spawn_blocking(|| {
+    let system = MONITOR_SYSTEM.get_or_init(|| std::sync::Mutex::new(sysinfo::System::new_all()));
+    // CPU 占用需要两次采样之间的时间差。
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    let mut guard = system.lock().map_err(|error| error.to_string())?;
+    guard.refresh_cpu_usage();
+    guard.refresh_memory();
+    Ok(SystemStats {
+      cpu_usage: guard.global_cpu_usage(),
+      memory_used: guard.used_memory(),
+      memory_total: guard.total_memory(),
+    })
+  })
+  .await
+  .map_err(to_string_error)?
+}
+
+fn query_gpu_stats() -> GpuStats {
+  use std::os::windows::process::CommandExt;
+  const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+  let output = std::process::Command::new("nvidia-smi")
+    .args([
+      "--query-gpu=name,utilization.gpu,memory.used,memory.total",
+      "--format=csv,noheader,nounits",
+    ])
+    .creation_flags(CREATE_NO_WINDOW)
+    .output();
+  let Ok(output) = output else {
+    return GpuStats::unavailable();
+  };
+  if !output.status.success() {
+    return GpuStats::unavailable();
+  }
+  let text = String::from_utf8_lossy(&output.stdout);
+  let Some(line) = text.lines().next() else {
+    return GpuStats::unavailable();
+  };
+  let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+  if fields.len() < 4 {
+    return GpuStats::unavailable();
+  }
+  let mib_to_bytes = |value: &str| -> u64 {
+    (value.parse::<f64>().unwrap_or(0.0) * 1024.0 * 1024.0) as u64
+  };
+  GpuStats {
+    available: true,
+    name: fields[0].to_string(),
+    utilization: fields[1].parse::<f32>().unwrap_or(0.0),
+    memory_used: mib_to_bytes(fields[2]),
+    memory_total: mib_to_bytes(fields[3]),
+  }
+}
+
+#[tauri::command]
+async fn gpu_stats() -> GpuStats {
+  if GPU_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
+    return GpuStats::unavailable();
+  }
+  let stats = tauri::async_runtime::spawn_blocking(query_gpu_stats)
+    .await
+    .unwrap_or_else(|_| GpuStats::unavailable());
+  if !stats.available {
+    GPU_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+  }
+  stats
 }
 
 #[derive(Debug, Serialize)]
@@ -215,11 +346,17 @@ fn main() {
       texture_split_pbr,
       texture_create_mipmap,
       texture_convert_images_to_dds,
+      anime_models_status,
+      anime_model_download,
+      anime_model_uninstall,
+      anime_cutout,
       skin_auto_detect,
       skin_list,
       skin_import,
       skin_toggle,
-      skin_delete
+      skin_delete,
+      system_stats,
+      gpu_stats
     ])
     .run(tauri::generate_context!())
     .expect("error while running AIAS");
@@ -349,6 +486,7 @@ fn texture_merge_pbr_inner(app: &AppHandle, options: MergePbrOptions) -> Result<
     completed,
     total: groups.len(),
     logs,
+    outputs: Vec::new(),
   })
 }
 
@@ -418,6 +556,7 @@ fn texture_split_pbr_inner(app: &AppHandle, options: SplitPbrOptions) -> Result<
     completed,
     total: options.files.len(),
     logs,
+    outputs: Vec::new(),
   })
 }
 
@@ -464,6 +603,7 @@ fn texture_create_mipmap_inner(app: &AppHandle, options: MipmapOptions) -> Resul
     completed: files.len(),
     total: files.len(),
     logs: vec![format!("生成 {}", output_file.display())],
+    outputs: Vec::new(),
   })
 }
 
@@ -499,7 +639,143 @@ fn texture_convert_images_to_dds_inner(app: &AppHandle, options: ConvertImagesOp
     completed: options.files.len(),
     total: options.files.len(),
     logs,
+    outputs: Vec::new(),
   })
+}
+
+// ---------------------------------------------------------------------------
+// 动漫抠图：本地 ONNX 推理 + 模型下载/卸载管理
+// ---------------------------------------------------------------------------
+
+fn anime_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
+  app
+    .path()
+    .app_data_dir()
+    .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+#[tauri::command]
+fn anime_models_status(app: AppHandle) -> Result<Vec<anime::ModelStatus>, String> {
+  let base = anime_base_dir(&app)?;
+  Ok(anime::models_status(&base))
+}
+
+#[tauri::command]
+async fn anime_model_download(app: AppHandle, model_id: String) -> Result<Vec<anime::ModelStatus>, String> {
+  let base = anime_base_dir(&app)?;
+  tauri::async_runtime::spawn_blocking(move || {
+    anime::download_model(Some(&app), &base, &model_id)?;
+    Ok(anime::models_status(&base))
+  })
+  .await
+  .map_err(to_string_error)?
+}
+
+#[tauri::command]
+async fn anime_model_uninstall(app: AppHandle, model_id: String) -> Result<Vec<anime::ModelStatus>, String> {
+  let base = anime_base_dir(&app)?;
+  tauri::async_runtime::spawn_blocking(move || {
+    anime::uninstall_model(&base, &model_id)?;
+    Ok(anime::models_status(&base))
+  })
+  .await
+  .map_err(to_string_error)?
+}
+
+fn anime_supported_extension(extension: &str) -> bool {
+  matches!(extension, "png" | "jpg" | "jpeg" | "webp" | "tga")
+}
+
+fn anime_cutout_inner(app: Option<&AppHandle>, options: AnimeCutoutOptions) -> Result<TaskResult, String> {
+  fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
+  let base = match app {
+    Some(handle) => anime_base_dir(handle)?,
+    None => dirs::data_dir()
+      .map(|dir| dir.join("studio.avroracl.aias"))
+      .ok_or_else(|| "无法定位应用数据目录".to_string())?,
+  };
+  let model_id = options
+    .model
+    .as_deref()
+    .unwrap_or("simple")
+    .trim()
+    .to_string();
+  if !anime::is_model_ready(&base, &model_id) {
+    return Err("抠图模型未安装，请先在「抠图模型」中下载。".into());
+  }
+  anime::ensure_ort_runtime(&base)?;
+
+  let mut logs = Vec::new();
+  let mut outputs = Vec::new();
+  let mut completed = 0usize;
+
+  for file in &options.files {
+    let input = Path::new(file);
+    if !input.exists() {
+      logs.push(format!("跳过（文件不存在）：{file}"));
+      continue;
+    }
+    let Some(stem) = input.file_stem().and_then(|value| value.to_str()) else {
+      logs.push(format!("跳过（文件名无效）：{file}"));
+      continue;
+    };
+    let extension = input
+      .extension()
+      .and_then(|value| value.to_str())
+      .map(|value| value.to_lowercase())
+      .unwrap_or_default();
+    if !anime_supported_extension(&extension) {
+      logs.push(format!("跳过（暂不支持 {extension} 格式）：{stem}"));
+      continue;
+    }
+
+    let target = Path::new(&options.output_path).join(format!("{stem}.png"));
+    let label = input.file_name().and_then(|value| value.to_str()).unwrap_or(file);
+    if let Some(handle) = app {
+      emit_task_progress(handle, completed, options.files.len(), format!("推理中 {label}"));
+    }
+
+    match anime::cutout(&base, &model_id, input, &target) {
+      Ok(()) => {
+        completed += 1;
+        outputs.push(target.display().to_string());
+        logs.push(format!(
+          "完成 {} → {}",
+          stem,
+          target.file_name().and_then(|value| value.to_str()).unwrap_or("output.png")
+        ));
+        if let Some(handle) = app {
+          emit_task_progress(handle, completed, options.files.len(), format!("完成 {stem}"));
+        }
+      }
+      Err(error) => {
+        logs.push(format!("失败 {stem}：{error}"));
+      }
+    }
+  }
+
+  if completed == 0 {
+    let detail = logs.last().cloned().unwrap_or_default();
+    return Err(if detail.is_empty() {
+      "没有图片被处理。".into()
+    } else {
+      format!("没有图片被处理。{detail}")
+    });
+  }
+
+  Ok(TaskResult {
+    completed,
+    total: options.files.len(),
+    logs,
+    outputs,
+  })
+}
+
+#[tauri::command]
+async fn anime_cutout(app: AppHandle, options: AnimeCutoutOptions) -> Result<TaskResult, String> {
+  tauri::async_runtime::spawn_blocking(move || anime_cutout_inner(Some(&app), options))
+    .await
+    .map_err(to_string_error)?
 }
 
 #[tauri::command]
@@ -1040,5 +1316,113 @@ mod tests {
     assert_eq!(scaled_six.dimensions(), (6144, 6144));
     let untouched = apply_scale(sample_image(2048, 1024), "4k");
     assert_eq!(untouched.dimensions(), (2048, 1024));
+  }
+
+  fn anime_base_dir_for_tests() -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join("studio.avroracl.aias"))
+  }
+
+  fn write_mean_alpha(png: &Path) -> f64 {
+    let image = image::open(png).expect("output should be readable");
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let sum: u64 = rgba.pixels().map(|pixel| pixel[3] as u64).sum();
+    sum as f64 / (width as u64 * height as u64) as f64
+  }
+
+  #[test]
+  fn anime_cutout_runs_locally_without_comfyui() {
+    let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
+    let Some(base) = anime_base_dir_for_tests() else {
+      eprintln!("skip: app data dir unavailable");
+      return;
+    };
+    if !input.exists() || !anime::is_model_ready(&base, "simple") {
+      eprintln!("skip: test image or simple model not found");
+      return;
+    }
+    let output = std::env::temp_dir().join("aias_anime_cutout_test");
+    let _ = std::fs::remove_dir_all(&output);
+    let result = anime_cutout_inner(
+      None,
+      AnimeCutoutOptions {
+        files: vec![path_to_string(input)],
+        output_path: path_to_string(&output),
+        model: Some("simple".into()),
+      },
+    )
+    .expect("anime cutout should succeed");
+    assert_eq!(result.completed, 1);
+    let saved = output.join("anime_test.png");
+    let image = image::open(&saved).expect("output should be readable");
+    assert_eq!(image.width(), 1600);
+    assert_eq!(image.height(), 1133);
+    let mean_alpha = write_mean_alpha(&saved);
+    assert!(mean_alpha < 200.0, "mean alpha {mean_alpha} should indicate a cut background");
+    assert!(image.as_rgba8().map(|rgba| rgba
+      .pixels()
+      .any(|pixel| pixel[3] < 10))
+      .unwrap_or(false), "output should contain transparent pixels");
+  }
+
+  #[test]
+  fn anime_advanced_cutout_runs_locally() {
+    let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
+    let Some(base) = anime_base_dir_for_tests() else {
+      eprintln!("skip: app data dir unavailable");
+      return;
+    };
+    if !input.exists() || !anime::is_model_ready(&base, "advanced") {
+      eprintln!("skip: test image or advanced models not found");
+      return;
+    }
+    let output = std::env::temp_dir().join("aias_anime_cutout_advanced_test");
+    let _ = std::fs::remove_dir_all(&output);
+    let result = anime_cutout_inner(
+      None,
+      AnimeCutoutOptions {
+        files: vec![path_to_string(input)],
+        output_path: path_to_string(&output),
+        model: Some("advanced".into()),
+      },
+    )
+    .expect("advanced cutout should succeed");
+    assert_eq!(result.completed, 1);
+    let saved = output.join("anime_test.png");
+    let mean_alpha = write_mean_alpha(&saved);
+    assert!(mean_alpha < 200.0, "mean alpha {mean_alpha} should indicate a cut background");
+  }
+
+  #[test]
+  fn anime_models_status_reports_catalog() {
+    let Some(base) = anime_base_dir_for_tests() else {
+      eprintln!("skip: app data dir unavailable");
+      return;
+    };
+    let status = anime::models_status(&base);
+    assert_eq!(status.len(), 2);
+    assert_eq!(status[0].id, "simple");
+    assert_eq!(status[1].id, "advanced");
+    for model in &status {
+      assert!(!model.label.is_empty());
+      assert!(model.total_size > 0);
+    }
+  }
+
+  #[test]
+  #[ignore = "touches the real appdata model files and the network; run with --ignored"]
+  fn anime_uninstall_then_download_round_trip_for_simple() {
+    let Some(base) = anime_base_dir_for_tests() else {
+      eprintln!("skip: app data dir unavailable");
+      return;
+    };
+    if !anime::is_model_ready(&base, "simple") {
+      eprintln!("skip: simple model not seeded; download would take minutes");
+      return;
+    }
+    anime::uninstall_model(&base, "simple").expect("uninstall should succeed");
+    assert!(!anime::is_model_ready(&base, "simple"), "model should be missing after uninstall");
+    anime::download_model(None, &base, "simple").expect("download should succeed");
+    assert!(anime::is_model_ready(&base, "simple"), "model should be ready after download");
   }
 }
