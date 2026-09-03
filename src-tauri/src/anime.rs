@@ -1028,6 +1028,132 @@ fn remove_small_foreground_components(
     }
 }
 
+/// 背景次级孤岛移除：模型偶尔把背景里的次要元素（背景人物、飘落物件）连成
+/// 独立前景块保留下来。单主体场景的判据：面积不足主件 2%、且与主件的
+/// Chebyshev 间距超过 32px 的连通块整块清除；与主体相邻或面积可观的块不动。
+/// GT 验证五个模型 miss 均零增加，双主体以外的常规图自门控零变化。
+fn remove_background_islands(matte: &mut [f32], width: u32, height: u32) {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 || matte.len() != w.saturating_mul(h) {
+        return;
+    }
+    const MAX_AREA_RATIO: usize = 50; // 面积 < 主件 / 50
+    const GAP_PX: u32 = 32;
+
+    // 8 连通域标记（0 = 背景，域号从 1 起）
+    let mut label = vec![0usize; w * h];
+    let mut areas: Vec<usize> = vec![0];
+    let mut queue = Vec::new();
+    for start in 0..matte.len() {
+        if matte[start] <= 0.5 || label[start] != 0 {
+            continue;
+        }
+        let id = areas.len();
+        areas.push(0);
+        label[start] = id;
+        queue.clear();
+        queue.push(start);
+        let mut cursor = 0;
+        while cursor < queue.len() {
+            let index = queue[cursor];
+            cursor += 1;
+            areas[id] += 1;
+            let x = index % w;
+            let y = index / w;
+            let y0 = y.saturating_sub(1);
+            let y1 = (y + 1).min(h - 1);
+            let x0 = x.saturating_sub(1);
+            let x1 = (x + 1).min(w - 1);
+            for ny in y0..=y1 {
+                for nx in x0..=x1 {
+                    let neighbor = ny * w + nx;
+                    if label[neighbor] == 0 && matte[neighbor] > 0.5 {
+                        label[neighbor] = id;
+                        queue.push(neighbor);
+                    }
+                }
+            }
+        }
+    }
+    if areas.len() <= 2 {
+        return;
+    }
+    let main_id = (1..areas.len())
+        .max_by_key(|id| areas[*id])
+        .expect("至少两个连通域");
+    let main_area = areas[main_id];
+
+    // 到主件的 Chebyshev 距离（双向两遍扫描，步长全为 1）
+    let big = u32::MAX;
+    let mut dist = vec![big; w * h];
+    for (index, slot) in dist.iter_mut().enumerate() {
+        if label[index] == main_id {
+            *slot = 0;
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let index = y * w + x;
+            if dist[index] == 0 {
+                continue;
+            }
+            let mut best = dist[index];
+            if y > 0 {
+                best = best.min(dist[index - w].saturating_add(1));
+                if x > 0 {
+                    best = best.min(dist[index - w - 1].saturating_add(1));
+                }
+                if x + 1 < w {
+                    best = best.min(dist[index - w + 1].saturating_add(1));
+                }
+            }
+            if x > 0 {
+                best = best.min(dist[index - 1].saturating_add(1));
+            }
+            dist[index] = best;
+        }
+    }
+    for y in (0..h).rev() {
+        for x in (0..w).rev() {
+            let index = y * w + x;
+            if dist[index] == 0 {
+                continue;
+            }
+            let mut best = dist[index];
+            if y + 1 < h {
+                best = best.min(dist[index + w].saturating_add(1));
+                if x + 1 < w {
+                    best = best.min(dist[index + w + 1].saturating_add(1));
+                }
+                if x > 0 {
+                    best = best.min(dist[index + w - 1].saturating_add(1));
+                }
+            }
+            if x + 1 < w {
+                best = best.min(dist[index + 1].saturating_add(1));
+            }
+            dist[index] = best;
+        }
+    }
+
+    // 各小域到主件的最近距离 → 间距 = 距离 - 1
+    let mut nearest = vec![big; areas.len()];
+    for (index, id) in label.iter().enumerate() {
+        if *id == 0 || *id == main_id {
+            continue;
+        }
+        nearest[*id] = nearest[*id].min(dist[index]);
+    }
+    for (index, id) in label.iter().enumerate() {
+        if *id == 0 || *id == main_id || areas[*id] * MAX_AREA_RATIO >= main_area {
+            continue;
+        }
+        if nearest[*id].saturating_sub(1) > GAP_PX {
+            matte[index] = 0.0;
+        }
+    }
+}
+
 fn fill_small_background_holes(
     matte: &mut [f32],
     width: u32,
@@ -2036,6 +2162,79 @@ fn guided_filter_matte(rgb: &RgbImage, p: &[f32], radius: usize, eps: f64) -> Ve
     q
 }
 
+/// 局部颜色证据整定：512 级模型对细渐变结构（淡紫发丝、薄纱）系统性输出
+/// 中间 alpha——下采样时细结构与背景混在一格，模型给不出确定置信度，
+/// 换底后整个结构呈半透明“幽灵”。全分辨率上有模型没有的颜色证据：
+/// 用 a²/(1-a)² 加权估计局部前景色 F 与背景色 B，再按未混色距离分类——
+/// 中间像素颜色明显接近 F → 推到实心；明显接近 B → 归零；都接近/都远
+/// → 维持原值。窗口内的实心像素自动主导颜色估计（权重是平方）。
+fn solidify_subject(rgb: &RgbImage, mask: &mut [f32], w: u32, h: u32) {
+    let (w, h) = (w as usize, h as usize);
+    let n = w * h;
+    if n == 0 || mask.len() != n {
+        return;
+    }
+    const RADIUS: usize = 12;
+    const MIN_A: f32 = 0.25;
+    const MAX_KEEP: f32 = 0.92;
+    const MIN_KEEP: f32 = 0.12;
+
+    let weight_fg: Vec<f32> = mask.iter().map(|a| a * a).collect();
+    let weight_bg: Vec<f32> = mask.iter().map(|a| (1.0 - a) * (1.0 - a)).collect();
+
+    let mut product = vec![0f32; n];
+    let mut weighted_mean = |weight: &[f32], channel: &[f32]| -> Vec<f32> {
+        for i in 0..n {
+            product[i] = weight[i] * channel[i];
+        }
+        box_mean_f32(&product, w, h, RADIUS)
+    };
+    let sum = |weight: &[f32]| -> Vec<f32> { box_mean_f32(weight, w, h, RADIUS) };
+
+    let mut channels = [vec![0f32; n], vec![0f32; n], vec![0f32; n]];
+    for (i, pixel) in rgb.pixels().enumerate() {
+        channels[0][i] = pixel[0] as f32;
+        channels[1][i] = pixel[1] as f32;
+        channels[2][i] = pixel[2] as f32;
+    }
+
+    let wsum_fg = sum(&weight_fg);
+    let wsum_bg = sum(&weight_bg);
+    let mut fg: [Vec<f32>; 3] = Default::default();
+    let mut bg: [Vec<f32>; 3] = Default::default();
+    for ch in 0..3 {
+        fg[ch] = weighted_mean(&weight_fg, &channels[ch]);
+        bg[ch] = weighted_mean(&weight_bg, &channels[ch]);
+    }
+
+    for i in 0..n {
+        let a = mask[i];
+        if a <= MIN_KEEP || a >= MAX_KEEP {
+            continue;
+        }
+        let (sf, sb) = (wsum_fg[i], wsum_bg[i]);
+        if sf < 1e-4 || sb < 1e-4 {
+            continue;
+        }
+        let mut df = 0.0f32;
+        let mut db = 0.0f32;
+        for ch in 0..3 {
+            let c = channels[ch][i];
+            let f = fg[ch][i] / sf;
+            let b = bg[ch][i] / sb;
+            df += (c - f) * (c - f);
+            db += (c - b) * (c - b);
+        }
+        if a > MIN_A && df * 1.1 < db {
+            // 颜色站在前景一边：细结构推到实心，换底后不再透底。
+            mask[i] = 1.0;
+        } else if a < 0.85 && db * 0.8 < df {
+            // 颜色站在背景一边：中间置信度的背景残迹归零。
+            mask[i] = 0.0;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry: cut a single image
 // ---------------------------------------------------------------------------
@@ -2065,7 +2264,7 @@ pub fn cutout_with_fallback(
     let rgb = image.to_rgb8();
     let (w, h) = rgb.dimensions();
 
-    let (mut mask, fallback_model) = match model_spec(model_id)?.kind {
+    let (mask, fallback_model) = match model_spec(model_id)?.kind {
         ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
         ModelKind::Advanced => (run_advanced(base, &rgb)?, model_id),
         ModelKind::BiRefNet { matting } => {
@@ -2097,9 +2296,25 @@ pub fn cutout_with_fallback(
 
     let fallback = model_id == "toonout" && fallback_model != "toonout";
 
+    // AB 回归可视化：引导滤波前的原始模型掩码，供滤波参数对比。
+    if std::env::var_os("AIAS_AB_DEBUG").is_some() {
+        let stem = output
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("matte")
+            .to_string();
+        let mut raw_image = ImageBuffer::<Luma<u8>, Vec<u8>>::new(w, h);
+        for (index, slot) in raw_image.pixels_mut().enumerate() {
+            *slot = image::Luma([(mask[index] * 255.0).round().clamp(0.0, 255.0) as u8]);
+        }
+        let _ = raw_image.save(output.with_file_name(format!("{stem}_matte_raw.png")));
+    }
+
     // 引导滤波：低分辨率推理的软边掩码贴回原图结构，过渡带收窄、糊住的
     // 发丝尖端分开；先于残留清理执行，滤波沿背景线条的微溢出由后续清理兜底。
     let mut mask = guided_filter_matte(&rgb, &mask, 8, 5e-4);
+    // 颜色证据整定：把模型低置信度的细结构按全分辨率颜色归类到实心/透明。
+    solidify_subject(&rgb, &mut mask, w, h);
 
     // 幽灵残留抑制先于去污染：碎屑清除后，过渡带背景色估计更准。
     suppress_background_ghosts(&mut mask, w, h);
@@ -2112,6 +2327,8 @@ pub fn cutout_with_fallback(
     // 再清一轮孤岛：残留中与主体不连通的小碎块（线稿笔触、噪点）整块移除，
     // 与 advanced 管线共用同一面积尺度。
     remove_small_foreground_components(&mut mask, w, h, advanced_min_component_area(w, h));
+    // 背景次级孤岛：面积小且远离主体的独立前景块（背景人物等）整块移除。
+    remove_background_islands(&mut mask, w, h);
 
     // 边缘去污染：把过渡带颜色从「前景+背景混合」解混回纯前景色。
     // 实测对发丝、皮肤边缘的粉色/蓝色 fringe 有明显改善，且深/浅背景图都稳健。
@@ -2244,6 +2461,33 @@ mod toonout_tests {
         assert_eq!(matte[35], 0.0, "单像素孤岛应被移除");
         for index in [7, 8, 13, 14, 15] {
             assert_eq!(matte[index], 1.0, "主体连通块不能被侵蚀");
+        }
+    }
+
+    #[test]
+    fn background_islands_are_removed_only_when_small_and_far_from_the_subject() {
+        // 44×8：左上 8×8 主体（64px，2% 阈值 = 面积 1 的块才可删）。
+        let mut matte = vec![0.0; 44 * 8];
+        let fill = |matte: &mut [f32], points: &[(usize, usize)]| {
+            for (x, y) in points {
+                matte[y * 44 + x] = 1.0;
+            }
+        };
+        let main: Vec<(usize, usize)> = (0..8)
+            .flat_map(|y| (0..8).map(move |x| (x, y)))
+            .collect();
+        fill(&mut matte, &main);
+        fill(&mut matte, &[(42, 7)]); // 间距 34 > 32 且面积达标 → 移除
+        fill(&mut matte, &[(10, 4)]); // 间距 2，紧贴 → 保留
+        fill(&mut matte, &[(42, 0), (43, 0)]); // 间距 34 但面积超主件 2% → 保留
+
+        remove_background_islands(&mut matte, 44, 8);
+
+        assert_eq!(matte[7 * 44 + 42], 0.0, "远处单像素孤岛应被移除");
+        assert_eq!(matte[4 * 44 + 10], 1.0, "紧贴主体的块不能被移除");
+        assert_eq!(matte[44], 1.0, "面积超阈值的远处块不能被移除");
+        for (x, y) in &main {
+            assert_eq!(matte[y * 44 + x], 1.0, "主体不能被侵蚀");
         }
     }
 
