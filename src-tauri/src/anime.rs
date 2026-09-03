@@ -1912,6 +1912,130 @@ fn box_mean_f64(values: &[f64], w: usize, h: usize, radius: usize) -> Vec<f64> {
     out
 }
 
+/// O(n) 积分图盒均值（f32 版）：引导滤波要用约 17 路均值，f64 版会带来
+/// 数百 MB 瞬时内存；累加仍走 f64 积分图保证精度，输入输出用 f32。
+fn box_mean_f32(values: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
+    let stride = w + 1;
+    let mut sat = vec![0f64; stride * (h + 1)];
+    for y in 0..h {
+        let mut row_sum = 0f64;
+        for x in 0..w {
+            row_sum += values[y * w + x] as f64;
+            sat[(y + 1) * stride + (x + 1)] = sat[y * stride + (x + 1)] + row_sum;
+        }
+    }
+    let mut out = vec![0f32; w * h];
+    for y in 0..h {
+        let y0 = y.saturating_sub(radius);
+        let y1 = (y + radius + 1).min(h);
+        for x in 0..w {
+            let x0 = x.saturating_sub(radius);
+            let x1 = (x + radius + 1).min(w);
+            let area = ((y1 - y0) * (x1 - x0)) as f64;
+            let sum = sat[y1 * stride + x1] - sat[y0 * stride + x1] - sat[y1 * stride + x0]
+                + sat[y0 * stride + x0];
+            out[y * w + x] = (sum / area) as f32;
+        }
+    }
+    out
+}
+
+/// RGB 引导的快速引导滤波（He et al.）：低分辨率推理的掩码上采样后边缘
+/// 软糊（512² 模型放大 4 倍时过渡带约 8px、发丝尖端糊成圆头），用原图
+/// 做引导把 alpha 贴回真实结构——原图里发丝轮廓是清晰的，滤波后过渡带
+/// 收窄到 1-2px，糊住的尖端重新分开。eps 越小越贴合强边缘；平坦区域
+/// a→0 退化为均值，掩码不会被过度改动。
+fn guided_filter_matte(rgb: &RgbImage, p: &[f32], radius: usize, eps: f64) -> Vec<f32> {
+    let (w, h) = rgb.dimensions();
+    let (w, h) = (w as usize, h as usize);
+    let n = w * h;
+    if n == 0 || p.len() != n || radius == 0 {
+        return p.to_vec();
+    }
+    let radius = radius.min(w.saturating_sub(1)).min(h.saturating_sub(1)).max(1);
+
+    let mut r = vec![0f32; n];
+    let mut g = vec![0f32; n];
+    let mut b = vec![0f32; n];
+    for (i, pixel) in rgb.pixels().enumerate() {
+        r[i] = pixel[0] as f32 / 255.0;
+        g[i] = pixel[1] as f32 / 255.0;
+        b[i] = pixel[2] as f32 / 255.0;
+    }
+
+    let mean = |v: &[f32]| box_mean_f32(v, w, h, radius);
+    let mr = mean(&r);
+    let mg = mean(&g);
+    let mb = mean(&b);
+    let mp = mean(p);
+
+    // 协方差所需的二次项均值；逐项生成乘积数组，用完即弃控制内存。
+    let mut prod = vec![0f32; n];
+    let mut pair_mean =
+        |a: &[f32], bch: &[f32]| -> Vec<f32> {
+            for i in 0..n {
+                prod[i] = a[i] * bch[i];
+            }
+            box_mean_f32(&prod, w, h, radius)
+        };
+    let mrr = pair_mean(&r, &r);
+    let mrg = pair_mean(&r, &g);
+    let mrb = pair_mean(&r, &b);
+    let mgg = pair_mean(&g, &g);
+    let mgb = pair_mean(&g, &b);
+    let mbb = pair_mean(&b, &b);
+    let mrp = pair_mean(&r, p);
+    let mgp = pair_mean(&g, p);
+    let mbp = pair_mean(&b, p);
+
+    // 逐像素解 3×3 线性方程 (cov_II + eps·I)·a = cov_Ip，再 b = p̄ − a·Ī。
+    let mut a1 = vec![0f32; n];
+    let mut a2 = vec![0f32; n];
+    let mut a3 = vec![0f32; n];
+    let mut bb = vec![0f32; n];
+    for i in 0..n {
+        let vr = (mrr[i] - mr[i] * mr[i]) as f64 + eps;
+        let vg = (mgg[i] - mg[i] * mg[i]) as f64 + eps;
+        let vb = (mbb[i] - mb[i] * mb[i]) as f64 + eps;
+        let vrg = (mrg[i] - mr[i] * mg[i]) as f64;
+        let vrb = (mrb[i] - mr[i] * mb[i]) as f64;
+        let vgb = (mgb[i] - mg[i] * mb[i]) as f64;
+        let crp = (mrp[i] - mr[i] * mp[i]) as f64;
+        let cgp = (mgp[i] - mg[i] * mp[i]) as f64;
+        let cbp = (mbp[i] - mb[i] * mp[i]) as f64;
+        // 余因子法求逆（对称矩阵，C 与其转置相同）
+        let c00 = vg * vb - vgb * vgb;
+        let c01 = vrb * vgb - vrg * vb;
+        let c02 = vrg * vgb - vg * vrb;
+        let c11 = vr * vb - vrb * vrb;
+        let c12 = vrg * vrb - vr * vgb;
+        let c22 = vr * vg - vrg * vrg;
+        let det = vr * c00 + vrg * c01 + vrb * c02;
+        if det.abs() < 1e-20 {
+            a1[i] = 0.0;
+            a2[i] = 0.0;
+            a3[i] = 0.0;
+        } else {
+            let inv = 1.0 / det;
+            a1[i] = ((c00 * crp + c01 * cgp + c02 * cbp) * inv) as f32;
+            a2[i] = ((c01 * crp + c11 * cgp + c12 * cbp) * inv) as f32;
+            a3[i] = ((c02 * crp + c12 * cgp + c22 * cbp) * inv) as f32;
+        }
+        bb[i] = mp[i] - a1[i] * mr[i] - a2[i] * mg[i] - a3[i] * mb[i];
+    }
+
+    // 标准 fast guided filter 第二步：对 a、b 做盒均值后再合成，避免贴边振铃。
+    let ma1 = mean(&a1);
+    let ma2 = mean(&a2);
+    let ma3 = mean(&a3);
+    let mb2 = mean(&bb);
+    let mut q = vec![0f32; n];
+    for i in 0..n {
+        q[i] = (ma1[i] * r[i] + ma2[i] * g[i] + ma3[i] * b[i] + mb2[i]).clamp(0.0, 1.0);
+    }
+    q
+}
+
 // ---------------------------------------------------------------------------
 // Public entry: cut a single image
 // ---------------------------------------------------------------------------
@@ -1973,8 +2097,18 @@ pub fn cutout_with_fallback(
 
     let fallback = model_id == "toonout" && fallback_model != "toonout";
 
+    // 引导滤波：低分辨率推理的软边掩码贴回原图结构，过渡带收窄、糊住的
+    // 发丝尖端分开；先于残留清理执行，滤波沿背景线条的微溢出由后续清理兜底。
+    let mut mask = guided_filter_matte(&rgb, &mask, 8, 5e-4);
+
     // 幽灵残留抑制先于去污染：碎屑清除后，过渡带背景色估计更准。
     suppress_background_ghosts(&mut mask, w, h);
+    // 极淡残雾归零：上采样振铃和滤波残余的极低 alpha 在换底上呈灰雾。
+    for value in mask.iter_mut() {
+        if *value < 0.08 {
+            *value = 0.0;
+        }
+    }
     // 再清一轮孤岛：残留中与主体不连通的小碎块（线稿笔触、噪点）整块移除，
     // 与 advanced 管线共用同一面积尺度。
     remove_small_foreground_components(&mut mask, w, h, advanced_min_component_area(w, h));
