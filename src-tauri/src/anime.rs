@@ -1713,6 +1713,70 @@ fn try_run_birefnet(
 
 // matte 上采样后，半透明过渡带会出现锯齿和孤立噪点；只对过渡带（含 1px
 // 膨胀）做 3x3 高斯平滑，实心和透明区域保持原样，避免啃掉细发丝。
+/// 半透明「幽灵残留」抑制：分割模型对复杂背景的低置信度响应会在发丝
+/// 间隙、角色两侧留下大片半透明背景碎屑，浅色预览看不出来，换底后是
+/// 一片幽灵色块，是抠图观感差的主因。策略：以实心主体（alpha ≥ SOLID）
+/// 为源做城市块距离变换，非实心像素随距离渐进衰减——紧贴实心边缘的
+/// 发丝/水花细节几乎不受影响，远离主体的背景碎屑平滑归零。孤立但实心
+/// 的前景（如脱手的饰品）不受影响。
+fn suppress_background_ghosts(mask: &mut [f32], w: u32, h: u32) {
+    let (w, h) = (w as usize, h as usize);
+    if w < 3 || h < 3 {
+        return;
+    }
+    const SOLID: f32 = 0.85;
+    const INF: u32 = u32::MAX;
+    // 半径只覆盖贴边抗锯齿（1-3px）和发丝尖的短过渡；发丝间隙里的
+    // 半透明笔触距实心边缘 10-40px，必须落在衰减区里才会被压掉。
+    let radius = (w.min(h) / 160).clamp(4, 16) as u32;
+    let fade = radius * 4;
+    let mut dist = vec![INF; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let index = y * w + x;
+            if mask[index] >= SOLID {
+                dist[index] = 0;
+                continue;
+            }
+            let mut value = INF;
+            if x > 0 {
+                value = value.min(dist[index - 1].saturating_add(1));
+            }
+            if y > 0 {
+                value = value.min(dist[index - w].saturating_add(1));
+            }
+            dist[index] = value;
+        }
+    }
+    for y in (0..h).rev() {
+        for x in (0..w).rev() {
+            let index = y * w + x;
+            if dist[index] == 0 {
+                continue;
+            }
+            let mut value = dist[index];
+            if x + 1 < w {
+                value = value.min(dist[index + 1].saturating_add(1));
+            }
+            if y + 1 < h {
+                value = value.min(dist[index + w].saturating_add(1));
+            }
+            dist[index] = value.min(fade);
+        }
+    }
+    for (index, value) in mask.iter_mut().enumerate() {
+        if dist[index] == 0 || dist[index] == INF {
+            continue;
+        }
+        if dist[index] >= fade {
+            *value = 0.0;
+        } else if dist[index] > radius {
+            let keep = (fade - dist[index]) as f32 / (fade - radius) as f32;
+            *value *= keep;
+        }
+    }
+}
+
 fn smooth_matte_edges(mask: &[f32], w: u32, h: u32) -> Vec<f32> {
     let (w, h) = (w as usize, h as usize);
     if w < 3 || h < 3 {
@@ -1872,7 +1936,7 @@ pub fn cutout_with_fallback(
     let rgb = image.to_rgb8();
     let (w, h) = rgb.dimensions();
 
-    let (mask, fallback_model) = match model_spec(model_id)?.kind {
+    let (mut mask, fallback_model) = match model_spec(model_id)?.kind {
         ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
         ModelKind::Advanced => (run_advanced(base, &rgb)?, model_id),
         ModelKind::BiRefNet { matting } => {
@@ -1903,6 +1967,12 @@ pub fn cutout_with_fallback(
     };
 
     let fallback = model_id == "toonout" && fallback_model != "toonout";
+
+    // 幽灵残留抑制先于去污染：碎屑清除后，过渡带背景色估计更准。
+    suppress_background_ghosts(&mut mask, w, h);
+    // 再清一轮孤岛：残留中与主体不连通的小碎块（线稿笔触、噪点）整块移除，
+    // 与 advanced 管线共用同一面积尺度。
+    remove_small_foreground_components(&mut mask, w, h, advanced_min_component_area(w, h));
 
     // 边缘去污染：把过渡带颜色从「前景+背景混合」解混回纯前景色。
     // 实测对发丝、皮肤边缘的粉色/蓝色 fringe 有明显改善，且深/浅背景图都稳健。
