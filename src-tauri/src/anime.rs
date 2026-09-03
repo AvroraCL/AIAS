@@ -1726,9 +1726,10 @@ fn suppress_background_ghosts(mask: &mut [f32], w: u32, h: u32) {
     }
     const SOLID: f32 = 0.85;
     const INF: u32 = u32::MAX;
-    // 半径只覆盖贴边抗锯齿（1-3px）和发丝尖的短过渡；发丝间隙里的
-    // 半透明笔触距实心边缘 10-40px，必须落在衰减区里才会被压掉。
-    let radius = (w.min(h) / 160).clamp(4, 16) as u32;
+    // 半径只覆盖贴边抗锯齿（1-3px）；4px 起衰减、16px 处归零。实测发丝
+    // 间隙里距实心边缘 10px 以上的半透明笔触全部落进衰减区被压掉，
+    // 同时保留了发丝边缘的抗锯齿过渡。
+    let radius = (w.min(h) / 400).clamp(3, 12) as u32;
     let fade = radius * 4;
     let mut dist = vec![INF; w * h];
     for y in 0..h {
@@ -1833,7 +1834,11 @@ fn smooth_matte_edges(mask: &[f32], w: u32, h: u32) -> Vec<f32> {
 /// 再对 a < DECONTAM_CEIL 的像素解混 F = (C - (1-a)·B) / max(a, ε)。
 fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]> {
     const RADIUS: usize = 16;
-    const CEIL: f32 = 0.75;
+    // CEIL 拉到 0.95：细发丝的「实心」像素只有 2-6px 宽，颜色同样被旧背景
+    // 污染（换底后边缘发粉）。a=0.9 时解混修正量只有 ~10%，把近实心像素
+    // 也纳入解混收益明显、风险很小；合法粉色主体（发饰）周围背景占比低，
+    // 由 BG_PRESENCE_MIN 守卫。
+    const CEIL: f32 = 0.95;
     const FLOOR_A: f32 = 0.15;
     const BG_PRESENCE_MIN: f64 = 0.05;
 
