@@ -36,6 +36,16 @@ const TOONOUT_SIZE: u64 = 492_381_880;
 
 pub const MODELS: &[ModelSpec] = &[
     ModelSpec {
+        id: "toonout",
+        label: "动漫特化（ToonOut）",
+        files: &[ModelFileSpec {
+            name: "birefnet-toonout-fp16.onnx",
+            size: TOONOUT_SIZE,
+            mirror_url: "https://hf-mirror.com/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
+            origin_url: "https://huggingface.co/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
+        }],
+    },
+    ModelSpec {
         id: "simple",
         label: "标准抠图（ISNet）",
         files: &[ModelFileSpec {
@@ -62,16 +72,6 @@ pub const MODELS: &[ModelSpec] = &[
                 origin_url: "https://huggingface.co/Faor-Mati/anime-character-segmentation/resolve/main/mask_refiner_isnetdis_refine_last_simplified.onnx",
             },
         ],
-    },
-    ModelSpec {
-        id: "toonout",
-        label: "动漫特化（ToonOut）",
-        files: &[ModelFileSpec {
-            name: "birefnet-toonout-fp16.onnx",
-            size: TOONOUT_SIZE,
-            mirror_url: "https://hf-mirror.com/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
-            origin_url: "https://huggingface.co/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
-        }],
     },
 ];
 
@@ -161,12 +161,14 @@ fn ort_dll_path(base: &Path) -> PathBuf {
 
 pub fn ensure_ort_runtime(base: &Path) -> Result<(), String> {
     static ORT_READY: OnceLock<()> = OnceLock::new();
-    if ORT_READY.get().is_some() {
-        return Ok(());
-    }
+    fs::create_dir_all(base).map_err(to_string_error)?;
     let dll = ort_dll_path(base);
     if !dll.exists() {
         acquire_ort_dll(base)?;
+    }
+    ensure_ort_cuda_providers(base)?;
+    if ORT_READY.get().is_some() {
+        return Ok(());
     }
     std::env::set_var("ORT_DYLIB_PATH", &dll);
     // set 失败说明另一个线程刚刚完成了同样的初始化（相同 dll 路径），视为成功。
@@ -185,10 +187,14 @@ fn ort_seed_candidates() -> Vec<PathBuf> {
         "C:\\ComfyUI",
         "D:\\ComfyUI",
     ] {
-        candidates.push(PathBuf::from(root)
-            .join("venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll"));
-        candidates.push(PathBuf::from(root)
-            .join("python_embeded\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll"));
+        candidates.push(
+            PathBuf::from(root)
+                .join("venv\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll"),
+        );
+        candidates.push(
+            PathBuf::from(root)
+                .join("python_embeded\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime.dll"),
+        );
     }
     candidates
 }
@@ -196,7 +202,9 @@ fn ort_seed_candidates() -> Vec<PathBuf> {
 fn acquire_ort_dll(base: &Path) -> Result<(), String> {
     for candidate in ort_seed_candidates() {
         if candidate.exists() {
+            let source_dir = candidate.parent().unwrap_or(base);
             fs::copy(&candidate, ort_dll_path(base)).map_err(to_string_error)?;
+            copy_ort_provider_files(source_dir, base)?;
             return Ok(());
         }
     }
@@ -299,7 +307,10 @@ fn curl_download(
                 let size = fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0);
                 if !status.success() {
                     let _ = fs::remove_file(dest);
-                    return Err(format!("下载失败（curl 退出码 {}）", status.code().unwrap_or(-1)));
+                    return Err(format!(
+                        "下载失败（curl 退出码 {}）",
+                        status.code().unwrap_or(-1)
+                    ));
                 }
                 if size == 0 {
                     return Err("下载失败：文件为空。".into());
@@ -320,7 +331,9 @@ fn curl_download(
                 on_progress(size, if total > 0 { total } else { size });
             }
             Err(error) => {
-                let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).status();
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
+                    .status();
                 return Err(format!("下载过程出错：{error}"));
             }
         }
@@ -355,8 +368,8 @@ pub fn download_model(app: Option<&AppHandle>, base: &Path, id: &str) -> Result<
     fs::create_dir_all(models_dir(base)).map_err(to_string_error)?;
     for file in spec.files {
         let dest = models_dir(base).join(file.name);
-        let already_ok = dest.exists()
-            && fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0) == file.size;
+        let already_ok =
+            dest.exists() && fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0) == file.size;
         if already_ok {
             continue;
         }
@@ -459,14 +472,150 @@ fn build_session(path: &Path) -> Result<Session, String> {
     let threads = std::thread::available_parallelism()
         .map(|value| value.get().clamp(1, 8))
         .unwrap_or(4);
+    preload_cuda_runtime();
+    // CUDA EP 注册失败时会静默回退 CPU（error_on_failure 默认 false）。
+    let cuda = ort::ep::CUDA::default().build();
     Session::builder()
         .map_err(to_string_error)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(to_string_error)?
         .with_intra_threads(threads)
         .map_err(to_string_error)?
+        .with_execution_providers([cuda])
+        .map_err(to_string_error)?
         .commit_from_file(path)
         .map_err(|error| format!("加载模型 {} 失败：{error}", path.display()))
+}
+
+const CUDNN9_FILES: &[&str] = &[
+    "cudnn64_9.dll",
+    "cudnn_graph64_9.dll",
+    "cudnn_ops64_9.dll",
+    "cudnn_heuristic64_9.dll",
+    "cudnn_adv64_9.dll",
+    "cudnn_cnn64_9.dll",
+    "cudnn_engines_precompiled64_9.dll",
+    "cudnn_engines_runtime_compiled64_9.dll",
+];
+
+fn copy_ort_provider_files(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
+    for name in [
+        "onnxruntime_providers_shared.dll",
+        "onnxruntime_providers_cuda.dll",
+    ] {
+        let source = source_dir.join(name);
+        let target = target_dir.join(name);
+        if source.exists() && !target.exists() {
+            fs::copy(source, target).map_err(to_string_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_ort_cuda_providers(base: &Path) -> Result<(), String> {
+    if base.join("onnxruntime_providers_cuda.dll").exists()
+        && base.join("onnxruntime_providers_shared.dll").exists()
+    {
+        return Ok(());
+    }
+    for runtime in ort_seed_candidates() {
+        let Some(source_dir) = runtime.parent() else {
+            continue;
+        };
+        if source_dir.join("onnxruntime_providers_cuda.dll").exists() {
+            copy_ort_provider_files(source_dir, base)?;
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// 定位 CUDA 12 与完整 cuDNN 9 运行时并预载；找不到时由 ONNX Runtime 回退 CPU。
+fn preload_cuda_runtime() {
+    let cuda_root = cuda_runtime_candidates().into_iter().find(|path| {
+        [
+            "cudart64_12.dll",
+            "cublasLt64_12.dll",
+            "cublas64_12.dll",
+            "cufft64_11.dll",
+        ]
+        .iter()
+        .all(|name| path.join(name).exists())
+    });
+    let cudnn_root = cudnn_runtime_candidates()
+        .into_iter()
+        .find(|path| CUDNN9_FILES.iter().all(|name| path.join(name).exists()));
+    let _ = ort::ep::cuda::preload_dylibs(cuda_root.as_deref(), cudnn_root.as_deref());
+}
+
+fn cuda_runtime_candidates() -> Vec<PathBuf> {
+    let mut candidates = env_runtime_paths("AIAS_CUDA12_DIR");
+    if let Some(home) = dirs::home_dir() {
+        let python_root = home.join(r"AppData\Local\Programs\Python");
+        if let Ok(entries) = fs::read_dir(python_root) {
+            candidates.extend(
+                entries
+                    .flatten()
+                    .map(|entry| entry.path().join(r"Lib\site-packages\torch\lib")),
+            );
+        }
+    }
+    for root in local_ai_roots() {
+        candidates.push(root.join(r"forge\venv\Lib\site-packages\torch\lib"));
+        candidates.push(root.join(r"ComfyUI\venv\Lib\site-packages\torch\lib"));
+        candidates.push(root.join(r"ComfyUI\python_embeded\Lib\site-packages\torch\lib"));
+    }
+    for version in ["v12.9", "v12.8", "v12.6", "v12.4"] {
+        candidates.push(
+            PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
+                .join(version)
+                .join("bin"),
+        );
+    }
+    candidates
+}
+
+fn cudnn_runtime_candidates() -> Vec<PathBuf> {
+    let mut candidates = env_runtime_paths("AIAS_CUDNN9_DIR");
+    if let Some(home) = dirs::home_dir() {
+        let python_root = home.join(r"AppData\Local\Programs\Python");
+        if let Ok(entries) = fs::read_dir(python_root) {
+            candidates.extend(
+                entries
+                    .flatten()
+                    .map(|entry| entry.path().join(r"Lib\site-packages\torch\lib")),
+            );
+        }
+    }
+    for root in local_ai_roots() {
+        candidates.push(root.join(r"ComfyUI\venv\Lib\site-packages\torch\lib"));
+        candidates.push(root.join(r"ComfyUI\python_embeded\Lib\site-packages\torch\lib"));
+        candidates.push(root.join(r"forge\venv\Lib\site-packages\torch\lib"));
+    }
+    for version in ["v12.9", "v12.8", "v12.6", "v12.4"] {
+        candidates.push(
+            PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")
+                .join(version)
+                .join("bin"),
+        );
+    }
+    candidates
+}
+
+fn env_runtime_paths(name: &str) -> Vec<PathBuf> {
+    std::env::var_os(name)
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn local_ai_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for drive in ['C', 'D', 'E', 'F', 'G'] {
+        roots.push(PathBuf::from(format!(r"{drive}:\WebUI")));
+        roots.push(PathBuf::from(format!(r"{drive}:\")));
+    }
+    roots
 }
 
 fn input_size(session: &Session) -> Result<(usize, usize), String> {
@@ -509,17 +658,10 @@ fn thumbnail_fit(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     (new_w.max(1), new_h.max(1))
 }
 
-fn bilinear_resize_luma(
-    data: &[u8],
-    width: u32,
-    height: u32,
-    new_w: u32,
-    new_h: u32,
-) -> Vec<u8> {
+fn bilinear_resize_luma(data: &[u8], width: u32, height: u32, new_w: u32, new_h: u32) -> Vec<u8> {
     let source = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(width, height, data.to_vec())
         .expect("buffer size mismatch");
-    image::imageops::resize(&source, new_w, new_h, FilterType::Triangle)
-        .into_raw()
+    image::imageops::resize(&source, new_w, new_h, FilterType::Triangle).into_raw()
 }
 
 fn to_f32(data: Vec<u8>) -> Vec<f32> {
@@ -581,8 +723,8 @@ fn run_simple(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
 
     let input_name = session.inputs()[0].name().to_string();
     let output_name = session.outputs()[0].name().to_string();
-    let tensor = Tensor::from_array((vec![1_usize, 3, seg_h, seg_w], input))
-        .map_err(to_string_error)?;
+    let tensor =
+        Tensor::from_array((vec![1_usize, 3, seg_h, seg_w], input)).map_err(to_string_error)?;
     let outputs = session
         .run(ort::inputs![input_name.as_str() => tensor])
         .map_err(to_string_error)?;
@@ -617,11 +759,13 @@ fn run_simple(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
             cropped,
         )
         .ok_or("掩码缓冲无效")?;
-        image::imageops::resize(&source, w, h, FilterType::Triangle)
-            .into_raw()
+        image::imageops::resize(&source, w, h, FilterType::Triangle).into_raw()
     };
 
-    Ok(resized.into_iter().map(|value| value.clamp(0.0, 1.0)).collect())
+    Ok(resized
+        .into_iter()
+        .map(|value| value.clamp(0.0, 1.0))
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -648,12 +792,7 @@ fn resize_pad_rgb(img: &RgbImage, size: u32) -> (RgbImage, (u32, u32, u32, u32))
             canvas.put_pixel(pad_l + x, pad_t + y, *resized.get_pixel(x, y));
         }
     }
-    let pads = (
-        pad_t,
-        size - new_h - pad_t,
-        pad_l,
-        size - new_w - pad_l,
-    );
+    let pads = (pad_t, size - new_h - pad_t, pad_l, size - new_w - pad_l);
     (canvas, pads)
 }
 
@@ -662,7 +801,8 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     let mut guard = advanced_slot().lock().map_err(lock_error)?;
     if guard.is_none() {
         let seg_path = models_dir(base).join("anime_segmentor_rtmdet_e60_simplified.onnx");
-        let refine_path = models_dir(base).join("mask_refiner_isnetdis_refine_last_simplified.onnx");
+        let refine_path =
+            models_dir(base).join("mask_refiner_isnetdis_refine_last_simplified.onnx");
         if !seg_path.exists() || !refine_path.exists() {
             return Err("精细模型未安装，请先在参数面板下载。".into());
         }
@@ -711,8 +851,8 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     }
 
     let seg_input_name = sessions.seg.inputs()[0].name().to_string();
-    let tensor = Tensor::from_array((vec![1_usize, 3, seg_h, seg_w], input))
-        .map_err(to_string_error)?;
+    let tensor =
+        Tensor::from_array((vec![1_usize, 3, seg_h, seg_w], input)).map_err(to_string_error)?;
     let outputs = sessions
         .seg
         .run(ort::inputs![seg_input_name.as_str() => tensor])
@@ -852,7 +992,13 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
         .iter()
         .map(|prob| if *prob > DETECTION_THRESHOLD { 255 } else { 0 })
         .collect();
-    let upscaled = bilinear_resize_luma(&small_bin, proto_w as u32, proto_h as u32, seg_w as u32, seg_h as u32);
+    let upscaled = bilinear_resize_luma(
+        &small_bin,
+        proto_w as u32,
+        proto_h as u32,
+        seg_w as u32,
+        seg_h as u32,
+    );
     let cropped_w = sw as usize;
     let cropped_h = sh as usize;
     let mut cropped = vec![0_u8; cropped_w * cropped_h];
@@ -875,13 +1021,15 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     ));
 
     // -- Stage 2: refine the coarse mask ------------------------------------
-    let refine_size = outlet_tensor_shape(sessions.refine.inputs().first().ok_or("精修模型没有输入")?)
-        .and_then(|dims| {
-            dims.get(2)
-                .copied()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| "精修模型输入尺寸未知".to_string())
-        })? as u32;
+    let refine_size = outlet_tensor_shape(
+        sessions.refine.inputs().first().ok_or("精修模型没有输入")?,
+    )
+    .and_then(|dims| {
+        dims.get(2)
+            .copied()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "精修模型输入尺寸未知".to_string())
+    })? as u32;
 
     let (img_pad, (pt, pb, pl, pr)) = resize_pad_rgb(rgb, refine_size);
     // Planar CHW, not pixel-interleaved.
@@ -945,8 +1093,12 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     let mut refined = vec![0_u8; (w * h) as usize];
     let crop_x0 = pl as usize;
     let crop_y0 = pt as usize;
-    let crop_w = logits_w.saturating_sub(pl as usize).saturating_sub(pr as usize);
-    let crop_h = logits_h.saturating_sub(pt as usize).saturating_sub(pb as usize);
+    let crop_w = logits_w
+        .saturating_sub(pl as usize)
+        .saturating_sub(pr as usize);
+    let crop_h = logits_h
+        .saturating_sub(pt as usize)
+        .saturating_sub(pb as usize);
     let mut cropped = vec![0_f32; crop_w * crop_h];
     for y in 0..crop_h {
         for x in 0..crop_w {
@@ -989,18 +1141,26 @@ fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     // Export fixes the input at 1024x1024; fall back if a rebuild is dynamic.
     let (seg_h, seg_w) = input_size(session).unwrap_or((1024, 1024));
 
-    // Plain square resize (stretch) to the model input, then /255 and
-    // ImageNet normalization in RGB order.
-    let resized = if w == seg_w as u32 && h == seg_h as u32 {
-        rgb.clone()
+    // BiRefNet 系模型以「等比缩放 + 居中留边」的 1024x1024 输入训练；直接拉伸
+    // 会严重扭曲人物比例、显著降低分割精度（竖图尤甚）。改为先按短边等比
+    // 缩放到 1024 内，再将剩余区域补成灰边，推理后裁回内容区、缩回原尺寸。
+    let scale = f32::min(seg_w as f32 / w as f32, seg_h as f32 / h as f32);
+    let content_w = (w as f32 * scale).round().max(1.0) as u32;
+    let content_h = (h as f32 * scale).round().max(1.0) as u32;
+    let mut canvas = RgbImage::from_pixel(seg_w as u32, seg_h as u32, image::Rgb([126, 126, 126]));
+    let pad_x = (seg_w as u32 - content_w) / 2;
+    let pad_y = (seg_h as u32 - content_h) / 2;
+    if content_w != w || content_h != h {
+        let scaled = image::imageops::resize(rgb, content_w, content_h, FilterType::CatmullRom);
+        image::imageops::overlay(&mut canvas, &scaled, pad_x as i64, pad_y as i64);
     } else {
-        image::imageops::resize(rgb, seg_w as u32, seg_h as u32, FilterType::Triangle)
-    };
+        image::imageops::overlay(&mut canvas, rgb, pad_x as i64, pad_y as i64);
+    }
     let plane = seg_h * seg_w;
     let mut input = vec![0_f32; 3 * plane];
     for y in 0..seg_h as u32 {
         for x in 0..seg_w as u32 {
-            let pixel = resized.get_pixel(x, y);
+            let pixel = canvas.get_pixel(x, y);
             let dst = y as usize * seg_w + x as usize;
             input[dst] = (pixel[0] as f32 / 255.0 - TOONOUT_MEAN[0]) / TOONOUT_STD[0];
             input[plane + dst] = (pixel[1] as f32 / 255.0 - TOONOUT_MEAN[1]) / TOONOUT_STD[1];
@@ -1028,40 +1188,114 @@ fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
         .iter()
         .any(|value| *value < -0.01 || *value > 1.01);
 
-    // Input was stretched (not padded), so stretching the matte back to the
-    // original size restores the aspect ratio.
-    let resized_mask = if mask_h == h && mask_w == w {
-        mask[..mask_len].to_vec()
+    // 输入是等比缩放 + 居中留边，mask 是整块 1024 方图：先裁掉灰边区域得到
+    // 内容区 mask，再缩放到原图尺寸。裁剪坐标与前面 overlay 的 pad 一一对应。
+    let content_mask = crop_letterbox(mask, mask_w, mask_h, content_w, content_h, seg_w, seg_h);
+    let upscaled_mask = if content_w == w && content_h == h {
+        content_mask
     } else {
-        let source = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(mask_w, mask_h, mask[..mask_len].to_vec())
-            .ok_or("掩码缓冲无效")?;
-        image::imageops::resize(&source, w, h, FilterType::Triangle).into_raw()
+        let source =
+            ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(content_w, content_h, content_mask)
+                .ok_or("掩码缓冲无效")?;
+        image::imageops::resize(&source, w, h, FilterType::Lanczos3).into_raw()
     };
-    let resized_mask = if needs_sigmoid {
-        resized_mask
-            .into_iter()
-            .map(stable_sigmoid)
-            .collect::<Vec<f32>>()
+    let mut result: Vec<f32> = if needs_sigmoid {
+        upscaled_mask.into_iter().map(stable_sigmoid).collect()
     } else {
-        resized_mask
+        upscaled_mask
     };
+    // 柔化对比度：只把接近全透明/全不透明的两头压向极值，保留发丝、水花等
+    // 半透明细节的中间响应，不做硬二值化（那会毁掉这些细节）。
+    const MATTE_FLOOR: f32 = 0.05;
+    const MATTE_CEIL: f32 = 0.95;
+    for value in &mut result {
+        *value =
+            ((value.clamp(0.0, 1.0) - MATTE_FLOOR) / (MATTE_CEIL - MATTE_FLOOR)).clamp(0.0, 1.0);
+    }
+    Ok(smooth_matte_edges(&result, w, h))
+}
 
-    Ok(resized_mask
-        .into_iter()
-        .map(|value| value.clamp(0.0, 1.0))
-        .collect())
+/// 从带灰边的 1024 方图 mask 中裁出内容区域（与 preprocess 的 pad 对应）。
+fn crop_letterbox(
+    mask: &[f32],
+    mask_w: u32,
+    mask_h: u32,
+    content_w: u32,
+    content_h: u32,
+    seg_w: usize,
+    seg_h: usize,
+) -> Vec<f32> {
+    if (mask_w as usize, mask_h as usize) == (seg_w, seg_h) {
+        let (cw, ch) = (content_w as usize, content_h as usize);
+        let pad_x = (seg_w - cw) / 2;
+        let pad_y = (seg_h - ch) / 2;
+        let mut out = vec![0_f32; cw * ch];
+        for y in 0..ch {
+            for x in 0..cw {
+                out[y * cw + x] = mask[(y + pad_y) * seg_w + (x + pad_x)];
+            }
+        }
+        out
+    } else {
+        // mask 尺寸与画布不一致，直接返回原 mask（走 resize 分支，避免越界）。
+        mask.to_vec()
+    }
+}
+
+// matte 上采样后，半透明过渡带会出现锯齿和孤立噪点；只对过渡带（含 1px
+// 膨胀）做 3x3 高斯平滑，实心和透明区域保持原样，避免啃掉细发丝。
+fn smooth_matte_edges(mask: &[f32], w: u32, h: u32) -> Vec<f32> {
+    let (w, h) = (w as usize, h as usize);
+    if w < 3 || h < 3 {
+        return mask.to_vec();
+    }
+    let soft = |value: f32| value > 0.02 && value < 0.98;
+    let mut band = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            if !soft(mask[y * w + x]) {
+                continue;
+            }
+            let x0 = x.saturating_sub(1);
+            let y0 = y.saturating_sub(1);
+            let x1 = (x + 1).min(w - 1);
+            let y1 = (y + 1).min(h - 1);
+            for yy in y0..=y1 {
+                for xx in x0..=x1 {
+                    band[yy * w + xx] = true;
+                }
+            }
+        }
+    }
+    const KERNEL: [f32; 9] = [1.0, 2.0, 1.0, 2.0, 4.0, 2.0, 1.0, 2.0, 1.0];
+    mask.iter()
+        .enumerate()
+        .map(|(index, value)| {
+            if !band[index] {
+                return *value;
+            }
+            let (x, y) = (index % w, index / w);
+            let mut sum = 0.0;
+            let mut weights = 0.0;
+            for dy in -1i64..=1 {
+                for dx in -1i64..=1 {
+                    let xx = (x as i64 + dx).clamp(0, w as i64 - 1) as usize;
+                    let yy = (y as i64 + dy).clamp(0, h as i64 - 1) as usize;
+                    let k = KERNEL[((dy + 1) * 3 + (dx + 1)) as usize];
+                    sum += mask[yy * w + xx] * k;
+                    weights += k;
+                }
+            }
+            sum / weights
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
 // Public entry: cut a single image
 // ---------------------------------------------------------------------------
 
-pub fn cutout(
-    base: &Path,
-    model_id: &str,
-    input: &Path,
-    output: &Path,
-) -> Result<(), String> {
+pub fn cutout(base: &Path, model_id: &str, input: &Path, output: &Path) -> Result<(), String> {
     let mut image = image::open(input).map_err(to_string_error)?;
     if let Some(orientation) = exif_orientation(input)? {
         image.apply_orientation(orientation);
@@ -1079,7 +1313,9 @@ pub fn cutout(
     let mut result = RgbaImage::new(w, h);
     for y in 0..h {
         for x in 0..w {
-            let alpha = (mask[(y * w + x) as usize] * 255.0).round().clamp(0.0, 255.0) as u8;
+            let alpha = (mask[(y * w + x) as usize] * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
             let pixel = rgb.get_pixel(x, y);
             result.put_pixel(x, y, Rgba([pixel[0], pixel[1], pixel[2], alpha]));
         }
@@ -1143,5 +1379,60 @@ mod toonout_tests {
         assert!(center > 220, "主体中心应不透明，实际 {center}");
         assert!(corner < 60, "背景角应接近透明，实际 {corner}");
         println!("center={center} corner={corner}");
+    }
+
+    /// 用指定图片检查 ToonOut 质量：
+    /// `AIAS_TOONOUT_TEST_IMAGE=/path/to/image cargo test toonout_real_image -- --ignored --nocapture`
+    #[test]
+    #[ignore = "运行 470MB 模型推理，手动执行"]
+    fn toonout_real_image() {
+        let base = std::env::temp_dir().join("aias-toonout-e2e");
+        fs::create_dir_all(&base).unwrap();
+        download_model(None, &base, "toonout").unwrap();
+
+        let input_path = std::env::var_os("AIAS_TOONOUT_TEST_IMAGE")
+            .map(PathBuf::from)
+            .expect("请设置 AIAS_TOONOUT_TEST_IMAGE 指向测试图片");
+        let rgb = image::open(&input_path).unwrap().to_rgb8();
+        println!("input {}x{}", rgb.width(), rgb.height());
+
+        ensure_ort_runtime(&base).unwrap();
+        let path = models_dir(&base).join("birefnet-toonout-fp16.onnx");
+        let session = build_session(&path).unwrap();
+        println!("inputs: {:?}", session.inputs());
+        println!("outputs: {:?}", session.outputs());
+
+        let matte = run_toonout(&base, &rgb).unwrap();
+        let (w, h) = rgb.dimensions();
+        let (mut strong, mut weak, mut mid) = (0usize, 0usize, 0usize);
+        let (mut border_sum, mut border_n) = (0f64, 0f64);
+        for y in 0..h {
+            for x in 0..w {
+                let value = matte[y as usize * w as usize + x as usize];
+                if value > 0.9 {
+                    strong += 1
+                } else if value < 0.1 {
+                    weak += 1
+                } else {
+                    mid += 1
+                }
+                if x < 16 || y < 16 || x >= w - 16 || y >= h - 16 {
+                    border_sum += f64::from(value);
+                    border_n += 1.0;
+                }
+            }
+        }
+        let total = (w * h) as usize;
+        println!(
+            "strong={}% weak={}% mid={}% border_mean={:.4}",
+            strong * 100 / total,
+            weak * 100 / total,
+            mid * 100 / total,
+            border_sum / border_n
+        );
+
+        let output = base.join("out_real.png");
+        cutout(&base, "toonout", &input_path, &output).unwrap();
+        println!("saved {}", output.display());
     }
 }

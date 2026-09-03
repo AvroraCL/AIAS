@@ -431,6 +431,12 @@ textarea:focus { border-color: var(--accent); }
     conic-gradient(#232428 0 25%, #1a1b1e 0 50%, #232428 0 75%, #1a1b1e 0) 0 0 / 20px 20px;
 }
 
+/* 让对比框铺满整个舞台：图片 object-fit:contain 居中，避免肖像图被
+   缩成一条窄而两侧大片空白的预览。棋盘格作为透明垫底铺满整框。 */
+.compare-frame.aspect-fit {
+  inset: 12px;
+}
+
 .compare-after,
 .compare-before {
   position: absolute;

@@ -175,7 +175,7 @@
               </div>
               <div class="anime-gallery" id="anime-gallery" hidden>
                 <div class="compare-stage" id="anime-compare" style="--compare-pos: 50%">
-                  <div class="compare-frame">
+                  <div class="compare-frame" id="anime-compare-frame">
                     <img class="compare-after" id="anime-compare-after" alt="抠图结果" draggable="false" />
                     <div class="compare-before" id="anime-compare-before">
                       <img class="compare-original" id="anime-compare-original" alt="原图" draggable="false" />
@@ -294,10 +294,10 @@
                 <button class="group-toggle" type="button"><span>抠图模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
                   <label>模型</label>
-                  <select id="anime-model" aria-label="抠图模型" title="标准抠图速度更快；精细抠图使用 RTMDet 检测 + ISNet 精修；ToonOut 为动漫特化模型，发丝与半透明细节最好">
+                  <select id="anime-model" aria-label="抠图模型" title="动漫特化（ToonOut）为动漫精调模型，发丝与半透明细节最好；标准抠图速度更快；精细抠图使用 RTMDet 检测 + ISNet 精修">
+                    <option value="toonout">动漫特化（ToonOut）</option>
                     <option value="simple">标准抠图（ISNet）</option>
                     <option value="advanced">精细抠图（RTMDet + 精修）</option>
-                    <option value="toonout">动漫特化（ToonOut）</option>
                   </select>
                   <div class="model-status-row">
                     <small id="anime-model-status" class="settings-hint">正在读取模型状态…</small>

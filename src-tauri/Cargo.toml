@@ -13,7 +13,9 @@ dirs = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "webp"] }
 image_dds = { version = "0.7.2", default-features = false, features = ["ddsfile", "image"] }
 # load-dynamic + api-17：任意 >= 1.17 的 onnxruntime.dll 均可加载（含 ComfyUI venv 的 1.23.x）
-ort = { version = "2.0.0-rc", default-features = false, features = ["std", "load-dynamic", "api-17"] }
+# cuda + preload-dylibs：注册 CUDAExecutionProvider，并把 CUDA12 + cuDNN9 运行时预载进进程，
+#       配好依赖的机器自动 GPU 加速；缺依赖时 EP 注册失败会静默回退 CPU（默认 error_on_failure=false）。
+ort = { version = "2.0.0-rc", default-features = false, features = ["std", "load-dynamic", "api-17", "cuda", "preload-dylibs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["protocol-asset"] }

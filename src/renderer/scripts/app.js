@@ -56,7 +56,7 @@ const defaults = {
   imageToDdsFormat: "DXT5",
   scaleTarget: "none",
   skinManagerPath: "",
-  animeModel: "simple",
+  animeModel: "toonout",
   animeCutoutOutputPath: ""
 };
 
@@ -85,6 +85,7 @@ const state = {
   animeDownloading: false,
   animeResults: new Map(),
   animeProbed: new Set(),
+  animeResultEpoch: 0,
   animeActiveIndex: 0,
   animeComparePos: 50,
   activeMode: "merge",
@@ -549,9 +550,9 @@ function createBrowserPreviewApi() {
     },
     anime: {
       modelsStatus: async () => [
+        { id: "toonout", label: "动漫特化（ToonOut）", installed: false, totalSize: 492381880, files: [{ name: "birefnet-toonout-fp16.onnx", present: false, size: 0, expectedSize: 492381880 }] },
         { id: "simple", label: "标准抠图（ISNet）", installed: true, totalSize: 176069933, files: [{ name: "isnetis.onnx", present: true, size: 176069933, expectedSize: 176069933 }] },
-        { id: "advanced", label: "精细抠图（RTMDet + 精修）", installed: false, totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", present: false, size: 0, expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", present: false, size: 0, expectedSize: 176197192 }] },
-        { id: "toonout", label: "动漫特化（ToonOut）", installed: false, totalSize: 492381880, files: [{ name: "birefnet-toonout-fp16.onnx", present: false, size: 0, expectedSize: 492381880 }] }
+        { id: "advanced", label: "精细抠图（RTMDet + 精修）", installed: false, totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", present: false, size: 0, expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", present: false, size: 0, expectedSize: 176197192 }] }
       ],
       modelDownload: () => previewOnly("模型下载（需要 Tauri 运行时）"),
       modelUninstall: () => previewOnly("模型卸载（需要 Tauri 运行时）"),
@@ -874,6 +875,8 @@ function expectedAnimeOutput(file) {
 }
 
 function applyAnimeOutputs(paths) {
+  // 输出文件路径固定不变，重跑后内容已更新；换时间戳强制 <img> 重新加载
+  state.animeResultEpoch = Date.now();
   for (const path of paths || []) {
     state.animeResults.set(animeStem(path), path);
   }
@@ -883,6 +886,7 @@ function applyAnimeOutputs(paths) {
 function resetAnimeResults() {
   state.animeResults.clear();
   state.animeProbed.clear();
+  state.animeResultEpoch = Date.now();
 }
 
 function probeAnimeResult(file) {
@@ -908,6 +912,7 @@ function renderAnimeGallery() {
   $("anime-empty")?.classList.toggle("hidden", hasFiles);
   $("anime-gallery")?.classList.toggle("hidden", !hasFiles);
   setText("anime-toolbar-count", hasFiles ? `${files.length} 张图片` : "尚未添加图片");
+  updateStatus();
   if (!hasFiles) return;
   renderAnimeThumbs(files);
   renderAnimeCompare(files[state.animeActiveIndex]);
@@ -981,7 +986,10 @@ function renderAnimeCompare(file) {
   const original = $("anime-compare-original");
   const after = $("anime-compare-after");
   const originalSrc = animeLocalSrc(file);
-  const resultSrc = animeLocalSrc(result);
+  const rawResultSrc = animeLocalSrc(result);
+  const resultSrc = rawResultSrc && state.animeResultEpoch
+    ? `${rawResultSrc}?v=${state.animeResultEpoch}`
+    : rawResultSrc;
   if (original) {
     if (originalSrc) original.src = originalSrc;
     else original.removeAttribute("src");
@@ -990,6 +998,7 @@ function renderAnimeCompare(file) {
     if (resultSrc) after.src = resultSrc;
     else after.removeAttribute("src");
   }
+  if (original) original.onload = fitAnimeCompareFrame;
 
   if (hasResult) {
     stage.style.setProperty("--compare-pos", `${state.animeComparePos}%`);
@@ -1001,6 +1010,18 @@ function renderAnimeCompare(file) {
   const empty = $("anime-compare-empty");
   if (empty) empty.hidden = hasLocal;
   $("anime-compare-divider")?.setAttribute("aria-valuenow", String(Math.round(hasResult ? state.animeComparePos : 100)));
+  fitAnimeCompareFrame();
+}
+
+// 对比框占满整个舞台，图片用 object-fit:contain 居中，不再按宽高比收窄
+// （那会让肖像图变成窄条、两侧留下大片空白）。此函数仅清理历史遗留的
+// 内联宽高，确保 CSS 铺满生效。
+function fitAnimeCompareFrame() {
+  const frame = $("anime-compare-frame");
+  if (!frame) return;
+  frame.classList.add("aspect-fit");
+  frame.style.width = "";
+  frame.style.height = "";
 }
 
 function setAnimeComparePosition(percent) {
@@ -1048,6 +1069,8 @@ function bindAnimeGallery() {
     else return;
     event.preventDefault();
   });
+
+  window.addEventListener("resize", fitAnimeCompareFrame);
 }
 
 function addActivity(title, body, tone = "idle") {
@@ -1367,7 +1390,7 @@ function applySettingsToForm() {
     "image-format": settings.imageToDdsFormat,
     "scale-target": settings.scaleTarget,
     "skin-path": settings.skinManagerPath,
-    "anime-model": settings.animeModel || "simple",
+    "anime-model": settings.animeModel || "toonout",
     "anime-output": settings.animeCutoutOutputPath
   };
 
@@ -1664,6 +1687,7 @@ function bindDropZones() {
       target.value = directory;
       await saveSettings();
       syncPathChips();
+      updateStatus();
       if (button.dataset.pickDir === "skin-path") {
         await refreshSkins();
       }
@@ -1970,11 +1994,17 @@ function bindDragDrop() {
     switch (mode) {
       case "merge":
         $("pbr-input").value = paths[0];
-        saveSettings().then(() => syncPathChips());
+        saveSettings().then(() => {
+          syncPathChips();
+          updateStatus();
+        });
         break;
       case "mipmap":
         $("mipmap-input").value = paths[0];
-        saveSettings().then(() => syncPathChips());
+        saveSettings().then(() => {
+          syncPathChips();
+          updateStatus();
+        });
         break;
       case "skins":
         $("skin-path").value = paths[0];
@@ -2031,6 +2061,10 @@ async function init() {
   }
   $("update-button")?.addEventListener("click", () => checkForUpdates(false));
   startSystemMonitor();
+  // 兜底轮询：文件/目录变化事件若被遗漏，抠图按钮可用性 1.2s 内自动纠正
+  setInterval(() => {
+    if (state.activeMode === "anime-cutout") updateStatus();
+  }, 1200);
 
   renderChips("merge-chip-list", []);
   renderChips("split-file-list", []);
