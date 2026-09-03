@@ -35,7 +35,8 @@ import {
   ChevronsLeftRight,
   ImageOff,
   Check,
-  AlertTriangle
+  AlertTriangle,
+  Download
 } from "lucide";
 
 const defaults = {
@@ -56,7 +57,7 @@ const defaults = {
   imageToDdsFormat: "DXT5",
   scaleTarget: "none",
   skinManagerPath: "",
-  animeModel: "toonout",
+  animeModel: "advanced",
   animeCutoutOutputPath: ""
 };
 
@@ -83,6 +84,8 @@ const state = {
   animeFiles: [],
   animeModels: [],
   animeDownloading: false,
+  gpuRuntime: null,
+  gpuDownloading: false,
   animeResults: new Map(),
   animeProbed: new Set(),
   animeResultEpoch: 0,
@@ -125,7 +128,8 @@ const iconSet = {
   ChevronsLeftRight,
   ImageOff,
   Check,
-  AlertTriangle
+  AlertTriangle,
+  Download
 };
 
 const TOAST_LIMIT = 4;
@@ -494,17 +498,44 @@ function createBrowserPreviewApi() {
     ...JSON.parse(localStorage.getItem("aias-preview-settings") || "{}")
   };
 
+  const previewModels = [
+    { id: "toonout", label: "动漫特化（ToonOut）", totalSize: 492381880, files: [{ name: "birefnet-toonout-fp16.onnx", expectedSize: 492381880 }] },
+    { id: "simple", label: "标准抠图（ISNet）", totalSize: 176069933, files: [{ name: "isnetis.onnx", expectedSize: 176069933 }] },
+    { id: "advanced", label: "精细抠图（RTMDet + 精修）", totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", expectedSize: 176197192 }] }
+  ].map((model) => ({
+    ...model,
+    installed: true,
+    files: model.files.map((file) => ({ ...file, present: true, size: file.expectedSize }))
+  }));
+
+  const modelsStatus = () => previewModels.map((model) => ({
+    ...model,
+    files: model.files.map((file) => ({ ...file }))
+  }));
+
+  const setModelInstalled = (modelId, installed) => {
+    const model = previewModels.find((item) => item.id === modelId);
+    if (!model) return modelsStatus();
+    model.installed = installed;
+    model.files = model.files.map((file) => ({
+      ...file,
+      present: installed,
+      size: installed ? file.expectedSize : 0
+    }));
+    return modelsStatus();
+  };
+
   const save = () => {
     localStorage.setItem("aias-preview-settings", JSON.stringify(settings));
     return { ...settings };
   };
 
   const previewOnly = async (feature) => ({
-    completed: 0,
-    total: 0,
+    completed: 1,
+    total: 1,
     logs: [
-      `${feature} 需要 Tauri 窗口里的本地文件权限。`,
-      "当前浏览器预览用于调试界面交互、布局和状态。"
+      `${feature} 预览任务已完成。`,
+      "已模拟桌面端的运行状态与完成反馈；未写入本地文件。"
     ]
   });
 
@@ -549,14 +580,10 @@ function createBrowserPreviewApi() {
       convertImagesToDds: () => previewOnly("图片转 DDS")
     },
     anime: {
-      modelsStatus: async () => [
-        { id: "toonout", label: "动漫特化（ToonOut）", installed: false, totalSize: 492381880, files: [{ name: "birefnet-toonout-fp16.onnx", present: false, size: 0, expectedSize: 492381880 }] },
-        { id: "simple", label: "标准抠图（ISNet）", installed: true, totalSize: 176069933, files: [{ name: "isnetis.onnx", present: true, size: 176069933, expectedSize: 176069933 }] },
-        { id: "advanced", label: "精细抠图（RTMDet + 精修）", installed: false, totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", present: false, size: 0, expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", present: false, size: 0, expectedSize: 176197192 }] }
-      ],
-      modelDownload: () => previewOnly("模型下载（需要 Tauri 运行时）"),
-      modelUninstall: () => previewOnly("模型卸载（需要 Tauri 运行时）"),
-      cutout: () => previewOnly("动漫抠图（需要 Tauri 运行时）")
+      modelsStatus: async () => modelsStatus(),
+      modelDownload: async (modelId) => setModelInstalled(modelId, true),
+      modelUninstall: async (modelId) => setModelInstalled(modelId, false),
+      cutout: () => previewOnly("动漫抠图")
     },
     skin: {
       autoDetect: async () => null,
@@ -568,11 +595,7 @@ function createBrowserPreviewApi() {
     system: {
       stats: async () => {
         const total = 32 * 1024 ** 3;
-        return {
-          cpuUsage: Math.round(18 + Math.random() * 45),
-          memoryUsed: Math.round(total * (0.35 + Math.random() * 0.35)),
-          memoryTotal: total
-        };
+        return { cpuUsage: 31, memoryUsed: Math.round(total * 0.48), memoryTotal: total };
       }
     },
     gpu: {
@@ -580,15 +603,15 @@ function createBrowserPreviewApi() {
         const total = 12 * 1024 ** 3;
         return {
           available: true,
-          name: "NVIDIA GeForce RTX 4070",
-          utilization: Math.round(10 + Math.random() * 70),
-          memoryUsed: Math.round(total * (0.2 + Math.random() * 0.5)),
+          name: "NVIDIA GeForce RTX 4070 SUPER",
+          utilization: 27,
+          memoryUsed: Math.round(total * 0.36),
           memoryTotal: total
         };
       }
     },
     shell: {
-      openPath: async (filePath) => addActivity("浏览器预览", `不能打开本地文件：${filePath}`)
+      openPath: async (filePath) => addActivity("已打开输出目录", filePath, "success")
     }
   };
 }
@@ -629,7 +652,9 @@ function createTauriApi() {
       modelsStatus: () => invoke("anime_models_status"),
       modelDownload: (modelId) => invoke("anime_model_download", { modelId }),
       modelUninstall: (modelId) => invoke("anime_model_uninstall", { modelId }),
-      cutout: (options) => invoke("anime_cutout", { options })
+      cutout: (options) => invoke("anime_cutout", { options }),
+      gpuRuntimeState: () => invoke("gpu_runtime_state"),
+      installGpuRuntime: () => invoke("install_gpu_runtime")
     },
     skin: {
       autoDetect: () => invoke("skin_auto_detect"),
@@ -798,8 +823,72 @@ async function refreshAnimeModelStatus() {
   renderAnimeModelStatus();
 }
 
+function describeGpuRuntime() {
+  const runtime = state.gpuRuntime;
+  if (!runtime?.nvidiaGpu) return { relevant: false };
+  if (runtime.cudaActive) {
+    return { relevant: true, text: "GPU 加速已生效（CUDA），抠图推理运行在显卡上。" };
+  }
+  if (runtime.runtimeInstalled) {
+    return {
+      relevant: true,
+      text: runtime.ortInitialized
+        ? "GPU 运行库已就绪，但本次会话已先加载了 CPU 运行库，重启应用后生效。"
+        : "GPU 运行库已就绪，开始抠图后自动启用（CUDA）。"
+    };
+  }
+  return {
+    relevant: true,
+    text: "检测到 NVIDIA 显卡。下载 GPU 运行库（约 233 MB，一次性）可大幅提升抠图速度。"
+  };
+}
+
+async function refreshGpuRuntime() {
+  if (!isTauriRuntime) return;
+  try {
+    state.gpuRuntime = await api.anime.gpuRuntimeState();
+  } catch {
+    state.gpuRuntime = null;
+  }
+  renderGpuRuntime();
+}
+
+function renderGpuRuntime() {
+  const section = $("anime-gpu-section");
+  if (!section) return;
+  const info = describeGpuRuntime();
+  section.classList.toggle("hidden", !info.relevant);
+  if (!info.relevant) return;
+  setText("anime-gpu-status", info.text);
+  const installing = state.gpuDownloading;
+  $("anime-gpu-install")?.classList.toggle(
+    "hidden",
+    installing || Boolean(state.gpuRuntime?.runtimeInstalled)
+  );
+  $("anime-gpu-progress")?.classList.toggle("hidden", !installing);
+}
+
+async function installGpuRuntime() {
+  if (!isTauriRuntime || state.gpuDownloading) return;
+  state.gpuDownloading = true;
+  renderGpuRuntime();
+  addActivity("开始下载 GPU 运行库", "onnxruntime-gpu");
+  try {
+    const result = await api.anime.installGpuRuntime();
+    addActivity(
+      "GPU 运行库下载完成",
+      result?.requiresRestart ? "重启应用后生效" : "立即生效",
+      "success"
+    );
+  } catch (error) {
+    addActivity("GPU 运行库下载失败", error.message || String(error), "error");
+  }
+  state.gpuDownloading = false;
+  await refreshGpuRuntime();
+}
+
 function renderAnimeModelStatus() {
-  const model = animeModelById($("anime-model")?.value || "simple");
+  const model = animeModelById($("anime-model")?.value || "advanced");
   setText("anime-model-status", describeAnimeModel(model));
   const ready = Boolean(model?.installed);
   const downloading = state.animeDownloading;
@@ -818,7 +907,7 @@ function renderAnimeModelStatus() {
 }
 
 async function downloadAnimeModel() {
-  const modelId = $("anime-model")?.value || "simple";
+  const modelId = $("anime-model")?.value || "advanced";
   if (state.animeDownloading) return;
   state.animeDownloading = true;
   renderAnimeModelStatus();
@@ -834,7 +923,7 @@ async function downloadAnimeModel() {
 }
 
 async function uninstallAnimeModel() {
-  const modelId = $("anime-model")?.value || "simple";
+  const modelId = $("anime-model")?.value || "advanced";
   if (state.animeDownloading) return;
   const model = animeModelById(modelId);
   const label = model?.label || animeModelCatalog[modelId]?.label || modelId;
@@ -864,21 +953,32 @@ function animeStem(file) {
   return dot > 0 ? name.slice(0, dot) : name;
 }
 
-function animeLocalSrc(path) {
-  return isTauriRuntime && path ? convertFileSrc(path) : "";
+// 后端输出名为 {原图stem}_{模型id}.png，这里用同样的组合键匹配结果，避免与原图同名覆盖
+function animeResultKey(file) {
+  return `${animeStem(file)}_${$("anime-model")?.value || "advanced"}`;
 }
 
-function expectedAnimeOutput(file) {
-  const dir = $("anime-output")?.value?.trim();
-  if (!dir) return "";
-  return `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}.png`;
+function animeLocalSrc(path) {
+  return isTauriRuntime && path ? convertFileSrc(path) : "";
 }
 
 function applyAnimeOutputs(paths) {
   // 输出文件路径固定不变，重跑后内容已更新；换时间戳强制 <img> 重新加载
   state.animeResultEpoch = Date.now();
   for (const path of paths || []) {
-    state.animeResults.set(animeStem(path), path);
+    // 后端返回的实际输出路径（ToonOut 在复杂背景上可能回退到 _advanced 或 _simple）。
+    // 用「原图 stem」匹配前端当前选中的文件，把结果挂到 animeResultKey(file) 下，
+    // 这样渲染/角标/对比图用同一个 key 就能查到，与后端实际模型无关。
+    const pathStem = animeStem(path); // 例如 73307539_p0_simple
+    const hit = (state.animeFiles || []).find((file) =>
+      pathStem.startsWith(animeStem(file) + "_") || pathStem === animeStem(file)
+    );
+    if (hit) {
+      state.animeResults.set(animeResultKey(hit), path);
+    } else {
+      // 匹配不到前端文件时退化为按路径 stem 存（保持原行为）。
+      state.animeResults.set(pathStem, path);
+    }
   }
   renderAnimeGallery();
 }
@@ -890,19 +990,31 @@ function resetAnimeResults() {
 }
 
 function probeAnimeResult(file) {
+  const key = animeResultKey(file);
+  if (state.animeResults.has(key) || state.animeProbed.has(key)) return;
+  state.animeProbed.add(key);
+  const dir = $("anime-output")?.value?.trim();
+  if (!dir || !isTauriRuntime) return;
+  const dirTrimmed = dir.replace(/[\\/]+$/, "");
   const stem = animeStem(file);
-  if (state.animeResults.has(stem) || state.animeProbed.has(stem)) return;
-  state.animeProbed.add(stem);
-  const candidate = expectedAnimeOutput(file);
-  if (!candidate || !isTauriRuntime) return;
-  const probe = new Image();
-  probe.onload = () => {
-    if (!state.animeFiles.some((item) => animeStem(item) === stem)) return;
-    state.animeResults.set(stem, candidate);
-    renderAnimeGallery();
+  // ToonOut 在复杂背景上可能被后端自动回退到 advanced 或 simple。
+  // 主候选（用户选择的模型）失败时，回退候选也要探测，否则回退结果在刷新后丢失角标/预览。
+  const model = $("anime-model")?.value || "advanced";
+  const candidates = [`${stem}_${model}.png`];
+  if (model === "toonout") candidates.push(`${stem}_advanced.png`, `${stem}_simple.png`);
+  const probeNext = (index) => {
+    if (index >= candidates.length) return;
+    const candidate = `${dirTrimmed}/${candidates[index]}`;
+    const probe = new Image();
+    probe.onload = () => {
+      if (!state.animeFiles.some((item) => animeStem(item) === stem)) return;
+      state.animeResults.set(key, candidate);
+      renderAnimeGallery();
+    };
+    probe.onerror = () => probeNext(index + 1);
+    probe.src = candidate;
   };
-  probe.onerror = () => state.animeResults.delete(stem);
-  probe.src = candidate;
+  probeNext(0);
 }
 
 function renderAnimeGallery() {
@@ -940,7 +1052,7 @@ function renderAnimeThumbs(files) {
       thumb.classList.add("placeholder");
     }
 
-    const done = state.animeResults.has(animeStem(file));
+    const done = state.animeResults.has(animeResultKey(file));
     const badge = document.createElement("span");
     badge.className = `thumb-badge ${done ? "done" : "pending"}`;
     badge.title = done ? "已有抠图结果" : "待处理";
@@ -969,7 +1081,7 @@ function renderAnimeThumbs(files) {
 
 function removeAnimeFile(file) {
   state.animeFiles = state.animeFiles.filter((item) => item !== file);
-  state.animeResults.delete(animeStem(file));
+  state.animeResults.delete(animeResultKey(file));
   renderAnimeGallery();
   updateStatus();
 }
@@ -977,7 +1089,7 @@ function removeAnimeFile(file) {
 function renderAnimeCompare(file) {
   const stage = $("anime-compare");
   if (!stage || !file) return;
-  const result = state.animeResults.get(animeStem(file)) || "";
+  const result = state.animeResults.get(animeResultKey(file)) || "";
   const hasResult = Boolean(result);
   const hasLocal = Boolean(animeLocalSrc(file));
   stage.classList.toggle("no-result", !hasResult);
@@ -1366,7 +1478,7 @@ function collectSettings() {
     imageToDdsFormat: $("image-format")?.value || "DXT5",
     scaleTarget: $("scale-target")?.value || "none",
     skinManagerPath: $("skin-path")?.value || "",
-    animeModel: $("anime-model")?.value || "simple",
+    animeModel: $("anime-model")?.value || "advanced",
     animeCutoutOutputPath: $("anime-output")?.value || ""
   };
 }
@@ -1390,7 +1502,7 @@ function applySettingsToForm() {
     "image-format": settings.imageToDdsFormat,
     "scale-target": settings.scaleTarget,
     "skin-path": settings.skinManagerPath,
-    "anime-model": settings.animeModel || "toonout",
+    "anime-model": settings.animeModel || "advanced",
     "anime-output": settings.animeCutoutOutputPath
   };
 
@@ -1515,9 +1627,8 @@ function getRunBlocker(mode) {
     case "anime-cutout":
       if (!state.animeFiles.length) return "请添加动漫图片。";
       if (!$("anime-output")?.value) return "请选择输出文件夹。";
-      if (!isTauriRuntime) return null;
       if (state.animeDownloading) return "模型正在下载中，请稍候。";
-      if (!isAnimeModelReady($("anime-model")?.value || "simple")) return "当前模型未安装，请先在「抠图模型」中下载。";
+      if (!isAnimeModelReady($("anime-model")?.value || "advanced")) return "当前模型未安装，请先在「抠图模型」中下载。";
       return null;
     default:
       return null;
@@ -1552,6 +1663,7 @@ function applyMode(mode) {
   if (mode === "settings") syncSettingsView();
   if (mode === "anime-cutout") {
     refreshAnimeModelStatus();
+    refreshGpuRuntime();
     renderAnimeGallery();
   }
   syncActiveLog(mode);
@@ -1615,9 +1727,12 @@ function bindWorkspaceActions() {
     updateStatus();
     saveSettings();
     renderAnimeModelStatus();
+    // 结果键带模型 id：切换模型后按新后缀探测/展示对应结果
+    renderAnimeGallery();
   });
 
   $("anime-model-download")?.addEventListener("click", () => downloadAnimeModel());
+  $("anime-gpu-install")?.addEventListener("click", () => installGpuRuntime());
   $("anime-model-uninstall")?.addEventListener("click", () => uninstallAnimeModel());
 
   document.addEventListener("keydown", (event) => {
@@ -1855,7 +1970,7 @@ function bindRunActions() {
       reportRunBlocker(blocker);
       return;
     }
-    const modelId = $("anime-model")?.value || "simple";
+    const modelId = $("anime-model")?.value || "advanced";
     addActivity("开始抠图", `${state.animeFiles.length} 张图片 · ${animeModelCatalog[modelId]?.label || modelId}`);
     const result = await withLog(
       "anime-log",
@@ -1869,6 +1984,7 @@ function bindRunActions() {
       "动漫抠图"
     );
     if (result?.outputs?.length) applyAnimeOutputs(result.outputs);
+    refreshGpuRuntime();
   });
 }
 
@@ -2052,7 +2168,14 @@ async function init() {
     });
     await listen("model-progress", (event) => {
       const { modelId, file, completed, total } = event.payload;
-      if (modelId !== ($("anime-model")?.value || "simple")) return;
+      if (modelId === "ort-gpu") {
+        const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+        const fill = $("anime-gpu-progress-fill");
+        if (fill) fill.style.width = `${percent}%`;
+        setText("anime-gpu-progress-text", `${file} · ${percent}%（${formatBytes(completed)} / ${formatBytes(total)}）`);
+        return;
+      }
+      if (modelId !== ($("anime-model")?.value || "advanced")) return;
       const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
       const fill = $("anime-model-progress-fill");
       if (fill) fill.style.width = `${percent}%`;

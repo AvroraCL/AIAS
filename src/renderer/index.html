@@ -294,10 +294,10 @@
                 <button class="group-toggle" type="button"><span>抠图模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
                   <label>模型</label>
-                  <select id="anime-model" aria-label="抠图模型" title="动漫特化（ToonOut）为动漫精调模型，发丝与半透明细节最好；标准抠图速度更快；精细抠图使用 RTMDet 检测 + ISNet 精修">
+                  <select id="anime-model" aria-label="抠图模型" title="复杂插画背景优先使用精细抠图；ToonOut 适合背景干净的动漫人物，检测到明显背景残留时会自动由精细抠图复核">
                     <option value="toonout">动漫特化（ToonOut）</option>
                     <option value="simple">标准抠图（ISNet）</option>
-                    <option value="advanced">精细抠图（RTMDet + 精修）</option>
+                    <option value="advanced" selected>精细抠图（RTMDet + 精修，推荐）</option>
                   </select>
                   <div class="model-status-row">
                     <small id="anime-model-status" class="settings-hint">正在读取模型状态…</small>
@@ -311,6 +311,20 @@
                     <small id="anime-model-progress-text" class="settings-hint"></small>
                   </div>
                   <small class="settings-hint">模型保存在应用数据文件夹，下载完成后即可离线使用，无需 ComfyUI</small>
+                </div>
+              </section>
+
+              <section class="inspector-group hidden" id="anime-gpu-section" data-modes="anime-cutout">
+                <button class="group-toggle" type="button"><span>GPU 加速</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content">
+                  <small id="anime-gpu-status" class="settings-hint">正在检测 GPU…</small>
+                  <div class="field-row">
+                    <button id="anime-gpu-install" class="secondary-action hidden" type="button"><i data-lucide="download" aria-hidden="true"></i>下载 GPU 运行库</button>
+                  </div>
+                  <div class="model-progress hidden" id="anime-gpu-progress">
+                    <div class="model-progress-bar"><div class="model-progress-fill" id="anime-gpu-progress-fill"></div></div>
+                    <small id="anime-gpu-progress-text" class="settings-hint"></small>
+                  </div>
                 </div>
               </section>
 

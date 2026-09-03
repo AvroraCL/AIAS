@@ -55,6 +55,7 @@
     "windows": {
       "nsis": {
         "installMode": "both",
+        "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true,
         "headerImage": "icons/installer-header.bmp",
         "sidebarImage": "icons/installer-sidebar.bmp",

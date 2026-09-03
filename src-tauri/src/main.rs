@@ -54,7 +54,7 @@ fn default_comfyui_address() -> String {
 }
 
 fn default_anime_model() -> String {
-  "simple".into()
+  "advanced".into()
 }
 
 impl Default for Settings {
@@ -189,7 +189,8 @@ impl GpuStats {
 }
 
 static MONITOR_SYSTEM: std::sync::OnceLock<std::sync::Mutex<sysinfo::System>> = std::sync::OnceLock::new();
-static GPU_UNAVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static GPU_FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static GPU_LAST_PROBE_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 #[tauri::command]
 async fn system_stats() -> Result<SystemStats, String> {
@@ -248,14 +249,31 @@ fn query_gpu_stats() -> GpuStats {
 
 #[tauri::command]
 async fn gpu_stats() -> GpuStats {
-  if GPU_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
-    return GpuStats::unavailable();
+  // 连续失败只做退避（60 秒重探一次），不再永久粘死「无 GPU」状态。
+  use std::sync::atomic::Ordering;
+  let failures = GPU_FAILURES.load(Ordering::Relaxed);
+  if failures >= 5 {
+    let now = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|value| value.as_millis() as i64)
+      .unwrap_or(0);
+    let last = GPU_LAST_PROBE_MS.load(Ordering::Relaxed);
+    if last > 0 && now - last < 60_000 {
+      return GpuStats::unavailable();
+    }
   }
+  let now = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|value| value.as_millis() as i64)
+    .unwrap_or(0);
+  GPU_LAST_PROBE_MS.store(now, Ordering::Relaxed);
   let stats = tauri::async_runtime::spawn_blocking(query_gpu_stats)
     .await
     .unwrap_or_else(|_| GpuStats::unavailable());
-  if !stats.available {
-    GPU_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+  if stats.available {
+    GPU_FAILURES.store(0, Ordering::Relaxed);
+  } else {
+    GPU_FAILURES.fetch_add(1, Ordering::Relaxed);
   }
   stats
 }
@@ -350,6 +368,8 @@ fn main() {
       anime_model_download,
       anime_model_uninstall,
       anime_cutout,
+      gpu_runtime_state,
+      install_gpu_runtime,
       skin_auto_detect,
       skin_list,
       skin_import,
@@ -671,6 +691,54 @@ async fn anime_model_download(app: AppHandle, model_id: String) -> Result<Vec<an
   .map_err(to_string_error)?
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuRuntimeState {
+  nvidia_gpu: bool,
+  runtime_installed: bool,
+  ort_initialized: bool,
+  cuda_active: bool,
+}
+
+#[tauri::command]
+async fn gpu_runtime_state(app: AppHandle) -> Result<GpuRuntimeState, String> {
+  let base = anime_base_dir(&app)?;
+  let nvidia_gpu = tauri::async_runtime::spawn_blocking(query_gpu_stats)
+    .await
+    .map_err(to_string_error)?
+    .available;
+  let runtime_installed = anime::gpu_ort_ready(&base);
+  let ort_initialized = anime::ort_initialized();
+  // cuda_active 需要 ORT 已加载才准确；未初始化时不强行加载 dll。
+  let cuda_active = ort_initialized && anime::cuda_ep_compiled();
+  Ok(GpuRuntimeState {
+    nvidia_gpu,
+    runtime_installed,
+    ort_initialized,
+    cuda_active,
+  })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuRuntimeInstallResult {
+  requires_restart: bool,
+}
+
+#[tauri::command]
+async fn install_gpu_runtime(app: AppHandle) -> Result<GpuRuntimeInstallResult, String> {
+  let base = anime_base_dir(&app)?;
+  let already_installed = anime::gpu_ort_ready(&base);
+  // 若本会话已经加载过 CPU 版 ORT，新装的 GPU dll 要重启应用才会生效。
+  let was_initialized = anime::ort_initialized();
+  tauri::async_runtime::spawn_blocking(move || anime::install_gpu_ort(Some(&app), &base))
+    .await
+    .map_err(to_string_error)??;
+  Ok(GpuRuntimeInstallResult {
+    requires_restart: was_initialized && !already_installed,
+  })
+}
+
 #[tauri::command]
 async fn anime_model_uninstall(app: AppHandle, model_id: String) -> Result<Vec<anime::ModelStatus>, String> {
   let base = anime_base_dir(&app)?;
@@ -697,7 +765,7 @@ fn anime_cutout_inner(app: Option<&AppHandle>, options: AnimeCutoutOptions) -> R
   let model_id = options
     .model
     .as_deref()
-    .unwrap_or("simple")
+    .unwrap_or("advanced")
     .trim()
     .to_string();
   if !anime::is_model_ready(&base, &model_id) {
@@ -706,6 +774,13 @@ fn anime_cutout_inner(app: Option<&AppHandle>, options: AnimeCutoutOptions) -> R
   anime::ensure_ort_runtime(&base)?;
 
   let mut logs = Vec::new();
+  logs.push(if anime::cuda_ep_compiled() {
+    "推理后端：CUDA（GPU 加速）".to_string()
+  } else if anime::gpu_ort_ready(&base) {
+    "推理后端：CPU（GPU 运行库未生效，重启应用后再试）".to_string()
+  } else {
+    "推理后端：CPU（检测到 NVIDIA 显卡时可在「GPU 加速」中下载运行库）".to_string()
+  });
   let mut outputs = Vec::new();
   let mut completed = 0usize;
 
@@ -729,21 +804,33 @@ fn anime_cutout_inner(app: Option<&AppHandle>, options: AnimeCutoutOptions) -> R
       continue;
     }
 
-    let target = Path::new(&options.output_path).join(format!("{stem}.png"));
+    // 用请求的模型 id 先成临时名；若 ToonOut 回退，再按实际模型改名。
+    let target = Path::new(&options.output_path).join(format!("{stem}_{model_id}.png"));
     let label = input.file_name().and_then(|value| value.to_str()).unwrap_or(file);
     if let Some(handle) = app {
       emit_task_progress(handle, completed, options.files.len(), format!("推理中 {label}"));
     }
 
-    match anime::cutout(&base, &model_id, input, &target) {
-      Ok(()) => {
+    match anime::cutout_with_fallback(&base, &model_id, input, &target) {
+      Ok(outcome) => {
         completed += 1;
-        outputs.push(target.display().to_string());
-        logs.push(format!(
-          "完成 {} → {}",
-          stem,
-          target.file_name().and_then(|value| value.to_str()).unwrap_or("output.png")
-        ));
+        // 回退时文件其实是 simple 抠的，把最终输出名统一为实际模型，便于前端
+        // 用「原图 stem + 模型 id」匹配到结果，也避免残留 toonout 后缀的误导文件。
+        let final_path = if outcome.fallback {
+          let actual = format!("{stem}_{}.png", outcome.model_used);
+          let path = Path::new(&options.output_path).join(&actual);
+          let _ = std::fs::rename(&target, &path);
+          logs.push(format!("完成 {} → {}（ToonOut 在此复杂背景上失效，已自动改用 ISNet）", stem, actual));
+          path
+        } else {
+          logs.push(format!(
+            "完成 {} → {}",
+            stem,
+            target.file_name().and_then(|value| value.to_str()).unwrap_or("output.png")
+          ));
+          target
+        };
+        outputs.push(final_path.display().to_string());
         if let Some(handle) = app {
           emit_task_progress(handle, completed, options.files.len(), format!("完成 {stem}"));
         }
@@ -1353,7 +1440,7 @@ mod tests {
     )
     .expect("anime cutout should succeed");
     assert_eq!(result.completed, 1);
-    let saved = output.join("anime_test.png");
+    let saved = output.join("anime_test_simple.png");
     let image = image::open(&saved).expect("output should be readable");
     assert_eq!(image.width(), 1600);
     assert_eq!(image.height(), 1133);
@@ -1388,7 +1475,7 @@ mod tests {
     )
     .expect("advanced cutout should succeed");
     assert_eq!(result.completed, 1);
-    let saved = output.join("anime_test.png");
+    let saved = output.join("anime_test_advanced.png");
     let mean_alpha = write_mean_alpha(&saved);
     assert!(mean_alpha < 200.0, "mean alpha {mean_alpha} should indicate a cut background");
   }
@@ -1401,9 +1488,9 @@ mod tests {
     };
     let status = anime::models_status(&base);
     assert_eq!(status.len(), 3);
-    assert_eq!(status[0].id, "simple");
-    assert_eq!(status[1].id, "advanced");
-    assert_eq!(status[2].id, "toonout");
+    assert_eq!(status[0].id, "toonout");
+    assert_eq!(status[1].id, "simple");
+    assert_eq!(status[2].id, "advanced");
     for model in &status {
       assert!(!model.label.is_empty());
       assert!(model.total_size > 0);

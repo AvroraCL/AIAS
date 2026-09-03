@@ -159,14 +159,19 @@ fn ort_dll_path(base: &Path) -> PathBuf {
     base.join("onnxruntime.dll")
 }
 
+static ORT_READY: OnceLock<()> = OnceLock::new();
+
 pub fn ensure_ort_runtime(base: &Path) -> Result<(), String> {
-    static ORT_READY: OnceLock<()> = OnceLock::new();
     fs::create_dir_all(base).map_err(to_string_error)?;
-    let dll = ort_dll_path(base);
+    // 进程内 ORT 只会加载一次 dll：优先使用完整 GPU 版运行库，其次才是种子/下载的 CPU 版。
+    let dll = if gpu_ort_ready(base) {
+        gpu_ort_capi_dir(base).join("onnxruntime.dll")
+    } else {
+        ort_dll_path(base)
+    };
     if !dll.exists() {
         acquire_ort_dll(base)?;
     }
-    ensure_ort_cuda_providers(base)?;
     if ORT_READY.get().is_some() {
         return Ok(());
     }
@@ -174,6 +179,10 @@ pub fn ensure_ort_runtime(base: &Path) -> Result<(), String> {
     // set 失败说明另一个线程刚刚完成了同样的初始化（相同 dll 路径），视为成功。
     let _ = ORT_READY.set(());
     Ok(())
+}
+
+pub fn ort_initialized() -> bool {
+    ORT_READY.get().is_some()
 }
 
 /// Local seeds to try before downloading: an existing ComfyUI install ships
@@ -202,9 +211,9 @@ fn ort_seed_candidates() -> Vec<PathBuf> {
 fn acquire_ort_dll(base: &Path) -> Result<(), String> {
     for candidate in ort_seed_candidates() {
         if candidate.exists() {
-            let source_dir = candidate.parent().unwrap_or(base);
+            // CPU 版核心 dll 就够运行了；provider DLL 由 GPU 运行库自带，不复制
+            // （ComfyUI 种子里的 providers_cuda.dll 有 350MB，且 CPU 版也用不了）。
             fs::copy(&candidate, ort_dll_path(base)).map_err(to_string_error)?;
-            copy_ort_provider_files(source_dir, base)?;
             return Ok(());
         }
     }
@@ -473,16 +482,21 @@ fn build_session(path: &Path) -> Result<Session, String> {
         .map(|value| value.get().clamp(1, 8))
         .unwrap_or(4);
     preload_cuda_runtime();
-    // CUDA EP 注册失败时会静默回退 CPU（error_on_failure 默认 false）。
-    let cuda = ort::ep::CUDA::default().build();
-    Session::builder()
+    let mut builder = Session::builder()
         .map_err(to_string_error)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(to_string_error)?
         .with_intra_threads(threads)
-        .map_err(to_string_error)?
-        .with_execution_providers([cuda])
-        .map_err(to_string_error)?
+        .map_err(to_string_error)?;
+    // 仅当 ONNX Runtime 确实编译了 CUDA EP 时才注册；CPU 版运行库注册只会静默回退并掩盖真实状态。
+    if cuda_ep_compiled() {
+        // CUDA EP 注册失败时 ONNX Runtime 仍会静默回退 CPU（error_on_failure 默认 false）。
+        let cuda = ort::ep::CUDA::default().build();
+        builder = builder
+            .with_execution_providers([cuda])
+            .map_err(to_string_error)?;
+    }
+    builder
         .commit_from_file(path)
         .map_err(|error| format!("加载模型 {} 失败：{error}", path.display()))
 }
@@ -498,34 +512,107 @@ const CUDNN9_FILES: &[&str] = &[
     "cudnn_engines_runtime_compiled64_9.dll",
 ];
 
-fn copy_ort_provider_files(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
-    for name in [
-        "onnxruntime_providers_shared.dll",
-        "onnxruntime_providers_cuda.dll",
-    ] {
-        let source = source_dir.join(name);
-        let target = target_dir.join(name);
-        if source.exists() && !target.exists() {
-            fs::copy(source, target).map_err(to_string_error)?;
+/// GPU 加速运行库（onnxruntime-gpu PyPI wheel，仅抽取 3 个必需 DLL）。
+/// 官方 GPU 版 onnxruntime 与 CPU 版核心 dll 同名，本机种子无法用文件名区分真伪，
+/// 因此 GPU 运行库一律从下方固定来源下载，绝不信任种子目录里的副本。
+const GPU_RUNTIME_MODEL_ID: &str = "ort-gpu";
+const GPU_ORT_WHEEL_NAME: &str = "onnxruntime_gpu-1.23.2-cp312-cp312-win_amd64.whl";
+const GPU_ORT_WHEEL_SIZE: u64 = 244_508_327;
+const GPU_ORT_WHEEL_PATH: &str = "packages/87/da/2685c79e5ea587beddebe083601fead0bdf3620bc2f92d18756e7de8a636/onnxruntime_gpu-1.23.2-cp312-cp312-win_amd64.whl";
+/// 前两个为国内 PyPI 镜像，最后一个为官方源；路径在三家完全一致。
+const GPU_ORT_HOSTS: &[&str] = &[
+    "https://pypi.tuna.tsinghua.edu.cn",
+    "https://mirrors.aliyun.com/pypi",
+    "https://files.pythonhosted.org",
+];
+const GPU_ORT_DLLS: &[&str] = &[
+    "onnxruntime.dll",
+    "onnxruntime_providers_cuda.dll",
+    "onnxruntime_providers_shared.dll",
+];
+
+pub fn gpu_ort_capi_dir(base: &Path) -> PathBuf {
+    base.join("onnxruntime-gpu").join("onnxruntime").join("capi")
+}
+
+pub fn gpu_ort_ready(base: &Path) -> bool {
+    let dir = gpu_ort_capi_dir(base);
+    GPU_ORT_DLLS.iter().all(|name| dir.join(name).exists())
+}
+
+/// 加载中的 ORT 是否编译了 CUDA EP（需要 dll 已按 ORT_DYLIB_PATH 加载后才准确）。
+pub fn cuda_ep_compiled() -> bool {
+    use ort::ep::ExecutionProvider;
+    ort::ep::CUDA::default().is_available().unwrap_or(false)
+}
+
+/// 下载并安装 GPU 版 onnxruntime（幂等；约 233 MB，一次性）。
+pub fn install_gpu_ort(app: Option<&AppHandle>, base: &Path) -> Result<(), String> {
+    if gpu_ort_ready(base) {
+        return Ok(());
+    }
+    let gpu_root = base.join("onnxruntime-gpu");
+    fs::create_dir_all(&gpu_root).map_err(to_string_error)?;
+    let archive = gpu_root.join(GPU_ORT_WHEEL_NAME);
+    let progress = |completed: u64, total: u64| {
+        emit_progress(
+            app,
+            ModelProgress {
+                model_id: GPU_RUNTIME_MODEL_ID.to_string(),
+                file: GPU_ORT_WHEEL_NAME.to_string(),
+                completed,
+                total,
+            },
+        );
+    };
+    let mut last_error = String::from("没有可用的下载地址。");
+    for host in GPU_ORT_HOSTS {
+        let url = format!("{host}/{GPU_ORT_WHEEL_PATH}");
+        match curl_download(&url, &archive, Some(GPU_ORT_WHEEL_SIZE), &progress) {
+            Ok(()) => {
+                last_error = String::new();
+                break;
+            }
+            Err(error) => last_error = error,
         }
+    }
+    if !last_error.is_empty() {
+        return Err(last_error);
+    }
+    extract_gpu_ort_dlls(&archive, &gpu_root)?;
+    let _ = fs::remove_file(&archive);
+    if !gpu_ort_ready(base) {
+        return Err("GPU 运行库解压后不完整，请重新下载。".into());
     }
     Ok(())
 }
 
-fn ensure_ort_cuda_providers(base: &Path) -> Result<(), String> {
-    if base.join("onnxruntime_providers_cuda.dll").exists()
-        && base.join("onnxruntime_providers_shared.dll").exists()
-    {
-        return Ok(());
-    }
-    for runtime in ort_seed_candidates() {
-        let Some(source_dir) = runtime.parent() else {
-            continue;
-        };
-        if source_dir.join("onnxruntime_providers_cuda.dll").exists() {
-            copy_ort_provider_files(source_dir, base)?;
-            break;
-        }
+fn extract_gpu_ort_dlls(archive: &Path, dest: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // 必须用 Windows 自带的 bsdtar（支持 zip）；GNU tar 无法读取 wheel。
+    let tar = std::env::var_os("WINDIR")
+        .map(|windir| PathBuf::from(windir).join(r"System32\tar.exe"))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from("tar"));
+    let output = Command::new(tar)
+        .arg("-xf")
+        .arg(archive)
+        .arg("-C")
+        .arg(dest)
+        .args([
+            "onnxruntime/capi/onnxruntime.dll",
+            "onnxruntime/capi/onnxruntime_providers_cuda.dll",
+            "onnxruntime/capi/onnxruntime_providers_shared.dll",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("无法启动 tar 解压：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "解压 GPU 运行库失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     Ok(())
 }
@@ -544,8 +631,92 @@ fn preload_cuda_runtime() {
     });
     let cudnn_root = cudnn_runtime_candidates()
         .into_iter()
-        .find(|path| CUDNN9_FILES.iter().all(|name| path.join(name).exists()));
-    let _ = ort::ep::cuda::preload_dylibs(cuda_root.as_deref(), cudnn_root.as_deref());
+        .find(|path| {
+            // cuDNN 运行时会按需加载 cublasLt64_1X 等依赖，找不到直接 abort 进程；
+            // 因此候选目录必须自带这些依赖，否则视为不可用。
+            CUDNN9_FILES.iter().all(|name| path.join(name).exists())
+                && dir_contains_prefix(path, "cublasLt64_")
+                && dir_contains_prefix(path, "cudart64_")
+        });
+    if let Some(dir) = &cuda_root {
+        for name in ort::ep::cuda::CUDA_DYLIBS {
+            let _ = ort::util::preload_dylib(dir.join(name));
+        }
+    }
+    if let Some(dir) = &cudnn_root {
+        // cuDNN 内部按自身构建版本（CUDA 12 或 13）动态加载 cublasLt64_1X 等，
+        // 缺一个就会直接 abort 进程；torch 在 Python 里的做法同样是把目录插到 PATH
+        // 最前，这里保持一致，覆盖 cuDNN 各种内部搜索策略。
+        let mut search_dirs: Vec<PathBuf> = vec![dir.clone()];
+        if let Some(cuda_dir) = &cuda_root {
+            search_dirs.push(cuda_dir.clone());
+        }
+        prepend_dll_search_paths(&search_dirs);
+        preload_dir_cuda_variants(dir);
+        for name in ort::ep::cuda::CUDNN_DYLIBS {
+            let _ = ort::util::preload_dylib(dir.join(name));
+        }
+    }
+}
+
+/// 把若干目录插到当前进程 PATH 最前（去重），供后续 LoadLibrary 命中。
+fn prepend_dll_search_paths(dirs: &[PathBuf]) {
+    let current: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    let mut additions: Vec<PathBuf> = dirs
+        .iter()
+        .filter(|dir| dir.is_dir())
+        .map(|dir| dir.to_path_buf())
+        .filter(|dir| !current.iter().any(|path| path == dir))
+        .collect();
+    if additions.is_empty() {
+        return;
+    }
+    additions.extend(current);
+    if let Ok(value) = std::env::join_paths(&additions) {
+        std::env::set_var("PATH", value);
+    }
+}
+
+/// 判断目录内是否存在以指定前缀命名的文件（不区分大小写）。
+fn dir_contains_prefix(dir: &Path, prefix: &str) -> bool {
+    let prefix = prefix.to_ascii_lowercase();
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase().starts_with(&prefix))
+        })
+        .unwrap_or(false)
+}
+
+/// 预载目录内全部 cudart64_*/cublas64_*/cublasLt64_*/cufft64_* DLL（任意主版本）。
+fn preload_dir_cuda_variants(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| {
+                    let lower = name.to_ascii_lowercase();
+                    (lower.starts_with("cudart64_")
+                        || lower.starts_with("cublas64_")
+                        || lower.starts_with("cublasLt64_")
+                        || lower.starts_with("cufft64_"))
+                        && lower.ends_with(".dll")
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        let _ = ort::util::preload_dylib(path);
+    }
 }
 
 fn cuda_runtime_candidates() -> Vec<PathBuf> {
@@ -666,6 +837,176 @@ fn bilinear_resize_luma(data: &[u8], width: u32, height: u32, new_w: u32, new_h:
 
 fn to_f32(data: Vec<u8>) -> Vec<f32> {
     data.into_iter().map(|value| value as f32 / 255.0).collect()
+}
+
+fn probability_luma(probabilities: &[f32], threshold: f32) -> Vec<u8> {
+    probabilities
+        .iter()
+        .map(|probability| if *probability > threshold { 255 } else { 0 })
+        .collect()
+}
+
+fn refine_threshold() -> f32 {
+    #[cfg(test)]
+    {
+        return std::env::var("AIAS_AB_REFINE_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| (0.0..1.0).contains(value))
+            .unwrap_or(REFINE_THRESHOLD);
+    }
+
+    #[cfg(not(test))]
+    {
+        REFINE_THRESHOLD
+    }
+}
+
+fn advanced_min_component_area(width: u32, height: u32) -> usize {
+    let default = ((width as usize * height as usize) / 1_500).clamp(128, 2_048);
+    #[cfg(test)]
+    {
+        return std::env::var("AIAS_AB_MIN_COMPONENT_AREA")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value >= 2)
+            .unwrap_or(default);
+    }
+
+    #[cfg(not(test))]
+    {
+        default
+    }
+}
+
+fn remove_small_foreground_components(
+    matte: &mut [f32],
+    width: u32,
+    height: u32,
+    min_area: usize,
+) {
+    let (width, height) = (width as usize, height as usize);
+    if min_area <= 1 || matte.len() != width.saturating_mul(height) {
+        return;
+    }
+
+    let mut visited = vec![false; matte.len()];
+    let mut component = Vec::new();
+    for start in 0..matte.len() {
+        if visited[start] || matte[start] <= 0.5 {
+            continue;
+        }
+        visited[start] = true;
+        component.clear();
+        component.push(start);
+        let mut cursor = 0;
+        while cursor < component.len() {
+            let index = component[cursor];
+            cursor += 1;
+            let x = index % width;
+            let y = index / width;
+            for neighbor in [
+                x.checked_sub(1).map(|value| y * width + value),
+                (x + 1 < width).then_some(y * width + x + 1),
+                y.checked_sub(1).map(|value| value * width + x),
+                (y + 1 < height).then_some((y + 1) * width + x),
+                x.checked_sub(1)
+                    .zip(y.checked_sub(1))
+                    .map(|(nx, ny)| ny * width + nx),
+                (x + 1 < width)
+                    .then_some(())
+                    .zip(y.checked_sub(1))
+                    .map(|(_, ny)| ny * width + x + 1),
+                x.checked_sub(1)
+                    .zip((y + 1 < height).then_some(y + 1))
+                    .map(|(nx, ny)| ny * width + nx),
+                (x + 1 < width)
+                    .then_some(())
+                    .zip((y + 1 < height).then_some(y + 1))
+                    .map(|(_, ny)| ny * width + x + 1),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !visited[neighbor] && matte[neighbor] > 0.5 {
+                    visited[neighbor] = true;
+                    component.push(neighbor);
+                }
+            }
+        }
+
+        if component.len() < min_area {
+            for index in &component {
+                matte[*index] = 0.0;
+            }
+        }
+    }
+}
+
+fn fill_small_background_holes(
+    matte: &mut [f32],
+    width: u32,
+    height: u32,
+    max_area: usize,
+) {
+    let (width, height) = (width as usize, height as usize);
+    if max_area == 0 || matte.len() != width.saturating_mul(height) {
+        return;
+    }
+
+    let mut visited = vec![false; matte.len()];
+    let mut component = Vec::new();
+    for start in 0..matte.len() {
+        if visited[start] || matte[start] > 0.5 {
+            continue;
+        }
+        visited[start] = true;
+        component.clear();
+        component.push(start);
+        let mut cursor = 0;
+        let mut touches_edge = false;
+        while cursor < component.len() {
+            let index = component[cursor];
+            cursor += 1;
+            let x = index % width;
+            let y = index / width;
+            touches_edge |= x == 0 || y == 0 || x + 1 == width || y + 1 == height;
+            for neighbor in [
+                x.checked_sub(1).map(|value| y * width + value),
+                (x + 1 < width).then_some(y * width + x + 1),
+                y.checked_sub(1).map(|value| value * width + x),
+                (y + 1 < height).then_some((y + 1) * width + x),
+                x.checked_sub(1)
+                    .zip(y.checked_sub(1))
+                    .map(|(nx, ny)| ny * width + nx),
+                (x + 1 < width)
+                    .then_some(())
+                    .zip(y.checked_sub(1))
+                    .map(|(_, ny)| ny * width + x + 1),
+                x.checked_sub(1)
+                    .zip((y + 1 < height).then_some(y + 1))
+                    .map(|(nx, ny)| ny * width + nx),
+                (x + 1 < width)
+                    .then_some(())
+                    .zip((y + 1 < height).then_some(y + 1))
+                    .map(|(_, ny)| ny * width + x + 1),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !visited[neighbor] && matte[neighbor] <= 0.5 {
+                    visited[neighbor] = true;
+                    component.push(neighbor);
+                }
+            }
+        }
+
+        if !touches_edge && component.len() <= max_area {
+            for index in &component {
+                matte[*index] = 1.0;
+            }
+        }
+    }
 }
 
 fn stable_sigmoid(value: f32) -> f32 {
@@ -1107,15 +1448,16 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
             cropped[y * crop_w + x] = stable_sigmoid(value);
         }
     }
-    let prob_u8: Vec<u8> = cropped
-        .iter()
-        .map(|prob| if *prob > REFINE_THRESHOLD { 255 } else { 0 })
-        .collect();
+    let prob_u8 = probability_luma(&cropped, refine_threshold());
     let mask = bilinear_resize_luma(&prob_u8, crop_w as u32, crop_h as u32, w, h);
     for (index, value) in mask.into_iter().enumerate() {
         refined[index] = value;
     }
-    Ok(to_f32(refined))
+    let mut mask = to_f32(refined);
+    let component_area = advanced_min_component_area(w, h);
+    fill_small_background_holes(&mut mask, w, h, component_area);
+    remove_small_foreground_components(&mut mask, w, h, component_area);
+    Ok(mask)
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,6 +1466,16 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
 
 const TOONOUT_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const TOONOUT_STD: [f32; 3] = [0.229, 0.224, 0.225];
+
+/// ToonOut 发布推理的图像预处理：整图直接缩放到模型固定输入。
+/// 不进行等比留边，否则竖图会浪费掉大部分有效分割面积。
+fn resize_toonout_input(rgb: &RgbImage, target_w: u32, target_h: u32) -> RgbImage {
+    if rgb.dimensions() == (target_w, target_h) {
+        rgb.clone()
+    } else {
+        image::imageops::resize(rgb, target_w, target_h, FilterType::CatmullRom)
+    }
+}
 
 fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     ensure_ort_runtime(base)?;
@@ -1141,26 +1493,15 @@ fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     // Export fixes the input at 1024x1024; fall back if a rebuild is dynamic.
     let (seg_h, seg_w) = input_size(session).unwrap_or((1024, 1024));
 
-    // BiRefNet 系模型以「等比缩放 + 居中留边」的 1024x1024 输入训练；直接拉伸
-    // 会严重扭曲人物比例、显著降低分割精度（竖图尤甚）。改为先按短边等比
-    // 缩放到 1024 内，再将剩余区域补成灰边，推理后裁回内容区、缩回原尺寸。
-    let scale = f32::min(seg_w as f32 / w as f32, seg_h as f32 / h as f32);
-    let content_w = (w as f32 * scale).round().max(1.0) as u32;
-    let content_h = (h as f32 * scale).round().max(1.0) as u32;
-    let mut canvas = RgbImage::from_pixel(seg_w as u32, seg_h as u32, image::Rgb([126, 126, 126]));
-    let pad_x = (seg_w as u32 - content_w) / 2;
-    let pad_y = (seg_h as u32 - content_h) / 2;
-    if content_w != w || content_h != h {
-        let scaled = image::imageops::resize(rgb, content_w, content_h, FilterType::CatmullRom);
-        image::imageops::overlay(&mut canvas, &scaled, pad_x as i64, pad_y as i64);
-    } else {
-        image::imageops::overlay(&mut canvas, rgb, pad_x as i64, pad_y as i64);
-    }
+    // ToonOut 的发布推理流程是直接缩放到固定方形输入；不添加训练流程中
+    // 不存在的灰色留边，也不在输出阶段裁剪。这样竖图会获得完整的 1024px
+    // 有效分割面积，而不是把主体压进窄条内容区。
+    let model_input = resize_toonout_input(rgb, seg_w as u32, seg_h as u32);
     let plane = seg_h * seg_w;
     let mut input = vec![0_f32; 3 * plane];
     for y in 0..seg_h as u32 {
         for x in 0..seg_w as u32 {
-            let pixel = canvas.get_pixel(x, y);
+            let pixel = model_input.get_pixel(x, y);
             let dst = y as usize * seg_w + x as usize;
             input[dst] = (pixel[0] as f32 / 255.0 - TOONOUT_MEAN[0]) / TOONOUT_STD[0];
             input[plane + dst] = (pixel[1] as f32 / 255.0 - TOONOUT_MEAN[1]) / TOONOUT_STD[1];
@@ -1188,14 +1529,12 @@ fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
         .iter()
         .any(|value| *value < -0.01 || *value > 1.01);
 
-    // 输入是等比缩放 + 居中留边，mask 是整块 1024 方图：先裁掉灰边区域得到
-    // 内容区 mask，再缩放到原图尺寸。裁剪坐标与前面 overlay 的 pad 一一对应。
-    let content_mask = crop_letterbox(mask, mask_w, mask_h, content_w, content_h, seg_w, seg_h);
-    let upscaled_mask = if content_w == w && content_h == h {
-        content_mask
+    // 与预处理相反，直接把模型的方形输出缩回原图大小；不裁切任何有效区域。
+    let upscaled_mask = if mask_w == w && mask_h == h {
+        mask[..mask_len].to_vec()
     } else {
         let source =
-            ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(content_w, content_h, content_mask)
+            ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(mask_w, mask_h, mask[..mask_len].to_vec())
                 .ok_or("掩码缓冲无效")?;
         image::imageops::resize(&source, w, h, FilterType::Lanczos3).into_raw()
     };
@@ -1213,33 +1552,6 @@ fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
             ((value.clamp(0.0, 1.0) - MATTE_FLOOR) / (MATTE_CEIL - MATTE_FLOOR)).clamp(0.0, 1.0);
     }
     Ok(smooth_matte_edges(&result, w, h))
-}
-
-/// 从带灰边的 1024 方图 mask 中裁出内容区域（与 preprocess 的 pad 对应）。
-fn crop_letterbox(
-    mask: &[f32],
-    mask_w: u32,
-    mask_h: u32,
-    content_w: u32,
-    content_h: u32,
-    seg_w: usize,
-    seg_h: usize,
-) -> Vec<f32> {
-    if (mask_w as usize, mask_h as usize) == (seg_w, seg_h) {
-        let (cw, ch) = (content_w as usize, content_h as usize);
-        let pad_x = (seg_w - cw) / 2;
-        let pad_y = (seg_h - ch) / 2;
-        let mut out = vec![0_f32; cw * ch];
-        for y in 0..ch {
-            for x in 0..cw {
-                out[y * cw + x] = mask[(y + pad_y) * seg_w + (x + pad_x)];
-            }
-        }
-        out
-    } else {
-        // mask 尺寸与画布不一致，直接返回原 mask（走 resize 分支，避免越界）。
-        mask.to_vec()
-    }
 }
 
 // matte 上采样后，半透明过渡带会出现锯齿和孤立噪点；只对过渡带（含 1px
@@ -1292,10 +1604,110 @@ fn smooth_matte_edges(mask: &[f32], w: u32, h: u32) -> Vec<f32> {
 }
 
 // ---------------------------------------------------------------------------
+// Matte 后处理：背景残留抑制、引导滤波、边缘去污染
+// ---------------------------------------------------------------------------
+
+/// 边缘去污染（defringe）：过渡带的颜色被旧背景混入，换背景后边缘发灰发粉。
+/// 先用大半径加权估计局部背景色 B = Σ(C·(1-a)) / Σ(1-a)，
+/// 再对 a < DECONTAM_CEIL 的像素解混 F = (C - (1-a)·B) / max(a, ε)。
+fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]> {
+    const RADIUS: usize = 16;
+    const CEIL: f32 = 0.75;
+    const FLOOR_A: f32 = 0.15;
+    const BG_PRESENCE_MIN: f64 = 0.05;
+
+    let (w, h) = rgb.dimensions();
+    let (w, h) = (w as usize, h as usize);
+    let total = w * h;
+    let mut out = Vec::with_capacity(total);
+    if total == 0 || matte.len() != total {
+        for pixel in rgb.pixels() {
+            out.push([pixel[0], pixel[1], pixel[2]]);
+        }
+        return out;
+    }
+    let weight: Vec<f64> = matte.iter().map(|a| (1.0 - *a) as f64).collect();
+    let mut weighted = [Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total)];
+    for (index, pixel) in rgb.pixels().enumerate() {
+        let wgt = weight[index];
+        for ch in 0..3 {
+            weighted[ch].push(pixel[ch] as f64 * wgt);
+        }
+    }
+    let mean_w = box_mean_f64(&weight, w, h, RADIUS);
+    let mean_c = [
+        box_mean_f64(&weighted[0], w, h, RADIUS),
+        box_mean_f64(&weighted[1], w, h, RADIUS),
+        box_mean_f64(&weighted[2], w, h, RADIUS),
+    ];
+    for (index, pixel) in rgb.pixels().enumerate() {
+        let a = matte[index];
+        let wsum = mean_w[index];
+        if a >= CEIL || wsum < BG_PRESENCE_MIN {
+            out.push([pixel[0], pixel[1], pixel[2]]);
+            continue;
+        }
+        let aa = (a as f64).max(FLOOR_A as f64);
+        let mut color = [0u8; 3];
+        for ch in 0..3 {
+            let bg = mean_c[ch][index] / wsum;
+            let foreground = (pixel[ch] as f64 - (1.0 - a) as f64 * bg) / aa;
+            color[ch] = foreground.round().clamp(0.0, 255.0) as u8;
+        }
+        out.push(color);
+    }
+    out
+}
+
+/// O(n) 积分图盒均值。
+fn box_mean_f64(values: &[f64], w: usize, h: usize, radius: usize) -> Vec<f64> {
+    let stride = w + 1;
+    let mut sat = vec![0f64; stride * (h + 1)];
+    for y in 0..h {
+        let mut row_sum = 0f64;
+        for x in 0..w {
+            row_sum += values[y * w + x];
+            sat[(y + 1) * stride + (x + 1)] = sat[y * stride + (x + 1)] + row_sum;
+        }
+    }
+    let mut out = vec![0f64; w * h];
+    for y in 0..h {
+        let y0 = y.saturating_sub(radius);
+        let y1 = (y + radius + 1).min(h);
+        for x in 0..w {
+            let x0 = x.saturating_sub(radius);
+            let x1 = (x + radius + 1).min(w);
+            let area = ((y1 - y0) * (x1 - x0)) as f64;
+            let sum = sat[y1 * stride + x1] - sat[y0 * stride + x1] - sat[y1 * stride + x0]
+                + sat[y0 * stride + x0];
+            out[y * w + x] = sum / area;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Public entry: cut a single image
 // ---------------------------------------------------------------------------
 
+/// 一次抠图的结果：实际生效的模型、以及是否发生了兜底回退。
+pub struct CutoutOutcome {
+    pub model_used: String,
+    pub fallback: bool, // 是否从 toonout 回退到其他模型
+}
+
 pub fn cutout(base: &Path, model_id: &str, input: &Path, output: &Path) -> Result<(), String> {
+    cutout_with_fallback(base, model_id, input, output).map(|_| ())
+}
+
+/// 与 `cutout` 相同的流程，但 ToonOut 在复杂背景上「整图判前景」时会
+/// 优先由高级模型复核，只有复核结果确实更干净时才切换输出。
+pub fn cutout_with_fallback(
+    base: &Path,
+    model_id: &str,
+    input: &Path,
+    output: &Path,
+) -> Result<CutoutOutcome, String> {
     let mut image = image::open(input).map_err(to_string_error)?;
     if let Some(orientation) = exif_orientation(input)? {
         image.apply_orientation(orientation);
@@ -1303,26 +1715,127 @@ pub fn cutout(base: &Path, model_id: &str, input: &Path, output: &Path) -> Resul
     let rgb = image.to_rgb8();
     let (w, h) = rgb.dimensions();
 
-    let mask = match model_id {
-        "simple" => run_simple(base, &rgb)?,
-        "advanced" => run_advanced(base, &rgb)?,
-        "toonout" => run_toonout(base, &rgb)?,
+    let (mask, fallback_model) = match model_id {
+        "simple" => (run_simple(base, &rgb)?, "simple"),
+        "advanced" => (run_advanced(base, &rgb)?, "advanced"),
+        "toonout" => {
+            let mask = run_toonout(base, &rgb)?;
+            if toonout_likely_failed(&mask, w, h) {
+                // 先释放 ToonOut 会话，避免两套大模型在显存中重叠；再用高级模型
+                // 复核。复杂插画背景上它通常更能清掉被 ToonOut 保留的线稿。
+                if let Ok(mut session) = toonout_slot().lock() {
+                    session.take();
+                }
+                if is_model_ready(base, "advanced") {
+                    match run_advanced(base, &rgb) {
+                        Ok(candidate) if matte_is_substantially_cleaner(&candidate, &mask, w, h) => {
+                            (candidate, "advanced")
+                        }
+                        _ => (mask, "toonout"),
+                    }
+                } else if is_model_ready(base, "simple") {
+                    (run_simple(base, &rgb)?, "simple")
+                } else {
+                    (mask, "toonout")
+                }
+            } else {
+                (mask, "toonout")
+            }
+        }
         other => return Err(format!("未知模型：{other}")),
     };
+
+    let fallback = model_id == "toonout" && fallback_model != "toonout";
+
+    // 边缘去污染：把过渡带颜色从「前景+背景混合」解混回纯前景色。
+    // 实测对发丝、皮肤边缘的粉色/蓝色 fringe 有明显改善，且深/浅背景图都稳健。
+    let colors = decontaminate_colors(&rgb, &mask);
 
     let mut result = RgbaImage::new(w, h);
     for y in 0..h {
         for x in 0..w {
-            let alpha = (mask[(y * w + x) as usize] * 255.0)
-                .round()
-                .clamp(0.0, 255.0) as u8;
-            let pixel = rgb.get_pixel(x, y);
-            result.put_pixel(x, y, Rgba([pixel[0], pixel[1], pixel[2], alpha]));
+            let index = (y * w + x) as usize;
+            let alpha = (mask[index] * 255.0).round().clamp(0.0, 255.0) as u8;
+            let color = colors[index];
+            result.put_pixel(x, y, Rgba([color[0], color[1], color[2], alpha]));
         }
     }
     result
         .save_with_format(output, image::ImageFormat::Png)
-        .map_err(to_string_error)
+        .map_err(to_string_error)?;
+
+    // AB 回归可视化：设 AIAS_AB_DEBUG=1 时对单张图导出 matte 灰度图。
+    if std::env::var_os("AIAS_AB_DEBUG").is_some() {
+        let stem = output
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("matte")
+            .to_string();
+        let mut matte_image = ImageBuffer::<Luma<u8>, Vec<u8>>::new(w, h);
+        for (index, slot) in matte_image.pixels_mut().enumerate() {
+            *slot = image::Luma([(mask[index] * 255.0).round().clamp(0.0, 255.0) as u8]);
+        }
+        let _ = matte_image.save(output.with_file_name(format!("{stem}_matte.png")));
+    }
+    Ok(CutoutOutcome {
+        model_used: fallback_model.to_string(),
+        fallback,
+    })
+}
+
+/// toonout 是否「整图判前景」失效：复杂插画/线稿背景上它会保留整片背景。
+/// 实测失效特征为前景占比异常高，且边缘仍有明显的半透明/不透明残留。
+/// 此信号只触发一次高级模型复核；只有复核在两项指标上都显著更干净才会切换。
+pub fn toonout_likely_failed(matte: &[f32], w: u32, h: u32) -> bool {
+    const BAND_PX: usize = 24;
+    const BORDER_MEAN_THRESHOLD: f32 = 0.25;
+    const FG_RATIO_MIN: f32 = 0.67;
+
+    if w < BAND_PX as u32 * 2 + 2 || h < BAND_PX as u32 * 2 + 2 {
+        return false;
+    }
+    let border = border_band_mean(matte, w, h, BAND_PX);
+    let fg = foreground_ratio(matte, w, h);
+    border > BORDER_MEAN_THRESHOLD && fg > FG_RATIO_MIN
+}
+
+fn matte_is_substantially_cleaner(candidate: &[f32], baseline: &[f32], w: u32, h: u32) -> bool {
+    if candidate.len() != baseline.len() || candidate.len() != (w * h) as usize {
+        return false;
+    }
+    let border_improvement = border_band_mean(baseline, w, h, 24)
+        - border_band_mean(candidate, w, h, 24);
+    let foreground_improvement = foreground_ratio(baseline, w, h) - foreground_ratio(candidate, w, h);
+    border_improvement >= 0.10 && foreground_improvement >= 0.08
+}
+
+/// 图像四周边框环带（band_px 宽）内的 alpha 均值。
+fn border_band_mean(matte: &[f32], w: u32, h: u32, band_px: usize) -> f32 {
+    let (w, h) = (w as usize, h as usize);
+    let mut sum = 0f64;
+    let mut count = 0usize;
+    for y in 0..h {
+        for x in 0..w {
+            if x < band_px || y < band_px || x >= w - band_px || y >= h - band_px {
+                sum += matte[y * w + x] as f64;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        (sum / count as f64) as f32
+    }
+}
+
+/// matte 中前景（alpha > 0.5）像素占全图的比例。
+fn foreground_ratio(matte: &[f32], w: u32, h: u32) -> f32 {
+    if w == 0 || h == 0 {
+        return 0.0;
+    }
+    let count = matte.iter().filter(|value| **value > 0.5).count();
+    count as f32 / (w * h) as f32
 }
 
 /// EXIF orientation via the format decoder; only JPEG actually carries it here.
@@ -1343,6 +1856,65 @@ fn to_string_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod toonout_tests {
     use super::*;
+
+    #[test]
+    fn probability_luma_applies_the_requested_confidence_threshold() {
+        assert_eq!(
+            probability_luma(&[0.0, 0.25, 0.5, 1.0], 0.3),
+            [0, 0, 255, 255]
+        );
+    }
+
+    #[test]
+    fn small_foreground_islands_are_removed_without_eroding_the_subject() {
+        let mut matte = vec![0.0; 36];
+        for index in [7, 8, 13, 14, 15] {
+            matte[index] = 1.0;
+        }
+        matte[35] = 1.0;
+
+        remove_small_foreground_components(&mut matte, 6, 6, 2);
+
+        assert_eq!(matte[35], 0.0, "单像素孤岛应被移除");
+        for index in [7, 8, 13, 14, 15] {
+            assert_eq!(matte[index], 1.0, "主体连通块不能被侵蚀");
+        }
+    }
+
+    #[test]
+    fn enclosed_background_holes_are_filled_without_touching_the_outer_background() {
+        let mut matte = vec![1.0; 25];
+        matte[12] = 0.0;
+        matte[0] = 0.0;
+
+        fill_small_background_holes(&mut matte, 5, 5, 2);
+
+        assert_eq!(matte[12], 1.0, "被主体包围的小孔应被填充");
+        assert_eq!(matte[0], 0.0, "与画面边缘相连的背景不能被填充");
+    }
+
+    #[test]
+    fn toonout_complex_background_signal_catches_a_translucent_border_leak() {
+        let (width, height) = (512, 512);
+        let mut matte = vec![0.36; (width * height) as usize];
+        for y in 24..height - 24 {
+            for x in 24..width - 24 {
+                matte[(y * width + x) as usize] = 1.0;
+            }
+        }
+
+        assert!(toonout_likely_failed(&matte, width, height));
+    }
+
+    #[test]
+    fn toonout_preprocess_fills_the_entire_model_input() {
+        let source = RgbImage::from_pixel(1447, 2036, image::Rgb([17, 49, 91]));
+        let resized = resize_toonout_input(&source, 1024, 1024);
+        assert_eq!(resized.dimensions(), (1024, 1024));
+        assert_eq!(*resized.get_pixel(0, 0), image::Rgb([17, 49, 91]));
+        assert_eq!(*resized.get_pixel(512, 512), image::Rgb([17, 49, 91]));
+        assert_eq!(*resized.get_pixel(1023, 1023), image::Rgb([17, 49, 91]));
+    }
 
     /// 端到端验证 ToonOut：下载 470MB 模型 + 真实推理，仅在手动运行：
     /// `cargo test toonout -- --ignored --nocapture`
@@ -1434,5 +2006,198 @@ mod toonout_tests {
         let output = base.join("out_real.png");
         cutout(&base, "toonout", &input_path, &output).unwrap();
         println!("saved {}", output.display());
+    }
+
+    /// A/B 基准：对 AIAS_AB_INPUT 目录（默认「测试」参考图文件夹）跑指定模型，
+    /// 结果存 F:\AIAS\ab\<AIAS_AB_TAG>\{stem}_{model}.png，并生成
+    /// {stem}_{model}_preview.jpg（原图 | 白底合成 | 深底合成）便于目测对比：
+    /// `AIAS_AB_TAG=base cargo test ab_reference --release -- --ignored --nocapture`
+    /// 可用 `AIAS_AB_MODELS=advanced` 限定单模型，避免 A/B 验证被其他模型的
+    /// 显存需求阻断；默认仍依次运行 toonout、simple、advanced。
+    #[test]
+    #[ignore = "手动执行：真实模型推理"]
+    fn ab_reference() {
+        let base = dirs::home_dir()
+            .expect("无法定位用户目录")
+            .join(r"AppData\Roaming\studio.avroracl.aias");
+        let input_dir = std::env::var_os("AIAS_AB_INPUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\战争雷霆涂装\贴图素材\F15E 塞雷娅\测试"));
+        let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "base".into());
+        let selected_models: Vec<String> = std::env::var("AIAS_AB_MODELS")
+            .unwrap_or_else(|_| "toonout,simple,advanced".into())
+            .split(',')
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned)
+            .collect();
+        assert!(
+            !selected_models.is_empty(),
+            "AIAS_AB_MODELS 至少需要指定一个模型"
+        );
+        for model in &selected_models {
+            assert!(
+                matches!(model.as_str(), "toonout" | "simple" | "advanced"),
+                "AIAS_AB_MODELS 不支持模型：{model}"
+            );
+        }
+        let out_dir = PathBuf::from(r"F:\AIAS\ab").join(&tag);
+        fs::create_dir_all(&out_dir).unwrap();
+        ensure_ort_runtime(&base).unwrap();
+
+        for entry in fs::read_dir(&input_dir).unwrap().flatten() {
+            let path = entry.path();
+            let ext = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("image")
+                .to_string();
+            for model in &selected_models {
+                let started = std::time::Instant::now();
+                let output = out_dir.join(format!("{stem}_{model}.png"));
+                let outcome = cutout_with_fallback(&base, model, &path, &output)
+                    .unwrap_or_else(|error| panic!("{model} {stem}: {error}"));
+                println!(
+                    "{tag} {} {} 耗时 {:?} 实际模型={} 回退={} -> {}",
+                    stem,
+                    model,
+                    started.elapsed(),
+                    outcome.model_used,
+                    outcome.fallback,
+                    output.display()
+                );
+                let result = image::open(&output).unwrap().to_rgba8();
+                let alpha: Vec<f32> = result
+                    .pixels()
+                    .map(|pixel| pixel[3] as f32 / 255.0)
+                    .collect();
+                println!(
+                    "{tag} {} {} 前景占比={:.3} 边缘均值={:.3}",
+                    stem,
+                    model,
+                    foreground_ratio(&alpha, result.width(), result.height()),
+                    border_band_mean(&alpha, result.width(), result.height(), 24)
+                );
+                let preview = out_dir.join(format!("{stem}_{model}_preview.jpg"));
+                ab_preview(&path, &result, &preview);
+            }
+        }
+    }
+
+    /// 横向拼三联图：原图 | 抠图白底合成 | 抠图深底合成，高度压到 1200 内。
+    fn ab_preview(input: &Path, result: &RgbaImage, out: &Path) {
+        let (w, h) = result.dimensions();
+        let scale = (1200.0 / h as f32).min(1.0);
+        let (tw, th) = (
+            ((w as f32 * scale).round() as u32).max(1),
+            ((h as f32 * scale).round() as u32).max(1),
+        );
+        let original = image::open(input)
+            .expect("原图可读")
+            .to_rgb8();
+        let o_small = image::imageops::resize(&original, tw, th, FilterType::Triangle);
+        let r_small = image::imageops::resize(result, tw, th, FilterType::Triangle);
+        let mut over_white = RgbImage::new(tw, th);
+        let mut over_dark = RgbImage::new(tw, th);
+        for y in 0..th {
+            for x in 0..tw {
+                let pixel = r_small.get_pixel(x, y);
+                let a = pixel[3] as f32 / 255.0;
+                let blend = |bg: [f32; 3]| {
+                    [
+                        (pixel[0] as f32 * a + bg[0] * (1.0 - a)).round() as u8,
+                        (pixel[1] as f32 * a + bg[1] * (1.0 - a)).round() as u8,
+                        (pixel[2] as f32 * a + bg[2] * (1.0 - a)).round() as u8,
+                    ]
+                };
+                over_white.put_pixel(x, y, image::Rgb(blend([255.0, 255.0, 255.0])));
+                over_dark.put_pixel(x, y, image::Rgb(blend([38.0, 42.0, 50.0])));
+            }
+        }
+        let gap = 8;
+        let mut canvas = RgbImage::new(tw * 3 + gap * 2, th);
+        image::imageops::overlay(&mut canvas, &o_small, 0, 0);
+        image::imageops::overlay(&mut canvas, &over_white, (tw + gap) as i64, 0);
+        image::imageops::overlay(&mut canvas, &over_dark, ((tw + gap) * 2) as i64, 0);
+        canvas.save(out).expect("预览图写出");
+    }
+
+    /// 手动下载并安装 GPU 版 onnxruntime：
+    /// `cargo test gpu_ort_install_manual -- --ignored --nocapture`
+    /// 完成后运行 `cuda_ep_diagnostic` 验证 CUDA 是否真正生效。
+    #[test]
+    #[ignore = "手动执行：下载约 233MB 运行库"]
+    fn gpu_ort_install_manual() {
+        let base = dirs::home_dir()
+            .expect("无法定位用户目录")
+            .join(r"AppData\Roaming\studio.avroracl.aias");
+        install_gpu_ort(None, &base).unwrap();
+        assert!(gpu_ort_ready(&base));
+        println!("installed at {}", gpu_ort_capi_dir(&base).display());
+    }
+
+    /// 诊断 CUDA EP 是否真正生效（会话日志 + 推理耗时 + 进程模块核对）：
+    /// `cargo test cuda_ep_diagnostic -- --ignored --nocapture`
+    /// 运行期间可用以下命令核对本进程加载的 CUDA 模块：
+    /// `powershell "Get-Process -Id <pid> -Module | ? { $_.ModuleName -match 'cuda|cudnn|onnxruntime' } | select ModuleName,FileName"`
+    #[test]
+    #[ignore = "手动执行：需要本机已装抠图模型"]
+    fn cuda_ep_diagnostic() {
+        use std::sync::Arc;
+        ort::init()
+            .with_name("aias-cuda-diag")
+            .with_logger(Arc::new(|level, category, _id, code_location, message| {
+                println!("[ORT {:?}] {} {} {}", level, category, code_location, message);
+            }))
+            .commit();
+
+        let base = dirs::home_dir()
+            .expect("无法定位用户目录")
+            .join(r"AppData\Roaming\studio.avroracl.aias");
+        ensure_ort_runtime(&base).unwrap();
+        let model = models_dir(&base).join("isnetis.onnx");
+        assert!(model.exists(), "测试需要已安装 isnetis.onnx");
+
+        println!("pid={}", std::process::id());
+        let compiled_with_cuda = ort::ep::CUDA::default().is_available();
+        println!("ORT 编译时包含 CUDA EP：{compiled_with_cuda:?}");
+        let started = std::time::Instant::now();
+        let session = build_session(&model).unwrap();
+        println!("session built in {:?}", started.elapsed());
+        drop(session);
+
+        let mut img = RgbImage::new(1024, 1024);
+        for y in 0..1024 {
+            for x in 0..1024 {
+                let inside = (128..896).contains(&x) && (128..896).contains(&y);
+                img.put_pixel(x, y, if inside { image::Rgb([244, 150, 58]) } else { image::Rgb([28, 34, 58]) });
+            }
+        }
+        let input = base.join("cuda-diag-in.png");
+        let output = base.join("cuda-diag-out.png");
+        img.save(&input).unwrap();
+
+        cutout(&base, "simple", &input, &output).unwrap(); // 预热（含 cuDNN 选核）
+        use ort::ep::ExecutionProvider;
+        println!(
+            "预热后 CUDA EP 编译状态：{:?}（true 表示当前加载的是 GPU 版运行库）",
+            ort::ep::CUDA::default().is_available()
+        );
+        for run in 1..=3 {
+            let started = std::time::Instant::now();
+            cutout(&base, "simple", &input, &output).unwrap();
+            println!("run {run}: {:?}", started.elapsed());
+        }
+
+        println!("===== 15 秒内核对进程模块（命令见测试注释）=====");
+        std::thread::sleep(std::time::Duration::from_secs(15));
     }
 }
