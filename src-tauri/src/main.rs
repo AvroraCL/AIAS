@@ -54,7 +54,7 @@ fn default_comfyui_address() -> String {
 }
 
 fn default_anime_model() -> String {
-  "advanced".into()
+  "toonout".into()
 }
 
 impl Default for Settings {
@@ -765,7 +765,7 @@ fn anime_cutout_inner(app: Option<&AppHandle>, options: AnimeCutoutOptions) -> R
   let model_id = options
     .model
     .as_deref()
-    .unwrap_or("advanced")
+    .unwrap_or("toonout")
     .trim()
     .to_string();
   if !anime::is_model_ready(&base, &model_id) {
@@ -1487,10 +1487,12 @@ mod tests {
       return;
     };
     let status = anime::models_status(&base);
-    assert_eq!(status.len(), 3);
+    assert_eq!(status.len(), 5);
     assert_eq!(status[0].id, "toonout");
-    assert_eq!(status[1].id, "simple");
-    assert_eq!(status[2].id, "advanced");
+    assert_eq!(status[1].id, "birefnet-general");
+    assert_eq!(status[2].id, "birefnet-lite");
+    assert_eq!(status[3].id, "simple");
+    assert_eq!(status[4].id, "advanced");
     for model in &status {
       assert!(!model.label.is_empty());
       assert!(model.total_size > 0);

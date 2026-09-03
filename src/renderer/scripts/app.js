@@ -57,14 +57,16 @@ const defaults = {
   imageToDdsFormat: "DXT5",
   scaleTarget: "none",
   skinManagerPath: "",
-  animeModel: "advanced",
+  animeModel: "toonout",
   animeCutoutOutputPath: ""
 };
 
 const animeModelCatalog = {
-  simple: { label: "标准抠图（ISNet）" },
-  advanced: { label: "精细抠图（RTMDet + 精修）" },
-  toonout: { label: "动漫特化（ToonOut）" }
+  toonout: { label: "动漫特化（ToonOut）" },
+  "birefnet-general": { label: "通用抠图（BiRefNet）" },
+  "birefnet-lite": { label: "轻量快速（BiRefNet Lite）" },
+  simple: { label: "动漫标准（ISNet）" },
+  advanced: { label: "动漫精细（RTMDet + 精修）" }
 };
 
 const modeMeta = {
@@ -72,7 +74,7 @@ const modeMeta = {
   split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },
   mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
   "image-dds": { title: "图片转 DDS", description: "批量转换图片并统一 DDS 压缩格式" },
-  "anime-cutout": { title: "动漫抠图", description: "内置模型离线推理，输出透明背景 PNG" },
+  "anime-cutout": { title: "AI 抠图", description: "动漫 / 人像 / 商品等任意图片智能抠图，输出透明背景 PNG" },
   skins: { title: "涂装管理", description: "管理 War Thunder UserSkins 资源" },
   settings: { title: "应用设置", description: "更新、数据路径与版本信息" }
 };
@@ -500,8 +502,10 @@ function createBrowserPreviewApi() {
 
   const previewModels = [
     { id: "toonout", label: "动漫特化（ToonOut）", totalSize: 492381880, files: [{ name: "birefnet-toonout-fp16.onnx", expectedSize: 492381880 }] },
-    { id: "simple", label: "标准抠图（ISNet）", totalSize: 176069933, files: [{ name: "isnetis.onnx", expectedSize: 176069933 }] },
-    { id: "advanced", label: "精细抠图（RTMDet + 精修）", totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", expectedSize: 176197192 }] }
+    { id: "birefnet-general", label: "通用抠图（BiRefNet）", totalSize: 940526436, files: [{ name: "BiRefNet-general-512-fp16.onnx", expectedSize: 940526436 }] },
+    { id: "birefnet-lite", label: "轻量快速（BiRefNet Lite）", totalSize: 114538787, files: [{ name: "birefnet-lite-fp16.onnx", expectedSize: 114538787 }] },
+    { id: "simple", label: "动漫标准（ISNet）", totalSize: 176069933, files: [{ name: "isnetis.onnx", expectedSize: 176069933 }] },
+    { id: "advanced", label: "动漫精细（RTMDet + 精修）", totalSize: 414883269, files: [{ name: "anime_segmentor_rtmdet_e60_simplified.onnx", expectedSize: 238686077 }, { name: "mask_refiner_isnetdis_refine_last_simplified.onnx", expectedSize: 176197192 }] }
   ].map((model) => ({
     ...model,
     installed: true,
@@ -583,7 +587,7 @@ function createBrowserPreviewApi() {
       modelsStatus: async () => modelsStatus(),
       modelDownload: async (modelId) => setModelInstalled(modelId, true),
       modelUninstall: async (modelId) => setModelInstalled(modelId, false),
-      cutout: () => previewOnly("动漫抠图")
+      cutout: () => previewOnly("AI 抠图")
     },
     skin: {
       autoDetect: async () => null,
@@ -888,7 +892,7 @@ async function installGpuRuntime() {
 }
 
 function renderAnimeModelStatus() {
-  const model = animeModelById($("anime-model")?.value || "advanced");
+  const model = animeModelById($("anime-model")?.value || "toonout");
   setText("anime-model-status", describeAnimeModel(model));
   const ready = Boolean(model?.installed);
   const downloading = state.animeDownloading;
@@ -907,7 +911,7 @@ function renderAnimeModelStatus() {
 }
 
 async function downloadAnimeModel() {
-  const modelId = $("anime-model")?.value || "advanced";
+  const modelId = $("anime-model")?.value || "toonout";
   if (state.animeDownloading) return;
   state.animeDownloading = true;
   renderAnimeModelStatus();
@@ -923,7 +927,7 @@ async function downloadAnimeModel() {
 }
 
 async function uninstallAnimeModel() {
-  const modelId = $("anime-model")?.value || "advanced";
+  const modelId = $("anime-model")?.value || "toonout";
   if (state.animeDownloading) return;
   const model = animeModelById(modelId);
   const label = model?.label || animeModelCatalog[modelId]?.label || modelId;
@@ -955,7 +959,7 @@ function animeStem(file) {
 
 // 后端输出名为 {原图stem}_{模型id}.png，这里用同样的组合键匹配结果，避免与原图同名覆盖
 function animeResultKey(file) {
-  return `${animeStem(file)}_${$("anime-model")?.value || "advanced"}`;
+  return `${animeStem(file)}_${$("anime-model")?.value || "toonout"}`;
 }
 
 function animeLocalSrc(path) {
@@ -999,7 +1003,7 @@ function probeAnimeResult(file) {
   const stem = animeStem(file);
   // ToonOut 在复杂背景上可能被后端自动回退到 advanced 或 simple。
   // 主候选（用户选择的模型）失败时，回退候选也要探测，否则回退结果在刷新后丢失角标/预览。
-  const model = $("anime-model")?.value || "advanced";
+  const model = $("anime-model")?.value || "toonout";
   const candidates = [`${stem}_${model}.png`];
   if (model === "toonout") candidates.push(`${stem}_advanced.png`, `${stem}_simple.png`);
   const probeNext = (index) => {
@@ -1478,7 +1482,7 @@ function collectSettings() {
     imageToDdsFormat: $("image-format")?.value || "DXT5",
     scaleTarget: $("scale-target")?.value || "none",
     skinManagerPath: $("skin-path")?.value || "",
-    animeModel: $("anime-model")?.value || "advanced",
+    animeModel: $("anime-model")?.value || "toonout",
     animeCutoutOutputPath: $("anime-output")?.value || ""
   };
 }
@@ -1502,7 +1506,7 @@ function applySettingsToForm() {
     "image-format": settings.imageToDdsFormat,
     "scale-target": settings.scaleTarget,
     "skin-path": settings.skinManagerPath,
-    "anime-model": settings.animeModel || "advanced",
+    "anime-model": settings.animeModel || "toonout",
     "anime-output": settings.animeCutoutOutputPath
   };
 
@@ -1625,10 +1629,10 @@ function getRunBlocker(mode) {
       if (!$("image-output")?.value) return "请选择输出文件夹。";
       return null;
     case "anime-cutout":
-      if (!state.animeFiles.length) return "请添加动漫图片。";
+      if (!state.animeFiles.length) return "请添加图片。";
       if (!$("anime-output")?.value) return "请选择输出文件夹。";
       if (state.animeDownloading) return "模型正在下载中，请稍候。";
-      if (!isAnimeModelReady($("anime-model")?.value || "advanced")) return "当前模型未安装，请先在「抠图模型」中下载。";
+      if (!isAnimeModelReady($("anime-model")?.value || "toonout")) return "当前模型未安装，请先在「抠图模型」中下载。";
       return null;
     default:
       return null;
@@ -1866,7 +1870,7 @@ function bindFileControls() {
     state.animeActiveIndex = 0;
     renderAnimeGallery();
     updateStatus();
-    addActivity("已清空列表", "动漫图片列表已清空。");
+    addActivity("已清空列表", "抠图图片列表已清空。");
   });
 }
 
@@ -1970,7 +1974,7 @@ function bindRunActions() {
       reportRunBlocker(blocker);
       return;
     }
-    const modelId = $("anime-model")?.value || "advanced";
+    const modelId = $("anime-model")?.value || "toonout";
     addActivity("开始抠图", `${state.animeFiles.length} 张图片 · ${animeModelCatalog[modelId]?.label || modelId}`);
     const result = await withLog(
       "anime-log",
@@ -1981,7 +1985,7 @@ function bindRunActions() {
           outputPath: $("anime-output").value,
           model: modelId
         }),
-      "动漫抠图"
+      "AI 抠图"
     );
     if (result?.outputs?.length) applyAnimeOutputs(result.outputs);
     refreshGpuRuntime();
@@ -2175,7 +2179,7 @@ async function init() {
         setText("anime-gpu-progress-text", `${file} · ${percent}%（${formatBytes(completed)} / ${formatBytes(total)}）`);
         return;
       }
-      if (modelId !== ($("anime-model")?.value || "advanced")) return;
+      if (modelId !== ($("anime-model")?.value || "toonout")) return;
       const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
       const fill = $("anime-model-progress-fill");
       if (fill) fill.style.width = `${percent}%`;

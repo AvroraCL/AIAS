@@ -23,9 +23,23 @@ pub struct ModelFileSpec {
     pub origin_url: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelKind {
+    /// BiRefNet 动漫微调（ToonOut），保留「整图判前景」自动回退链。
+    Toonout,
+    /// ISNet 动漫标准。
+    Simple,
+    /// RTMDet 检测 + 精修的动漫两阶段管线。
+    Advanced,
+    /// 官方 BiRefNet 通用系；matting = true 表示输出连续 alpha（人像/matting），
+    /// 后处理不做对比度拉伸以保留半透明细节。
+    BiRefNet { matting: bool },
+}
+
 pub struct ModelSpec {
     pub id: &'static str,
     pub label: &'static str,
+    pub kind: ModelKind,
     pub files: &'static [ModelFileSpec],
 }
 
@@ -33,11 +47,13 @@ const ISNETIS_SIZE: u64 = 176_069_933;
 const RTMDET_SIZE: u64 = 238_686_077;
 const REFINER_SIZE: u64 = 176_197_192;
 const TOONOUT_SIZE: u64 = 492_381_880;
+const BIREFNET_LITE_SIZE: u64 = 114_538_787;
 
 pub const MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "toonout",
         label: "动漫特化（ToonOut）",
+        kind: ModelKind::Toonout,
         files: &[ModelFileSpec {
             name: "birefnet-toonout-fp16.onnx",
             size: TOONOUT_SIZE,
@@ -46,8 +62,31 @@ pub const MODELS: &[ModelSpec] = &[
         }],
     },
     ModelSpec {
+        id: "birefnet-general",
+        label: "通用抠图（BiRefNet）",
+        kind: ModelKind::BiRefNet { matting: false },
+        files: &[ModelFileSpec {
+            name: "BiRefNet-general-512-fp16.onnx",
+            size: 940_526_436,
+            mirror_url: "https://ghfast.top/https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-resolution_512x512-fp16-epoch_216.onnx",
+            origin_url: "https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-resolution_512x512-fp16-epoch_216.onnx",
+        }],
+    },
+    ModelSpec {
+        id: "birefnet-lite",
+        label: "轻量快速（BiRefNet Lite）",
+        kind: ModelKind::BiRefNet { matting: false },
+        files: &[ModelFileSpec {
+            name: "birefnet-lite-fp16.onnx",
+            size: BIREFNET_LITE_SIZE,
+            mirror_url: "https://ghfast.top/https://github.com/AvroraCL/AIAS/releases/download/models-v1/birefnet-lite-fp16.onnx",
+            origin_url: "https://github.com/AvroraCL/AIAS/releases/download/models-v1/birefnet-lite-fp16.onnx",
+        }],
+    },
+    ModelSpec {
         id: "simple",
-        label: "标准抠图（ISNet）",
+        label: "动漫标准（ISNet）",
+        kind: ModelKind::Simple,
         files: &[ModelFileSpec {
             name: "isnetis.onnx",
             size: ISNETIS_SIZE,
@@ -57,7 +96,8 @@ pub const MODELS: &[ModelSpec] = &[
     },
     ModelSpec {
         id: "advanced",
-        label: "精细抠图（RTMDet+精修）",
+        label: "动漫精细（RTMDet+精修）",
+        kind: ModelKind::Advanced,
         files: &[
             ModelFileSpec {
                 name: "anime_segmentor_rtmdet_e60_simplified.onnx",
@@ -416,17 +456,15 @@ pub fn download_model(app: Option<&AppHandle>, base: &Path, id: &str) -> Result<
 pub fn uninstall_model(base: &Path, id: &str) -> Result<(), String> {
     let spec = model_spec(id)?;
     // Release cached sessions first so Windows lets us delete the files.
-    match id {
-        "simple" => {
+    match spec.kind {
+        ModelKind::Simple => {
             simple_slot().lock().map_err(lock_error)?.take();
         }
-        "advanced" => {
+        ModelKind::Advanced => {
             advanced_slot().lock().map_err(lock_error)?.take();
         }
-        "toonout" => {
-            toonout_slot().lock().map_err(lock_error)?.take();
-        }
-        _ => return Err(format!("未知模型：{id}")),
+        // BiRefNet 系（含 toonout）共用按 id 缓存的会话仓库。
+        ModelKind::Toonout | ModelKind::BiRefNet { .. } => release_birefnet_session(id),
     }
     let mut errors = Vec::new();
     for file in spec.files {
@@ -463,7 +501,9 @@ struct AdvancedSessions {
 
 static SIMPLE_SESSION: OnceLock<Mutex<Option<SimpleSessions>>> = OnceLock::new();
 static ADVANCED_SESSIONS: OnceLock<Mutex<Option<AdvancedSessions>>> = OnceLock::new();
-static TOONOUT_SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
+/// BiRefNet 系（toonout + birefnet-*）会话按模型 id 缓存：这些模型共享同一条
+/// 推理管线，仅输入分辨率与后处理策略不同。
+static BIREFNET_SESSIONS: OnceLock<Mutex<Vec<(String, Session)>>> = OnceLock::new();
 
 fn simple_slot() -> &'static Mutex<Option<SimpleSessions>> {
     SIMPLE_SESSION.get_or_init(|| Mutex::new(None))
@@ -473,11 +513,49 @@ fn advanced_slot() -> &'static Mutex<Option<AdvancedSessions>> {
     ADVANCED_SESSIONS.get_or_init(|| Mutex::new(None))
 }
 
-fn toonout_slot() -> &'static Mutex<Option<Session>> {
-    TOONOUT_SESSION.get_or_init(|| Mutex::new(None))
+fn birefnet_sessions() -> &'static Mutex<Vec<(String, Session)>> {
+    BIREFNET_SESSIONS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn build_session(path: &Path) -> Result<Session, String> {
+/// 释放指定 BiRefNet 系模型的缓存会话（卸载文件、回退复核前腾显存时调用）。
+fn release_birefnet_session(id: &str) {
+    if let Ok(mut sessions) = birefnet_sessions().lock() {
+        sessions.retain(|(model_id, _)| model_id != id);
+    }
+}
+
+/// 推理会话全局只保留当前在用的一套。这几组模型各自常驻 1-3GB 显存
+/// （BiRefNet 系 0.5-1GB 权重 + 大激活张量，RTMDet+精修是两个模型），
+/// 同时缓存多套会在切换模型时把显存挤爆：GPU OOM 转内存重试还可能
+/// 进一步耗尽主机内存，直接把进程带崩。每次推理前调用，保留 keep，
+/// 释放其余；切换模型后首次推理多花一次几秒的会话重建。
+enum SessionKeep<'a> {
+    Birefnet(&'a str),
+    Simple,
+    Advanced,
+}
+
+fn prune_sessions(keep: SessionKeep<'_>) {
+    let keep_birefnet = match &keep {
+        SessionKeep::Birefnet(id) => Some(*id),
+        _ => None,
+    };
+    if let Ok(mut sessions) = birefnet_sessions().lock() {
+        sessions.retain(|(model_id, _)| Some(model_id.as_str()) == keep_birefnet);
+    }
+    if !matches!(keep, SessionKeep::Simple) {
+        if let Ok(mut slot) = simple_slot().lock() {
+            *slot = None;
+        }
+    }
+    if !matches!(keep, SessionKeep::Advanced) {
+        if let Ok(mut slot) = advanced_slot().lock() {
+            *slot = None;
+        }
+    }
+}
+
+fn build_session(path: &Path, use_gpu: bool) -> Result<Session, String> {
     let threads = std::thread::available_parallelism()
         .map(|value| value.get().clamp(1, 8))
         .unwrap_or(4);
@@ -489,9 +567,16 @@ fn build_session(path: &Path) -> Result<Session, String> {
         .with_intra_threads(threads)
         .map_err(to_string_error)?;
     // 仅当 ONNX Runtime 确实编译了 CUDA EP 时才注册；CPU 版运行库注册只会静默回退并掩盖真实状态。
-    if cuda_ep_compiled() {
+    if use_gpu && cuda_ep_compiled() {
+        // Arena 按需扩展、cuDNN 改启发式搜索并限制 workspace：BiRefNet 官方 fp32
+        // 导出在 1024² 全分辨率上有单笔约 784MB 的中间张量，默认的 2 的幂超额
+        // arena 与穷举卷积搜索会在显存紧张的卡上触发不必要的 OOM。
+        let cuda = ort::ep::CUDA::default()
+            .with_arena_extend_strategy(ort::ep::ArenaExtendStrategy::SameAsRequested)
+            .with_conv_algorithm_search(ort::ep::cuda::ConvAlgorithmSearch::Heuristic)
+            .with_conv_max_workspace(false)
+            .build();
         // CUDA EP 注册失败时 ONNX Runtime 仍会静默回退 CPU（error_on_failure 默认 false）。
-        let cuda = ort::ep::CUDA::default().build();
         builder = builder
             .with_execution_providers([cuda])
             .map_err(to_string_error)?;
@@ -1024,6 +1109,7 @@ fn stable_sigmoid(value: f32) -> f32 {
 
 fn run_simple(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     ensure_ort_runtime(base)?;
+    prune_sessions(SessionKeep::Simple);
     let mut guard = simple_slot().lock().map_err(lock_error)?;
     if guard.is_none() {
         let path = models_dir(base).join("isnetis.onnx");
@@ -1031,7 +1117,7 @@ fn run_simple(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
             return Err("标准模型未安装，请先在参数面板下载。".into());
         }
         *guard = Some(SimpleSessions {
-            session: build_session(&path)?,
+            session: build_session(&path, true)?,
         });
     }
     let sessions = guard.as_mut().expect("session initialized");
@@ -1139,6 +1225,7 @@ fn resize_pad_rgb(img: &RgbImage, size: u32) -> (RgbImage, (u32, u32, u32, u32))
 
 fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     ensure_ort_runtime(base)?;
+    prune_sessions(SessionKeep::Advanced);
     let mut guard = advanced_slot().lock().map_err(lock_error)?;
     if guard.is_none() {
         let seg_path = models_dir(base).join("anime_segmentor_rtmdet_e60_simplified.onnx");
@@ -1148,8 +1235,8 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
             return Err("精细模型未安装，请先在参数面板下载。".into());
         }
         *guard = Some(AdvancedSessions {
-            seg: build_session(&seg_path)?,
-            refine: build_session(&refine_path)?,
+            seg: build_session(&seg_path, true)?,
+            refine: build_session(&refine_path, true)?,
         });
     }
     let sessions = guard.as_mut().expect("sessions initialized");
@@ -1461,15 +1548,15 @@ fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
 }
 
 // ---------------------------------------------------------------------------
-// ToonOut (BiRefNet anime fine-tune) — port of the sprited ONNX usage
+// BiRefNet family (ToonOut + official general/portrait/HR/lite)
 // ---------------------------------------------------------------------------
 
-const TOONOUT_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-const TOONOUT_STD: [f32; 3] = [0.229, 0.224, 0.225];
+const BIREFNET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+const BIREFNET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
-/// ToonOut 发布推理的图像预处理：整图直接缩放到模型固定输入。
+/// BiRefNet 发布推理的图像预处理：整图直接缩放到模型固定输入。
 /// 不进行等比留边，否则竖图会浪费掉大部分有效分割面积。
-fn resize_toonout_input(rgb: &RgbImage, target_w: u32, target_h: u32) -> RgbImage {
+fn resize_birefnet_input(rgb: &RgbImage, target_w: u32, target_h: u32) -> RgbImage {
     if rgb.dimensions() == (target_w, target_h) {
         rgb.clone()
     } else {
@@ -1477,35 +1564,86 @@ fn resize_toonout_input(rgb: &RgbImage, target_w: u32, target_h: u32) -> RgbImag
     }
 }
 
-fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
-    ensure_ort_runtime(base)?;
-    let mut guard = toonout_slot().lock().map_err(lock_error)?;
-    if guard.is_none() {
-        let path = models_dir(base).join("birefnet-toonout-fp16.onnx");
-        if !path.exists() {
-            return Err("ToonOut 模型未安装，请先在参数面板下载。".into());
+/// BiRefNet 系共享推理管线入口：ToonOut（动漫微调）与官方 general/portrait/HR/lite
+/// 预处理完全一致，仅输入分辨率随模型不同（1024/2048，从会话动态读取）。
+/// `matting` 为 true 表示模型输出连续 alpha（人像类），后处理不做对比度拉伸。
+///
+/// 官方 fp32 导出在 1024² 下显存占用约为 fp16 的两倍（整图 ASPP 中间张量单笔
+/// 约 784MB），桌面应用占用较多显存的卡上 GPU 推理会 OOM：此时释放 GPU 会话、
+/// 改用 CPU 重建并重试一次，保证出图（慢但可用）。
+fn run_birefnet(base: &Path, id: &str, matting: bool, rgb: &RgbImage) -> Result<Vec<f32>, String> {
+    match try_run_birefnet(base, id, matting, rgb, true) {
+        Ok(mask) => Ok(mask),
+        Err(error) if is_gpu_oom_error(&error) => {
+            release_birefnet_session(id);
+            try_run_birefnet(base, id, matting, rgb, false)
         }
-        *guard = Some(build_session(&path)?);
+        Err(error) => Err(error),
     }
-    let session = guard.as_mut().expect("session initialized");
+}
+
+/// 显存/内存不足的报错来自 ONNX Runtime 的 CUDA arena、cudaMalloc 或 host 端
+/// std::bad_alloc（部分算子如 GatherND 无 CUDA 内核，会落在内存执行）；关键词保持宽松。
+fn is_gpu_oom_error(error: &str) -> bool {
+    let message = error.to_lowercase();
+    [
+        "failed to allocate",
+        "bad allocation",
+        "bad_alloc",
+        "out of memory",
+        "out_of_memory",
+        "cuda error",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+fn try_run_birefnet(
+    base: &Path,
+    id: &str,
+    matting: bool,
+    rgb: &RgbImage,
+    use_gpu: bool,
+) -> Result<Vec<f32>, String> {
+    let spec = model_spec(id)?;
+    let file_name = spec
+        .files
+        .split_first()
+        .map(|(file, _)| file.name)
+        .ok_or("模型注册缺少文件")?;
+    ensure_ort_runtime(base)?;
+    prune_sessions(SessionKeep::Birefnet(id));
+    let mut sessions = birefnet_sessions().lock().map_err(lock_error)?;
+    if !sessions.iter().any(|(model_id, _)| model_id == id) {
+        let path = models_dir(base).join(file_name);
+        if !path.exists() {
+            return Err(format!("{}模型未安装，请先在参数面板下载。", spec.label));
+        }
+        sessions.push((id.to_string(), build_session(&path, use_gpu)?));
+    }
+    let session = sessions
+        .iter_mut()
+        .find(|(model_id, _)| model_id == id)
+        .map(|(_, session)| session)
+        .expect("session just ensured");
     let (w, h) = rgb.dimensions();
 
-    // Export fixes the input at 1024x1024; fall back if a rebuild is dynamic.
+    // Exports fix the input square; fall back if a rebuild is dynamic.
     let (seg_h, seg_w) = input_size(session).unwrap_or((1024, 1024));
 
-    // ToonOut 的发布推理流程是直接缩放到固定方形输入；不添加训练流程中
-    // 不存在的灰色留边，也不在输出阶段裁剪。这样竖图会获得完整的 1024px
+    // 发布推理流程是直接缩放到固定方形输入；不添加训练流程中
+    // 不存在的灰色留边，也不在输出阶段裁剪。这样竖图会获得完整的
     // 有效分割面积，而不是把主体压进窄条内容区。
-    let model_input = resize_toonout_input(rgb, seg_w as u32, seg_h as u32);
+    let model_input = resize_birefnet_input(rgb, seg_w as u32, seg_h as u32);
     let plane = seg_h * seg_w;
     let mut input = vec![0_f32; 3 * plane];
     for y in 0..seg_h as u32 {
         for x in 0..seg_w as u32 {
             let pixel = model_input.get_pixel(x, y);
             let dst = y as usize * seg_w + x as usize;
-            input[dst] = (pixel[0] as f32 / 255.0 - TOONOUT_MEAN[0]) / TOONOUT_STD[0];
-            input[plane + dst] = (pixel[1] as f32 / 255.0 - TOONOUT_MEAN[1]) / TOONOUT_STD[1];
-            input[2 * plane + dst] = (pixel[2] as f32 / 255.0 - TOONOUT_MEAN[2]) / TOONOUT_STD[2];
+            input[dst] = (pixel[0] as f32 / 255.0 - BIREFNET_MEAN[0]) / BIREFNET_STD[0];
+            input[plane + dst] = (pixel[1] as f32 / 255.0 - BIREFNET_MEAN[1]) / BIREFNET_STD[1];
+            input[2 * plane + dst] = (pixel[2] as f32 / 255.0 - BIREFNET_MEAN[2]) / BIREFNET_STD[2];
         }
     }
 
@@ -1529,29 +1667,48 @@ fn run_toonout(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
         .iter()
         .any(|value| *value < -0.01 || *value > 1.01);
 
+    // 官方 BiRefNet 导出的 sigmoid 输出整体置信度偏低（相对 ToonOut 明显平坦），
+    // 直接用固定阈值拉伸会得到“全前景”的半透明掩码；rembg 对官方模型的处理
+    // 就是先做 min-max 归一化。ToonOut 已在线上充分验证，保持原后处理不动。
+    let mut native: Vec<f32> = mask[..mask_len].to_vec();
+    if needs_sigmoid {
+        native = native.into_iter().map(stable_sigmoid).collect();
+    }
+    if matches!(spec.kind, ModelKind::BiRefNet { .. }) {
+        let mi = native.iter().cloned().fold(f32::INFINITY, f32::min);
+        let ma = native.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        if ma - mi > 1e-3 {
+            for value in &mut native {
+                *value = (*value - mi) / (ma - mi);
+            }
+        }
+    }
+
     // 与预处理相反，直接把模型的方形输出缩回原图大小；不裁切任何有效区域。
     let upscaled_mask = if mask_w == w && mask_h == h {
-        mask[..mask_len].to_vec()
+        native
     } else {
         let source =
-            ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(mask_w, mask_h, mask[..mask_len].to_vec())
+            ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(mask_w, mask_h, native)
                 .ok_or("掩码缓冲无效")?;
         image::imageops::resize(&source, w, h, FilterType::Lanczos3).into_raw()
     };
-    let mut result: Vec<f32> = if needs_sigmoid {
-        upscaled_mask.into_iter().map(stable_sigmoid).collect()
+    if matting {
+        // 人像/matting 导出的是连续 alpha：保留原值，仅平滑过渡带。
+        // 对比度拉伸会把发丝等半透明细节压向全透/全不透明，毁掉 matting 的优势。
+        Ok(smooth_matte_edges(&upscaled_mask, w, h))
     } else {
-        upscaled_mask
-    };
-    // 柔化对比度：只把接近全透明/全不透明的两头压向极值，保留发丝、水花等
-    // 半透明细节的中间响应，不做硬二值化（那会毁掉这些细节）。
-    const MATTE_FLOOR: f32 = 0.05;
-    const MATTE_CEIL: f32 = 0.95;
-    for value in &mut result {
-        *value =
-            ((value.clamp(0.0, 1.0) - MATTE_FLOOR) / (MATTE_CEIL - MATTE_FLOOR)).clamp(0.0, 1.0);
+        // 分割类输出：柔化对比度，只把接近全透明/全不透明的两头压向极值，
+        // 保留发丝、水花等半透明细节的中间响应，不做硬二值化（那会毁掉这些细节）。
+        const MATTE_FLOOR: f32 = 0.05;
+        const MATTE_CEIL: f32 = 0.95;
+        let mut result = upscaled_mask;
+        for value in &mut result {
+            *value = ((value.clamp(0.0, 1.0) - MATTE_FLOOR) / (MATTE_CEIL - MATTE_FLOOR))
+                .clamp(0.0, 1.0);
+        }
+        Ok(smooth_matte_edges(&result, w, h))
     }
-    Ok(smooth_matte_edges(&result, w, h))
 }
 
 // matte 上采样后，半透明过渡带会出现锯齿和孤立噪点；只对过渡带（含 1px
@@ -1715,17 +1872,18 @@ pub fn cutout_with_fallback(
     let rgb = image.to_rgb8();
     let (w, h) = rgb.dimensions();
 
-    let (mask, fallback_model) = match model_id {
-        "simple" => (run_simple(base, &rgb)?, "simple"),
-        "advanced" => (run_advanced(base, &rgb)?, "advanced"),
-        "toonout" => {
-            let mask = run_toonout(base, &rgb)?;
+    let (mask, fallback_model) = match model_spec(model_id)?.kind {
+        ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
+        ModelKind::Advanced => (run_advanced(base, &rgb)?, model_id),
+        ModelKind::BiRefNet { matting } => {
+            (run_birefnet(base, model_id, matting, &rgb)?, model_id)
+        }
+        ModelKind::Toonout => {
+            let mask = run_birefnet(base, "toonout", false, &rgb)?;
             if toonout_likely_failed(&mask, w, h) {
                 // 先释放 ToonOut 会话，避免两套大模型在显存中重叠；再用高级模型
                 // 复核。复杂插画背景上它通常更能清掉被 ToonOut 保留的线稿。
-                if let Ok(mut session) = toonout_slot().lock() {
-                    session.take();
-                }
+                release_birefnet_session("toonout");
                 if is_model_ready(base, "advanced") {
                     match run_advanced(base, &rgb) {
                         Ok(candidate) if matte_is_substantially_cleaner(&candidate, &mask, w, h) => {
@@ -1742,7 +1900,6 @@ pub fn cutout_with_fallback(
                 (mask, "toonout")
             }
         }
-        other => return Err(format!("未知模型：{other}")),
     };
 
     let fallback = model_id == "toonout" && fallback_model != "toonout";
@@ -1909,7 +2066,7 @@ mod toonout_tests {
     #[test]
     fn toonout_preprocess_fills_the_entire_model_input() {
         let source = RgbImage::from_pixel(1447, 2036, image::Rgb([17, 49, 91]));
-        let resized = resize_toonout_input(&source, 1024, 1024);
+        let resized = resize_birefnet_input(&source, 1024, 1024);
         assert_eq!(resized.dimensions(), (1024, 1024));
         assert_eq!(*resized.get_pixel(0, 0), image::Rgb([17, 49, 91]));
         assert_eq!(*resized.get_pixel(512, 512), image::Rgb([17, 49, 91]));
@@ -1970,11 +2127,11 @@ mod toonout_tests {
 
         ensure_ort_runtime(&base).unwrap();
         let path = models_dir(&base).join("birefnet-toonout-fp16.onnx");
-        let session = build_session(&path).unwrap();
+        let session = build_session(&path, true).unwrap();
         println!("inputs: {:?}", session.inputs());
         println!("outputs: {:?}", session.outputs());
 
-        let matte = run_toonout(&base, &rgb).unwrap();
+        let matte = run_birefnet(&base, "toonout", false, &rgb).unwrap();
         let (w, h) = rgb.dimensions();
         let (mut strong, mut weak, mut mid) = (0usize, 0usize, 0usize);
         let (mut border_sum, mut border_n) = (0f64, 0f64);
@@ -2037,7 +2194,7 @@ mod toonout_tests {
         );
         for model in &selected_models {
             assert!(
-                matches!(model.as_str(), "toonout" | "simple" | "advanced"),
+                MODELS.iter().any(|spec| spec.id == model),
                 "AIAS_AB_MODELS 不支持模型：{model}"
             );
         }
@@ -2170,7 +2327,7 @@ mod toonout_tests {
         let compiled_with_cuda = ort::ep::CUDA::default().is_available();
         println!("ORT 编译时包含 CUDA EP：{compiled_with_cuda:?}");
         let started = std::time::Instant::now();
-        let session = build_session(&model).unwrap();
+        let session = build_session(&model, true).unwrap();
         println!("session built in {:?}", started.elapsed());
         drop(session);
 

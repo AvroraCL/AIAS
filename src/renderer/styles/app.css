@@ -374,7 +374,7 @@ textarea:focus { border-color: var(--accent); }
 .chip-remove:hover:not(:disabled) { color: #fff; border-color: rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); }
 .chip-remove svg { width: 14px; height: 14px; }
 
-/* 动漫抠图：预览画廊与前后对比 */
+/* AI 抠图：预览画廊与前后对比 */
 
 .mode-view.anime-view.active { display: flex; flex-direction: column; height: 100%; }
 .anime-view .stage-heading { margin-bottom: 10px; }

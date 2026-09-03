@@ -35,7 +35,7 @@
               <i data-lucide="image" aria-hidden="true"></i><span>图片转 DDS</span>
             </button>
             <button class="mode-tab" data-view="anime-cutout" type="button">
-              <i data-lucide="scissors" aria-hidden="true"></i><span>动漫抠图</span>
+              <i data-lucide="scissors" aria-hidden="true"></i><span>AI 抠图</span>
             </button>
           </div>
 
@@ -170,8 +170,8 @@
               </div>
               <div class="anime-empty" id="anime-empty">
                 <span class="drop-icon"><i data-lucide="scissors" aria-hidden="true"></i></span>
-                <strong>添加动漫图片开始抠图</strong>
-                <small>点击上方「添加图片」或直接把文件拖进窗口</small>
+                <strong>添加图片开始 AI 抠图</strong>
+                <small>动漫、人像、商品等任意图片 · 点击上方「添加图片」或直接拖进窗口</small>
               </div>
               <div class="anime-gallery" id="anime-gallery" hidden>
                 <div class="compare-stage" id="anime-compare" style="--compare-pos: 50%">
@@ -294,10 +294,12 @@
                 <button class="group-toggle" type="button"><span>抠图模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
                   <label>模型</label>
-                  <select id="anime-model" aria-label="抠图模型" title="复杂插画背景优先使用精细抠图；ToonOut 适合背景干净的动漫人物，检测到明显背景残留时会自动由精细抠图复核">
-                    <option value="toonout">动漫特化（ToonOut）</option>
-                    <option value="simple">标准抠图（ISNet）</option>
-                    <option value="advanced" selected>精细抠图（RTMDet + 精修，推荐）</option>
+                  <select id="anime-model" aria-label="抠图模型" title="动漫图优先用 ToonOut（复杂背景残留时会自动复核）；商品/场景等任意图片选 BiRefNet 通用，低配设备可选轻量 Lite">
+                    <option value="toonout" selected>动漫特化（ToonOut）</option>
+                    <option value="birefnet-general">通用抠图（BiRefNet）</option>
+                    <option value="birefnet-lite">轻量快速（BiRefNet Lite）</option>
+                    <option value="simple">动漫标准（ISNet）</option>
+                    <option value="advanced">动漫精细（RTMDet + 精修）</option>
                   </select>
                   <div class="model-status-row">
                     <small id="anime-model-status" class="settings-hint">正在读取模型状态…</small>
@@ -353,7 +355,7 @@
                   <div class="field-row hidden" data-field="split-output"><input id="split-output" readonly aria-label="PBR 拆分输出文件夹" title="PBR 拆分输出文件夹" /><button data-pick-dir="split-output" type="button">选择</button></div>
                   <div class="field-row hidden" data-field="mipmap-output"><input id="mipmap-output" readonly aria-label="Mipmap 输出文件夹" title="Mipmap 输出文件夹" /><button data-pick-dir="mipmap-output" type="button">选择</button></div>
                   <div class="field-row hidden" data-field="image-output"><input id="image-output" readonly aria-label="图片转 DDS 输出文件夹" title="图片转 DDS 输出文件夹" /><button data-pick-dir="image-output" type="button">选择</button></div>
-                  <div class="field-row hidden" data-field="anime-output"><input id="anime-output" readonly aria-label="动漫抠图输出文件夹" title="动漫抠图输出文件夹" /><button data-pick-dir="anime-output" type="button">选择</button></div>
+                  <div class="field-row hidden" data-field="anime-output"><input id="anime-output" readonly aria-label="AI 抠图输出文件夹" title="AI 抠图输出文件夹" /><button data-pick-dir="anime-output" type="button">选择</button></div>
                 </div>
               </section>
 
