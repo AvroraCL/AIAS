@@ -28,11 +28,11 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、AI 抠�
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.4.1
+### 下载 v5.3.0
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.4.1_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.4.1/AIAS_5.4.1_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+| [AIAS_5.3.0_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.3.0/AIAS_5.3.0_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
 
 历史版本与更新日志见 [Releases](https://github.com/AvroraCL/AIAS/releases)。
 
@@ -155,7 +155,7 @@ npm run build
 
 安装包由 Tauri 生成在 `src-tauri/target/release/bundle/nsis/`，构建后自动复制到 `dist/`：
 
-- `AIAS_5.4.1_x64-setup.exe`：NSIS 安装程序
+- `AIAS_{版本}_x64-setup.exe`：NSIS 安装程序
 
 安装包不入版本库，发版上传到 Releases。版本信息在 `package.json`、`src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 三处同步维护。应用内置自动更新：启动时检查 GitHub Releases 上的 `latest.json`，不可达时回退 GitCode 镜像。
 
