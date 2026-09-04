@@ -57,3 +57,7 @@ CDK/
 .ssh/
 id_rsa*
 .Tauri私钥口令*.txt
+
+# Local AB experiment outputs and scratch space
+ab/
+tmp/
