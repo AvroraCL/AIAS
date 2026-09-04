@@ -61,3 +61,6 @@ id_rsa*
 # Local AB experiment outputs and scratch space
 ab/
 tmp/
+
+# Local documents and research materials (kept outside GitHub)
+docs/
