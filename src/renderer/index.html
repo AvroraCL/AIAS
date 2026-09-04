@@ -294,9 +294,10 @@
                 <button class="group-toggle" type="button"><span>抠图模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
                   <label>模型</label>
-                  <select id="anime-model" aria-label="抠图模型" title="动漫图优先用 ToonOut（复杂背景残留时会自动复核）；商品/场景等任意图片选 BiRefNet 通用，低配设备可选轻量 Lite">
-                    <option value="toonout" selected>动漫特化（ToonOut）</option>
-                    <option value="birefnet-general">通用抠图（BiRefNet）</option>
+                  <select id="anime-model" aria-label="抠图模型" title="推荐动漫专精 AnimeSeg：针对二次元角色复杂背景回归验证，优先去除远景人物和摆设；仍可自行选择通用 BiRefNet 或 ToonOut">
+                    <option value="anime-specialist" selected>动漫专精（AnimeSeg，推荐）</option>
+                    <option value="toonout">动漫特化（ToonOut）</option>
+                    <option value="birefnet-general">高质量抠图（BiRefNet 1024）</option>
                     <option value="birefnet-lite">轻量快速（BiRefNet Lite）</option>
                     <option value="simple">动漫标准（ISNet）</option>
                     <option value="advanced">动漫精细（RTMDet + 精修）</option>

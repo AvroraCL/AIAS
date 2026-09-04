@@ -54,7 +54,7 @@ fn default_comfyui_address() -> String {
 }
 
 fn default_anime_model() -> String {
-  "toonout".into()
+  "anime-specialist".into()
 }
 
 impl Default for Settings {
@@ -765,7 +765,7 @@ fn anime_cutout_inner(app: Option<&AppHandle>, options: AnimeCutoutOptions) -> R
   let model_id = options
     .model
     .as_deref()
-    .unwrap_or("toonout")
+    .unwrap_or("anime-specialist")
     .trim()
     .to_string();
   if !anime::is_model_ready(&base, &model_id) {
@@ -819,8 +819,17 @@ fn anime_cutout_inner(app: Option<&AppHandle>, options: AnimeCutoutOptions) -> R
         let final_path = if outcome.fallback {
           let actual = format!("{stem}_{}.png", outcome.model_used);
           let path = Path::new(&options.output_path).join(&actual);
-          let _ = std::fs::rename(&target, &path);
-          logs.push(format!("完成 {} → {}（ToonOut 在此复杂背景上失效，已自动改用 ISNet）", stem, actual));
+          // 同一输入重复运行时允许以最新结果覆盖旧的实际模型文件；若改名
+          // 失败必须返回错误，不能悄悄把旧文件当成本次的回退结果展示给前端。
+          if path.exists() {
+            std::fs::remove_file(&path).map_err(to_string_error)?;
+          }
+          std::fs::rename(&target, &path).map_err(to_string_error)?;
+          let fallback_label = anime::model_label(&outcome.model_used);
+          logs.push(format!(
+            "完成 {} → {}（ToonOut 在此复杂背景上失效，已自动改用 {}）",
+            stem, actual, fallback_label
+          ));
           path
         } else {
           logs.push(format!(
@@ -1481,18 +1490,67 @@ mod tests {
   }
 
   #[test]
+  #[ignore = "uses the real 1024 model and the maintained anime A/B fixture"]
+  fn toonout_fallback_reports_and_saves_the_actual_result() {
+    let input = Path::new(r"F:\战争雷霆涂装\贴图素材\F15E 塞雷娅\测试\原图.png");
+    let output = PathBuf::from(r"F:\战争雷霆涂装\贴图素材\F15E 塞雷娅\AB测试结果\P53_toonout_ui_contract_specialist");
+    let Some(base) = anime_base_dir_for_tests() else {
+      eprintln!("skip: app data dir unavailable");
+      return;
+    };
+    assert!(input.is_file(), "A/B 原图必须存在");
+    assert!(anime::is_model_ready(&base, "toonout"), "测试需要 ToonOut 模型");
+    assert!(
+      anime::is_model_ready(&base, "anime-specialist") || anime::is_model_ready(&base, "birefnet-general"),
+      "测试至少需要 AnimeSeg 或 General 1024 作为 ToonOut 回退模型"
+    );
+    std::fs::create_dir_all(&output).expect("创建 UI 合约测试输出目录");
+
+    let result = anime_cutout_inner(
+      None,
+      AnimeCutoutOptions {
+        files: vec![path_to_string(input)],
+        output_path: path_to_string(&output),
+        model: Some("toonout".into()),
+      },
+    )
+    .expect("ToonOut 回退流程必须成功");
+    // 专精模型已安装时应优先接管；尚未安装的旧用户仍可由 General 保持可用。
+    let expected_model = if anime::is_model_ready(&base, "anime-specialist") {
+      "anime-specialist"
+    } else {
+      "birefnet-general"
+    };
+    let expected_name = format!("原图_{expected_model}.png");
+    let expected = output.join(&expected_name);
+    assert_eq!(result.completed, 1);
+    assert!(expected.is_file(), "回退结果必须用实际模型名落盘");
+    assert!(
+      result.outputs.iter().any(|path| path.ends_with(&expected_name)),
+      "返回结果必须指向实际模型文件：{:?}",
+      result.outputs
+    );
+    assert!(
+      result.logs.iter().any(|line| line.contains(&anime::model_label(expected_model))),
+      "日志必须说明实际接管模型：{:?}",
+      result.logs
+    );
+  }
+
+  #[test]
   fn anime_models_status_reports_catalog() {
     let Some(base) = anime_base_dir_for_tests() else {
       eprintln!("skip: app data dir unavailable");
       return;
     };
     let status = anime::models_status(&base);
-    assert_eq!(status.len(), 5);
-    assert_eq!(status[0].id, "toonout");
-    assert_eq!(status[1].id, "birefnet-general");
-    assert_eq!(status[2].id, "birefnet-lite");
-    assert_eq!(status[3].id, "simple");
-    assert_eq!(status[4].id, "advanced");
+    assert_eq!(status.len(), 6);
+    assert_eq!(status[0].id, "anime-specialist");
+    assert_eq!(status[1].id, "toonout");
+    assert_eq!(status[2].id, "birefnet-general");
+    assert_eq!(status[3].id, "birefnet-lite");
+    assert_eq!(status[4].id, "simple");
+    assert_eq!(status[5].id, "advanced");
     for model in &status {
       assert!(!model.label.is_empty());
       assert!(model.total_size > 0);
