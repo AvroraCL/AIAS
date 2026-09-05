@@ -1667,6 +1667,13 @@ pub(super) mod toonout_tests {
             .map(|alpha| *alpha as f32 / 255.0)
             .collect();
         let raw_metrics = alpha_metrics_luma(&gt, &raw);
+        // AIAS_AB_CLOSED_FORM=1 在正式 finalize 前先跑与 anime-specialist 产品
+        // 路径相同的闭式边界求解，用于评估该精修推广到其它模型是否有收益。
+        let mask = if std::env::var("AIAS_AB_CLOSED_FORM").as_deref() == Ok("1") {
+            refine_closed_form_boundary_alpha(&original, mask)
+        } else {
+            mask
+        };
         let result = finalize_cutout_image(&original, mask, true);
         let stem = input
             .file_stem()

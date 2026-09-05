@@ -321,7 +321,7 @@
                 <button class="group-toggle" type="button"><span>高分辨率细节补全（实验性）</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content hair-refiner-content">
                   <label class="toggle-label"><input id="anime-detail-recovery" type="checkbox"><span class="toggle-track"><span class="toggle-thumb"></span></span><span>尝试补回高分辨率边缘细节</span></label>
-                  <small class="settings-hint">仅适用于动漫专精（AnimeSeg），默认关闭。会对主体上半部进行两次局部推理；只有两次都明确识别为前景时才补回边缘。耗时增加，复杂背景线条仍可能被误判为发丝。</small>
+                  <small class="settings-hint">仅适用于动漫专精（AnimeSeg），默认关闭。会把主体按区域分成多组局部推理；只有两组裁切都明确识别为前景时才补回边缘。耗时相应增加，复杂背景线条仍可能被误判。</small>
                 </div>
               </section>
 

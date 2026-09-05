@@ -650,3 +650,49 @@ fn ab_context_recovery_and_color() {
     }
     release_birefnet_session("anime-specialist");
 }
+
+#[test]
+fn lower_bands_partition_the_subject_below_the_upper_span() {
+    // 单带：剩余 650px → 1 个带，inner 覆盖主体下段且 outer 包含 inner。
+    let (width, height) = (400u32, 1000u32);
+    let mut alpha = vec![0f32; (width * height) as usize];
+    for y in 0..1000usize {
+        for x in 0..400usize {
+            alpha[y * width as usize + x] = 1.0;
+        }
+    }
+    let bands = recovery_lower_bands(&alpha, width, height);
+    assert_eq!(bands.len(), 1);
+    let (inner, outer) = bands[0];
+    assert!(inner.1 <= 350 && inner.1 + inner.3 >= 1000);
+    assert!(roi_contains(outer, inner));
+
+    // 三带：剩余 5200px → 3 个 ≤2048px 的带，逐带衔接并覆盖到主体底部。
+    let (width, height) = (400u32, 8000u32);
+    let mut alpha = vec![0f32; (width * height) as usize];
+    for y in 0..8000usize {
+        for x in 0..400usize {
+            alpha[y * width as usize + x] = 1.0;
+        }
+    }
+    let bands = recovery_lower_bands(&alpha, width, height);
+    assert_eq!(bands.len(), 3);
+    let mut covered_top = 2800u32; // 0..8000 主体的 35% 线
+    for (inner, outer) in &bands {
+        assert!(inner.2 <= 2048 && inner.3 <= 2048);
+        assert!(roi_contains(*outer, *inner));
+        assert!(inner.1 <= covered_top);
+        covered_top = covered_top.max(inner.1 + inner.3);
+    }
+    assert!(covered_top >= 8000);
+
+    // 主体太矮：剩余不足 256px，不产生带。
+    let (width, height) = (400u32, 1000u32);
+    let mut alpha = vec![0f32; (width * height) as usize];
+    for y in 900..1000usize {
+        for x in 0..400usize {
+            alpha[y * width as usize + x] = 1.0;
+        }
+    }
+    assert!(recovery_lower_bands(&alpha, width, height).is_empty());
+}

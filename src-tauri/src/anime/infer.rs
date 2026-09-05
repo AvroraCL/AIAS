@@ -735,8 +735,10 @@ pub(crate) fn refine_vitmatte_boundary_rgba(
 
 /// Second-pass, high-resolution AnimeSeg recovery.  The first full-image
 /// result remains the semantic anchor; this pass may only add alpha within
-/// 96px of that result and only when two upper-subject crops agree strongly.
-/// It deliberately cannot claim to recover hair that neither crop sees.
+/// 96px of that result and only when two crops agree strongly. It cannot
+/// claim to recover hair that neither crop sees. The subject is covered by
+/// the verified upper-body pass plus lower bands that keep ~2x sampling
+/// density, so leg/skirt line-art missed by the global pass is eligible too.
 pub(crate) fn recover_anime_specialist_details_rgba(
     base: &Path,
     rgb: &RgbImage,
@@ -762,15 +764,19 @@ pub(crate) fn recover_anime_specialist_details_rgba(
     Ok(current)
 }
 
+const RECOVERY_AGREEMENT: f32 = 0.60;
+const RECOVERY_SEARCH_RADIUS: u8 = 96;
+const RECOVERY_INNER_CONTEXT: u32 = 55;
+const RECOVERY_OUTER_CONTEXT: u32 = 75;
+const RECOVERY_BAND_HEIGHT: u32 = 2048;
+const RECOVERY_BAND_OUTER_CAP: u32 = 2560;
+const RECOVERY_MAX_BANDS: usize = 3;
+
 pub(crate) fn recover_anime_specialist_detail_alpha(
     base: &Path,
     rgb: &RgbImage,
     base_alpha: &[f32],
 ) -> Result<(Vec<f32>, Vec<bool>), String> {
-    const AGREEMENT_THRESHOLD: f32 = 0.60;
-    const SEARCH_RADIUS: u8 = 96;
-    const INNER_CONTEXT: u32 = 55;
-    const OUTER_CONTEXT: u32 = 75;
     let (width, height) = rgb.dimensions();
     if base_alpha.len() != (width as usize).saturating_mul(height as usize) {
         return Err("高分辨率细节补全：基础 alpha 长度无效".into());
@@ -778,44 +784,185 @@ pub(crate) fn recover_anime_specialist_detail_alpha(
     if width.max(height) < 1600 {
         return Ok((base_alpha.to_vec(), vec![false; base_alpha.len()]));
     }
-    let inner = recovery_upper_roi(base_alpha, width, height, INNER_CONTEXT);
-    let outer = recovery_upper_roi(base_alpha, width, height, OUTER_CONTEXT);
+    let distance = distance_to_foreground(
+        base_alpha,
+        width,
+        height,
+        RECOVERY_SEARCH_RADIUS.saturating_add(1),
+    );
+    let mut recovered = base_alpha.to_vec();
+    let mut changed = vec![false; base_alpha.len()];
+
+    // 上半部：已验证路径，行为保持不变。
+    let inner = recovery_upper_roi(base_alpha, width, height, RECOVERY_INNER_CONTEXT);
+    let outer = recovery_upper_roi(base_alpha, width, height, RECOVERY_OUTER_CONTEXT);
     if !roi_contains(outer, inner) {
         return Err("高分辨率细节补全：局部上下文范围无效".into());
     }
+    apply_recovery_band(
+        base,
+        rgb,
+        inner,
+        outer,
+        base_alpha,
+        &distance,
+        &mut recovered,
+        &mut changed,
+    )?;
+
+    // 下半部：同门控纵向分带补齐。GT 上 56% 的漏检位于上半部窗口之外，
+    // 带内保持约 2 倍于整图推理的采样密度；多带可能重叠，取 max 只补不擦。
+    for (inner, outer) in recovery_lower_bands(base_alpha, width, height) {
+        if !roi_contains(outer, inner) {
+            continue;
+        }
+        apply_recovery_band(
+            base,
+            rgb,
+            inner,
+            outer,
+            base_alpha,
+            &distance,
+            &mut recovered,
+            &mut changed,
+        )?;
+    }
+    Ok((recovered, changed))
+}
+
+/// Runs the two-scale agreement crops for one ROI pair and folds the gated
+/// add-only result into `recovered`. Shared by the upper pass and lower bands
+/// so both keep identical thresholds and weighting.
+fn apply_recovery_band(
+    base: &Path,
+    rgb: &RgbImage,
+    inner: (u32, u32, u32, u32),
+    outer: (u32, u32, u32, u32),
+    base_alpha: &[f32],
+    distance: &[u8],
+    recovered: &mut [f32],
+    changed: &mut [bool],
+) -> Result<(), String> {
+    let width = rgb.width();
     let inner_rgb = image::imageops::crop_imm(rgb, inner.0, inner.1, inner.2, inner.3).to_image();
     let inner_alpha = run_birefnet(base, "anime-specialist", false, &inner_rgb)?;
     let outer_rgb = image::imageops::crop_imm(rgb, outer.0, outer.1, outer.2, outer.3).to_image();
     let outer_alpha = run_birefnet(base, "anime-specialist", false, &outer_rgb)?;
-    let distance =
-        distance_to_foreground(base_alpha, width, height, SEARCH_RADIUS.saturating_add(1));
-    let mut recovered = base_alpha.to_vec();
-    let mut changed = vec![false; base_alpha.len()];
     for y in inner.1..inner.1 + inner.3 {
         for x in inner.0..inner.0 + inner.2 {
             let index = (y * width + x) as usize;
             let distance = distance[index];
-            if distance >= SEARCH_RADIUS || base_alpha[index] >= 0.98 {
+            if distance >= RECOVERY_SEARCH_RADIUS || base_alpha[index] >= 0.98 {
                 continue;
             }
             let inner_value = inner_alpha[((y - inner.1) * inner.2 + x - inner.0) as usize];
             let outer_value = outer_alpha[((y - outer.1) * outer.2 + x - outer.0) as usize];
-            if inner_value.min(outer_value) < AGREEMENT_THRESHOLD {
+            if inner_value.min(outer_value) < RECOVERY_AGREEMENT {
                 continue;
             }
             let edge_distance = (x - inner.0)
                 .min(inner.0 + inner.2 - 1 - x)
                 .min(y - inner.1)
                 .min(inner.1 + inner.3 - 1 - y);
-            let weight = ((SEARCH_RADIUS as f32 - distance as f32) / 32.0).clamp(0.0, 1.0)
+            let weight = ((RECOVERY_SEARCH_RADIUS as f32 - distance as f32) / 32.0).clamp(0.0, 1.0)
                 * (edge_distance as f32 / 64.0).clamp(0.0, 1.0);
             let value = recovery_alpha(base_alpha[index], inner_value, outer_value, weight);
-            changed[index] =
-                (value * 255.0).round() as u8 != (base_alpha[index] * 255.0).round() as u8;
-            recovered[index] = value;
+            // 带间可能重叠：取 max 保证不擦除任何一轮已补回的 alpha。
+            let updated = recovered[index].max(value);
+            changed[index] |=
+                (updated * 255.0).round() as u8 != (base_alpha[index] * 255.0).round() as u8;
+            recovered[index] = updated;
         }
     }
-    Ok((recovered, changed))
+    Ok(())
+}
+
+/// Splits the subject below the top-35% span into vertical bands of at most
+/// [`RECOVERY_BAND_HEIGHT`] pixels so every band keeps ~2x the sampling
+/// density of the full-image pass. Each band yields an (inner, outer) ROI
+/// pair with the same two-scale relationship as the upper pass: the outer
+/// crop widens the band by about 3/8 of its height on every side.
+pub(crate) fn recovery_lower_bands(
+    alpha: &[f32],
+    width: u32,
+    height: u32,
+) -> Vec<((u32, u32, u32, u32), (u32, u32, u32, u32))> {
+    let mut bounds = (width, height, 0u32, 0u32);
+    for y in 0..height {
+        for x in 0..width {
+            if alpha[(y * width + x) as usize] >= 0.5 {
+                bounds.0 = bounds.0.min(x);
+                bounds.1 = bounds.1.min(y);
+                bounds.2 = bounds.2.max(x + 1);
+                bounds.3 = bounds.3.max(y + 1);
+            }
+        }
+    }
+    if bounds.0 >= bounds.2 {
+        return Vec::new();
+    }
+    let subject_height = bounds.3 - bounds.1;
+    let top_end = bounds.1 + subject_height * 35 / 100;
+    let remaining = bounds.3.saturating_sub(top_end);
+    if remaining < 256 {
+        return Vec::new();
+    }
+    let band_count = (((remaining + RECOVERY_BAND_HEIGHT - 1) / RECOVERY_BAND_HEIGHT) as usize)
+        .min(RECOVERY_MAX_BANDS)
+        .max(1);
+    let band_height = (remaining + band_count as u32 - 1) / band_count as u32;
+    let mut bands = Vec::with_capacity(band_count);
+    for index in 0..band_count {
+        let top = top_end + index as u32 * band_height;
+        let bottom = (top + band_height).min(bounds.3);
+        let actual_height = bottom - top;
+        let margin = (((bounds.2 - bounds.0).max(actual_height)) / 12).max(16);
+        let inner = center_cap_roi(
+            bounds.0.saturating_sub(margin),
+            top.saturating_sub(margin),
+            (bounds.2 + margin).min(width),
+            (bottom + margin).min(height),
+            width,
+            height,
+            RECOVERY_BAND_HEIGHT,
+        );
+        let expand = actual_height * 3 / 8;
+        let outer = center_cap_roi(
+            inner.0.saturating_sub(expand),
+            inner.1.saturating_sub(expand),
+            (inner.0 + inner.2 + expand).min(width),
+            (inner.1 + inner.3 + expand).min(height),
+            width,
+            height,
+            RECOVERY_BAND_OUTER_CAP,
+        );
+        bands.push((inner, outer));
+    }
+    bands
+}
+
+/// Clamps a ROI to the image and center-truncates it so neither side
+/// exceeds `cap`, mirroring the crop capping used by the upper pass.
+fn center_cap_roi(
+    left: u32,
+    top: u32,
+    right: u32,
+    bottom: u32,
+    width: u32,
+    height: u32,
+    cap: u32,
+) -> (u32, u32, u32, u32) {
+    let crop_width = (right - left).min(cap).min(width);
+    let crop_height = (bottom - top).min(cap).min(height);
+    let center_x = (left + right) / 2;
+    let center_y = (top + bottom) / 2;
+    let crop_left = center_x
+        .saturating_sub(crop_width / 2)
+        .min(width - crop_width);
+    let crop_top = center_y
+        .saturating_sub(crop_height / 2)
+        .min(height - crop_height);
+    (crop_left, crop_top, crop_width, crop_height)
 }
 
 /// Uses only the existing foreground's top 35% to locate a head/upper-body
@@ -875,7 +1022,7 @@ pub(crate) fn recovery_upper_roi(
     )
 }
 
-fn roi_contains(outer: (u32, u32, u32, u32), inner: (u32, u32, u32, u32)) -> bool {
+pub(crate) fn roi_contains(outer: (u32, u32, u32, u32), inner: (u32, u32, u32, u32)) -> bool {
     outer.0 <= inner.0
         && outer.1 <= inner.1
         && outer.0 + outer.2 >= inner.0 + inner.2
