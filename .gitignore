@@ -62,5 +62,7 @@ id_rsa*
 ab/
 tmp/
 
-# Local documents and research materials (kept outside GitHub)
-docs/
+# Local documents and research materials (kept outside GitHub);
+# the banner png is whitelisted because README.md embeds it.
+docs/*
+!docs/AIAS-ico.png
