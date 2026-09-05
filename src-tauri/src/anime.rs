@@ -291,6 +291,27 @@ pub fn cutout(base: &Path, model_id: &str, input: &Path, output: &Path) -> Resul
 /// 与 `cutout` 相同的流程，但 ToonOut 在复杂背景上「整图判前景」时会
 /// 优先由 AnimeSeg 专精模型复核，再由 BiRefNet 通用模型兜底；只有复核结果
 /// 确实更干净时才切换输出。
+/// 开发期分段计时：仅在测试构建（`cargo test`，含 `--release`）中打印耗时，
+/// 正式二进制直接透传闭包，零开销。
+#[cfg(test)]
+pub(crate) fn timed<F, R>(label: &str, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let started = std::time::Instant::now();
+    let result = f();
+    println!("[timing] {label}: {:?}", started.elapsed());
+    result
+}
+
+#[cfg(not(test))]
+pub(crate) fn timed<F, R>(_: &str, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    f()
+}
+
 pub fn cutout_with_fallback(
     base: &Path,
     model_id: &str,
@@ -320,14 +341,17 @@ pub fn cutout_with_options(
     if recover_details && model_id != "anime-specialist" {
         return Err("高分辨率细节补全目前仅支持动漫专精（AnimeSeg）。".into());
     }
-    let mut image = image::open(input).map_err(to_string_error)?;
-    if let Some(orientation) = exif_orientation(input)? {
-        image.apply_orientation(orientation);
-    }
-    let rgb = image.to_rgb8();
+    let rgb = timed("1 decode+exif", || {
+        let mut image = image::open(input).map_err(to_string_error)?;
+        if let Some(orientation) = exif_orientation(input)? {
+            image.apply_orientation(orientation);
+        }
+        Ok::<_, String>(image.to_rgb8())
+    })?;
     let (w, h) = rgb.dimensions();
 
-    let (mask, fallback_model) = match model_spec(model_id)?.kind {
+    let (mask, fallback_model) = timed("2 inference+fallback", || {
+        Ok::<_, String>(match model_spec(model_id)?.kind {
         ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
         ModelKind::Advanced => (run_advanced(base, &rgb)?, model_id),
         ModelKind::BiRefNet { matting } => (run_birefnet(base, model_id, matting, &rgb)?, model_id),
@@ -394,7 +418,8 @@ pub fn cutout_with_options(
                 (mask, "toonout")
             }
         }
-    };
+        })
+    })?;
 
     let fallback = model_id == "toonout" && fallback_model != "toonout";
 
@@ -416,30 +441,38 @@ pub fn cutout_with_options(
     // 原图，再只在其自动 4px 边界带上使用原始 RGB 求解 alpha，恢复高分辨率
     // 轮廓；其它模型和较小图片保留既有输出，避免改变已验证的行为。
     let mask = if fallback_model == "anime-specialist" {
-        refine_closed_form_boundary_alpha(&rgb, mask)
+        timed("3 closed-form", || refine_closed_form_boundary_alpha(&rgb, mask))
     } else {
         mask
     };
-    let result = finalize_cutout_image(&rgb, mask, model_uses_native_edge_alpha(fallback_model));
-    let result = if recover_details
-        && model_id == "anime-specialist"
-        && fallback_model == "anime-specialist"
-    {
-        recover_anime_specialist_details_rgba(base, &rgb, result)?
-    } else {
+    let result = timed("4 finalize", || {
+        finalize_cutout_image(&rgb, mask, model_uses_native_edge_alpha(fallback_model))
+    });
+    let result = timed("5 detail-recovery", || {
+        if recover_details
+            && model_id == "anime-specialist"
+            && fallback_model == "anime-specialist"
+        {
+            recover_anime_specialist_details_rgba(base, &rgb, result)
+        } else {
+            Ok(result)
+        }
+    })?;
+    let result = timed("6 vitmatte-refine", || {
+        if refine_hair_edges
+            && model_id == "anime-specialist"
+            && fallback_model == "anime-specialist"
+        {
+            refine_vitmatte_boundary_rgba(base, &rgb, result)
+        } else {
+            Ok(result)
+        }
+    })?;
+    timed("7 save-png", || {
         result
-    };
-    let result = if refine_hair_edges
-        && model_id == "anime-specialist"
-        && fallback_model == "anime-specialist"
-    {
-        refine_vitmatte_boundary_rgba(base, &rgb, result)?
-    } else {
-        result
-    };
-    result
-        .save_with_format(output, image::ImageFormat::Png)
-        .map_err(to_string_error)?;
+            .save_with_format(output, image::ImageFormat::Png)
+            .map_err(to_string_error)
+    })?;
 
     // AB 回归可视化：设 AIAS_AB_DEBUG=1 时对单张图导出 matte 灰度图。
     if std::env::var_os("AIAS_AB_DEBUG").is_some() {

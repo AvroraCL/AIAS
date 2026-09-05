@@ -25,6 +25,7 @@ dependencies = [
  "image",
  "image_dds",
  "ort",
+ "rayon",
  "serde",
  "serde_json",
  "sysinfo",

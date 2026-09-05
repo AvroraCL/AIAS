@@ -25,6 +25,9 @@ tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 sysinfo = "0.33"
 texpresso = "2.0.2"
+# 后处理逐像素阶段（box_mean/solidify/去污染/闭式分块）的 CPU 并行；
+# 各实现保证逐元素结果与串行一致。
+rayon = "1"
 
 [profile.release]
 panic = "abort"

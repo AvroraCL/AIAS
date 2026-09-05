@@ -1,7 +1,8 @@
 //! `anime::postprocess` — 拆分自 anime.rs，职责见模块内条目注释。
 
 use super::*;
-use image::{RgbImage, Rgba, RgbaImage};
+use image::{RgbImage, RgbaImage};
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 // P5 GT 诊断开关：只在测试构建中允许逐项绕过后处理，用于确定性 A/B；
@@ -407,7 +408,7 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
     let (w, h) = rgb.dimensions();
     let (w, h) = (w as usize, h as usize);
     let total = w * h;
-    let mut out = Vec::with_capacity(total);
+    let mut out: Vec<[u8; 3]> = Vec::new();
     if total == 0 || matte.len() != total {
         for pixel in rgb.pixels() {
             out.push([pixel[0], pixel[1], pixel[2]]);
@@ -415,29 +416,33 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
         return out;
     }
     let weight: Vec<f64> = matte.iter().map(|a| (1.0 - *a) as f64).collect();
-    let mut weighted = [
-        Vec::with_capacity(total),
-        Vec::with_capacity(total),
-        Vec::with_capacity(total),
-    ];
-    for (index, pixel) in rgb.pixels().enumerate() {
-        let wgt = weight[index];
-        for ch in 0..3 {
-            weighted[ch].push(pixel[ch] as f64 * wgt);
-        }
+    let rgb_raw = rgb.as_raw();
+    let build_weighted = |ch: usize| -> Vec<f64> {
+        weight
+            .par_iter()
+            .enumerate()
+            .map(|(index, wgt)| rgb_raw[index * 3 + ch] as f64 * wgt)
+            .collect()
+    };
+    let weighted = [build_weighted(0), build_weighted(1), build_weighted(2)];
+    // 4 路均值共用同一积分图缓冲，省去重复的数百 MB 分配与清零。
+    let mut sat = Vec::new();
+    let mut buf: Vec<f64> = Vec::new();
+    box_mean_f64_into(&weight, w, h, RADIUS, &mut sat, &mut buf);
+    let mean_w = std::mem::take(&mut buf);
+    let mut mean_c: [Vec<f64>; 3] = Default::default();
+    for ch in 0..3 {
+        box_mean_f64_into(&weighted[ch], w, h, RADIUS, &mut sat, &mut buf);
+        mean_c[ch] = std::mem::take(&mut buf);
     }
-    let mean_w = box_mean_f64(&weight, w, h, RADIUS);
-    let mean_c = [
-        box_mean_f64(&weighted[0], w, h, RADIUS),
-        box_mean_f64(&weighted[1], w, h, RADIUS),
-        box_mean_f64(&weighted[2], w, h, RADIUS),
-    ];
-    for (index, pixel) in rgb.pixels().enumerate() {
+    out.resize(total, [0u8; 3]);
+    out.par_iter_mut().enumerate().for_each(|(index, slot)| {
+        let pixel = rgb.get_pixel((index % w) as u32, (index / w) as u32);
         let a = matte[index];
         let wsum = mean_w[index];
         if a >= CEIL || wsum < BG_PRESENCE_MIN {
-            out.push([pixel[0], pixel[1], pixel[2]]);
-            continue;
+            *slot = [pixel[0], pixel[1], pixel[2]];
+            return;
         }
         let aa = (a as f64).max(FLOOR_A as f64);
         let mut color = [0u8; 3];
@@ -446,15 +451,26 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
             let foreground = (pixel[ch] as f64 - (1.0 - a) as f64 * bg) / aa;
             color[ch] = foreground.round().clamp(0.0, 255.0) as u8;
         }
-        out.push(color);
-    }
+        *slot = color;
+    });
     out
 }
 
 /// O(n) 积分图盒均值。
-pub(crate) fn box_mean_f64(values: &[f64], w: usize, h: usize, radius: usize) -> Vec<f64> {
+/// O(n) 积分图盒均值。`sat`/`out` 由调用方提供以便同一调用点连续求多路均值
+/// （去污染为 4 路）时复用缓冲，省去每次数百 MB 的临时分配与清零；
+/// 逐元素结果与独立分配调用完全一致。
+pub(crate) fn box_mean_f64_into(
+    values: &[f64],
+    w: usize,
+    h: usize,
+    radius: usize,
+    sat: &mut Vec<f64>,
+    out: &mut Vec<f64>,
+) {
     let stride = w + 1;
-    let mut sat = vec![0f64; stride * (h + 1)];
+    sat.clear();
+    sat.resize(stride * (h + 1), 0.0);
     for y in 0..h {
         let mut row_sum = 0f64;
         for x in 0..w {
@@ -462,8 +478,9 @@ pub(crate) fn box_mean_f64(values: &[f64], w: usize, h: usize, radius: usize) ->
             sat[(y + 1) * stride + (x + 1)] = sat[y * stride + (x + 1)] + row_sum;
         }
     }
-    let mut out = vec![0f64; w * h];
-    for y in 0..h {
+    out.clear();
+    out.resize(w * h, 0.0);
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let y0 = y.saturating_sub(radius);
         let y1 = (y + radius + 1).min(h);
         for x in 0..w {
@@ -472,10 +489,9 @@ pub(crate) fn box_mean_f64(values: &[f64], w: usize, h: usize, radius: usize) ->
             let area = ((y1 - y0) * (x1 - x0)) as f64;
             let sum = sat[y1 * stride + x1] - sat[y0 * stride + x1] - sat[y1 * stride + x0]
                 + sat[y0 * stride + x0];
-            out[y * w + x] = sum / area;
+            row[x] = sum / area;
         }
-    }
-    out
+    });
 }
 
 /// O(n) 积分图盒均值（f32 版）：引导滤波要用约 17 路均值，f64 版会带来
@@ -491,7 +507,7 @@ pub(crate) fn box_mean_f32(values: &[f32], w: usize, h: usize, radius: usize) ->
         }
     }
     let mut out = vec![0f32; w * h];
-    for y in 0..h {
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let y0 = y.saturating_sub(radius);
         let y1 = (y + radius + 1).min(h);
         for x in 0..w {
@@ -500,9 +516,9 @@ pub(crate) fn box_mean_f32(values: &[f32], w: usize, h: usize, radius: usize) ->
             let area = ((y1 - y0) * (x1 - x0)) as f64;
             let sum = sat[y1 * stride + x1] - sat[y0 * stride + x1] - sat[y1 * stride + x0]
                 + sat[y0 * stride + x0];
-            out[y * w + x] = (sum / area) as f32;
+            row[x] = (sum / area) as f32;
         }
-    }
+    });
     out
 }
 
@@ -649,30 +665,44 @@ pub(crate) fn solidify_subject(rgb: &RgbImage, mask: &mut [f32], w: u32, h: u32)
         bg[ch] = weighted_mean(&weight_bg, &channels[ch]);
     }
 
-    for i in 0..n {
-        let a = mask[i];
-        if a <= MIN_KEEP || a >= MAX_KEEP {
-            continue;
-        }
-        let (sf, sb) = (wsum_fg[i], wsum_bg[i]);
-        if sf < 1e-4 || sb < 1e-4 {
-            continue;
-        }
-        let mut df = 0.0f32;
-        let mut db = 0.0f32;
-        for ch in 0..3 {
-            let c = channels[ch][i];
-            let f = fg[ch][i] / sf;
-            let b = bg[ch][i] / sb;
-            df += (c - f) * (c - f);
-            db += (c - b) * (c - b);
-        }
-        if a > MIN_A && df * 1.1 < db {
-            // 颜色站在前景一边：细结构推到实心，换底后不再透底。
-            mask[i] = 1.0;
-        } else if a < 0.85 && db * 0.8 < df {
-            // 颜色站在背景一边：中间置信度的背景残迹归零。
-            mask[i] = 0.0;
+    // 判定逐像素独立，可并行；写回按索引顺序串行执行，保证与旧串行实现
+    // 逐字节一致。
+    let verdicts: Vec<u8> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let a = mask[i];
+            if a <= MIN_KEEP || a >= MAX_KEEP {
+                return 0u8;
+            }
+            let (sf, sb) = (wsum_fg[i], wsum_bg[i]);
+            if sf < 1e-4 || sb < 1e-4 {
+                return 0u8;
+            }
+            let mut df = 0.0f32;
+            let mut db = 0.0f32;
+            for ch in 0..3 {
+                let c = channels[ch][i];
+                let f = fg[ch][i] / sf;
+                let b = bg[ch][i] / sb;
+                df += (c - f) * (c - f);
+                db += (c - b) * (c - b);
+            }
+            if a > MIN_A && df * 1.1 < db {
+                // 颜色站在前景一边：细结构推到实心，换底后不再透底。
+                1
+            } else if a < 0.85 && db * 0.8 < df {
+                // 颜色站在背景一边：中间置信度的背景残迹归零。
+                2
+            } else {
+                0
+            }
+        })
+        .collect();
+    for (i, verdict) in verdicts.iter().enumerate() {
+        match verdict {
+            1 => mask[i] = 1.0,
+            2 => mask[i] = 0.0,
+            _ => {}
         }
     }
 }
@@ -764,6 +794,11 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
 
     let mut refined = mask;
     let mut diagnostics = ClosedFormRefineDiagnostics::default();
+    // 各块的迭代初值与锚点统一读自求解前的快照：块核心区互不相交，写回
+    // 结果与调度顺序无关，多线程与单线程产物逐字节一致；同时避免并行时
+    // 对共享掩码的读写竞争。
+    let snapshot = refined.clone();
+    let mut jobs = Vec::new();
     for top in (0..h).step_by(TILE_CORE) {
         let bottom = (top + TILE_CORE).min(h);
         for left in (0..w).step_by(TILE_CORE) {
@@ -775,17 +810,22 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
             }) {
                 continue;
             }
+            jobs.push((left, top, right, bottom));
+        }
+    }
+    let solutions: Vec<((usize, usize, usize, usize), CfTileOutcome, Vec<(usize, f32)>)> = jobs
+        .par_iter()
+        .map(|&(left, top, right, bottom)| {
             let padded_top = top.saturating_sub(TILE_PAD);
             let padded_bottom = (bottom + TILE_PAD).min(h);
             let padded_left = left.saturating_sub(TILE_PAD);
             let padded_right = (right + TILE_PAD).min(w);
-            diagnostics.candidate_tiles += 1;
-            match cf_refine_tile(
+            let (outcome, patch) = cf_solve_tile(
                 rgb,
                 &foreground_known,
                 &background_known,
                 &unknown,
-                &mut refined,
+                &snapshot,
                 w,
                 h,
                 left,
@@ -796,15 +836,23 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
                 padded_top,
                 padded_right,
                 padded_bottom,
-            ) {
-                CfTileOutcome::Solved { anchored_rows } => {
-                    diagnostics.solved_tiles += 1;
-                    diagnostics.anchored_unknown_rows += anchored_rows;
-                }
-                CfTileOutcome::OneSidedTrimap => diagnostics.skipped_one_sided_tiles += 1,
-                CfTileOutcome::InvalidMatrix => diagnostics.invalid_matrix_tiles += 1,
-                CfTileOutcome::UnstableSolver => diagnostics.unstable_solver_tiles += 1,
+            );
+            ((left, top, right, bottom), outcome, patch)
+        })
+        .collect();
+    for (_, outcome, patch) in solutions {
+        diagnostics.candidate_tiles += 1;
+        for (index, value) in patch {
+            refined[index] = value;
+        }
+        match outcome {
+            CfTileOutcome::Solved { anchored_rows } => {
+                diagnostics.solved_tiles += 1;
+                diagnostics.anchored_unknown_rows += anchored_rows;
             }
+            CfTileOutcome::OneSidedTrimap => diagnostics.skipped_one_sided_tiles += 1,
+            CfTileOutcome::InvalidMatrix => diagnostics.invalid_matrix_tiles += 1,
+            CfTileOutcome::UnstableSolver => diagnostics.unstable_solver_tiles += 1,
         }
     }
     (refined, diagnostics)
@@ -908,12 +956,14 @@ fn cf_erode(input: &[bool], w: usize, h: usize, iterations: usize) -> Vec<bool> 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cf_refine_tile(
+/// 纯求解：初值/锚点读自 `snapshot`（求解前的掩码），不读也不写共享的
+/// 输出缓冲；解出的未知像素以 (全局索引, alpha) 补丁返回，由调用方写回。
+fn cf_solve_tile(
     rgb: &RgbImage,
     foreground_known: &[bool],
     background_known: &[bool],
     unknown: &[bool],
-    result: &mut [f32],
+    snapshot: &[f32],
     image_w: usize,
     image_h: usize,
     core_left: usize,
@@ -924,7 +974,7 @@ fn cf_refine_tile(
     top: usize,
     right: usize,
     bottom: usize,
-) -> CfTileOutcome {
+) -> (CfTileOutcome, Vec<(usize, f32)>) {
     const UNMAPPED: usize = usize::MAX;
     const EPSILON: f64 = 1e-7;
     const MAX_ITERATIONS: usize = 3_000;
@@ -933,7 +983,7 @@ fn cf_refine_tile(
     let tile_w = right - left;
     let tile_h = bottom - top;
     if tile_w < 3 || tile_h < 3 || right > image_w || bottom > image_h {
-        return CfTileOutcome::InvalidMatrix;
+        return (CfTileOutcome::InvalidMatrix, Vec::new());
     }
     let tile_len = tile_w * tile_h;
     let mut ids = vec![UNMAPPED; tile_len];
@@ -956,7 +1006,7 @@ fn cf_refine_tile(
         }
     }
     if unknown_count == 0 || !has_foreground || !has_background {
-        return CfTileOutcome::OneSidedTrimap;
+        return (CfTileOutcome::OneSidedTrimap, Vec::new());
     }
     let mut colors = vec![[0.0f64; 3]; tile_len];
     for y in 0..tile_h {
@@ -1092,7 +1142,7 @@ fn cf_refine_tile(
             let local_x = local % tile_w;
             let local_y = local / tile_w;
             let original_alpha =
-                result[(top + local_y) * image_w + left + local_x].clamp(0.0, 1.0) as f64;
+                snapshot[(top + local_y) * image_w + left + local_x].clamp(0.0, 1.0) as f64;
             row.clear();
             row.push((row_id, 1.0));
             diagonal[row_id] = 1.0;
@@ -1105,7 +1155,7 @@ fn cf_refine_tile(
         for x_local in 0..tile_w {
             let id = ids[y * tile_w + x_local];
             if id != UNMAPPED {
-                x[id] = result[(top + y) * image_w + left + x_local].clamp(0.0, 1.0) as f64;
+                x[id] = snapshot[(top + y) * image_w + left + x_local].clamp(0.0, 1.0) as f64;
             }
         }
     }
@@ -1142,7 +1192,7 @@ fn cf_refine_tile(
         .map(|(a, b)| a * b)
         .sum::<f64>();
     if !rz.is_finite() {
-        return CfTileOutcome::UnstableSolver;
+        return (CfTileOutcome::UnstableSolver, Vec::new());
     }
     for _ in 0..MAX_ITERATIONS {
         let applied = multiply(&direction);
@@ -1152,11 +1202,11 @@ fn cf_refine_tile(
             .map(|(a, b)| a * b)
             .sum::<f64>();
         if !denominator.is_finite() || denominator.abs() < 1e-18 {
-            return CfTileOutcome::UnstableSolver;
+            return (CfTileOutcome::UnstableSolver, Vec::new());
         }
         let step = rz / denominator;
         if !step.is_finite() {
-            return CfTileOutcome::UnstableSolver;
+            return (CfTileOutcome::UnstableSolver, Vec::new());
         }
         for index in 0..unknown_count {
             x[index] += step * direction[index];
@@ -1179,7 +1229,7 @@ fn cf_refine_tile(
             .map(|(a, b)| a * b)
             .sum::<f64>();
         if !next_rz.is_finite() || rz.abs() < 1e-18 {
-            return CfTileOutcome::UnstableSolver;
+            return (CfTileOutcome::UnstableSolver, Vec::new());
         }
         let beta = next_rz / rz;
         for index in 0..unknown_count {
@@ -1187,16 +1237,17 @@ fn cf_refine_tile(
         }
         rz = next_rz;
     }
+    let mut patch = Vec::new();
     for y in core_top..core_bottom {
         for x_local in core_left..core_right {
             let local = (y - top) * tile_w + x_local - left;
             let id = ids[local];
             if id != UNMAPPED && x[id].is_finite() {
-                result[y * image_w + x_local] = x[id].clamp(0.0, 1.0) as f32;
+                patch.push((y * image_w + x_local, x[id].clamp(0.0, 1.0) as f32));
             }
         }
     }
-    CfTileOutcome::Solved { anchored_rows }
+    (CfTileOutcome::Solved { anchored_rows }, patch)
 }
 
 fn cf_inverse_3x3(matrix: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
@@ -1256,36 +1307,40 @@ pub(crate) fn finalize_cutout_image_with_alpha_gamma(
     // 引导滤波：低分辨率推理的软边掩码贴回原图结构，过渡带收窄、糊住的
     // 发丝尖端分开；先于残留清理执行，滤波沿背景线条的微溢出由后续清理兜底。
     let mut mask = if !preserve_native_edges && ab_postprocess_stage_enabled("guided") {
-        guided_filter_matte(rgb, &mask, 8, 5e-4)
+        timed("f1 guided", || guided_filter_matte(rgb, &mask, 8, 5e-4))
     } else {
         mask
     };
     // 颜色证据整定：把模型低置信度的细结构按全分辨率颜色归类到实心/透明。
     if ab_postprocess_stage_enabled("solidify") {
-        solidify_subject(rgb, &mut mask, w, h);
+        timed("f2 solidify", || solidify_subject(rgb, &mut mask, w, h));
     }
 
     // 幽灵残留抑制先于去污染：碎屑清除后，过渡带背景色估计更准。
     if ab_postprocess_stage_enabled("ghost") {
-        suppress_background_ghosts(&mut mask, w, h);
+        timed("f3 ghost", || suppress_background_ghosts(&mut mask, w, h));
     }
     // 极淡残雾归零：上采样振铃和滤波残余的极低 alpha 在换底上呈灰雾。
     if ab_postprocess_stage_enabled("threshold") {
-        let floor = low_alpha_floor();
-        for value in mask.iter_mut() {
-            if *value < floor {
-                *value = 0.0;
+        timed("f4 threshold", || {
+            let floor = low_alpha_floor();
+            for value in mask.iter_mut() {
+                if *value < floor {
+                    *value = 0.0;
+                }
             }
-        }
+        });
     }
     // 再清一轮孤岛：残留中与主体不连通的小碎块（线稿笔触、噪点）整块移除，
     // 与 advanced 管线共用同一面积尺度。
     if ab_postprocess_stage_enabled("components") {
-        remove_small_foreground_components(&mut mask, w, h, advanced_min_component_area(w, h));
+        timed("f5 components", || {
+            remove_small_foreground_components(&mut mask, w, h, advanced_min_component_area(w, h))
+        });
     }
     // 背景次级孤岛：面积小且远离主体的独立前景块（背景人物等）整块移除。
     if ab_postprocess_stage_enabled("islands") {
-        remove_background_islands(&mut mask, w, h);
+        timed("f6 islands", || remove_background_islands(&mut mask, w, h));
     }
 
     // 只压低半透明过渡带，完全不透明主体保持不变。gamma > 1 会收紧边缘，
@@ -1299,15 +1354,17 @@ pub(crate) fn finalize_cutout_image_with_alpha_gamma(
 
     // 边缘去污染：把过渡带颜色从「前景+背景混合」解混回纯前景色。
     // 实测对发丝、皮肤边缘的粉色/蓝色 fringe 有明显改善，且深/浅背景图都稳健。
-    let colors = decontaminate_colors(rgb, &mask);
-    let mut result = RgbaImage::new(w, h);
-    for y in 0..h {
-        for x in 0..w {
-            let index = (y * w + x) as usize;
+    let colors = timed("f7 decontaminate", || decontaminate_colors(rgb, &mask));
+    let mut raw = vec![0u8; (w as usize) * (h as usize) * 4];
+    timed("f8 composite", || {
+        raw.par_chunks_exact_mut(4).enumerate().for_each(|(index, pixel)| {
             let alpha = (mask[index] * 255.0).round().clamp(0.0, 255.0) as u8;
             let color = colors[index];
-            result.put_pixel(x, y, Rgba([color[0], color[1], color[2], alpha]));
-        }
-    }
-    result
+            pixel[0] = color[0];
+            pixel[1] = color[1];
+            pixel[2] = color[2];
+            pixel[3] = alpha;
+        });
+    });
+    RgbaImage::from_raw(w, h, raw).expect("composite buffer size matches")
 }
