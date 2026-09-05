@@ -1,15 +1,49 @@
 #[cfg(test)]
-mod toonout_tests {
+pub(super) mod toonout_tests {
+    use crate::anime::*;
     use image::imageops::FilterType;
     use image::{ImageBuffer, Luma, RgbImage, Rgba, RgbaImage};
-    use ort::session::{builder::GraphOptimizationLevel, Session};
-    use ort::value::{Tensor, ValueType};
+    use ort::value::Tensor;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
-    use std::time::Duration;
-    use tauri::{AppHandle, Emitter};
-    use crate::anime::*;
+
+    #[test]
+    fn vitmatte_gate_limits_changes_to_a_narrow_boundary() {
+        let alpha: Vec<f32> = (0..30).map(|x| if x < 15 { 0.0 } else { 1.0 }).collect();
+        let gate = vitmatte_boundary_gate(&alpha, 30, 1, 3);
+        for x in 0..30 {
+            assert_eq!(gate[x], (12..18).contains(&x));
+        }
+        assert!(!vitmatte_boundary_gate(&[0.0; 30], 30, 1, 8)
+            .iter()
+            .any(|v| *v));
+        assert!(!vitmatte_boundary_gate(&[1.0; 30], 30, 1, 8)
+            .iter()
+            .any(|v| *v));
+        assert!(!vitmatte_boundary_gate(&alpha, 30, 1, 0).iter().any(|v| *v));
+    }
+
+    #[test]
+    fn vitmatte_color_tiles_match_full_frame_and_preserve_outside_gate() {
+        let rgb = RgbImage::from_fn(1040, 40, |x, y| {
+            image::Rgb([(x % 256) as u8, (y * 6) as u8, 180])
+        });
+        let alpha: Vec<f32> = (0..40)
+            .flat_map(|_| (0..1040).map(|x| (x % 97) as f32 / 96.0))
+            .collect();
+        let mut current = RgbaImage::from_pixel(1040, 40, Rgba([7, 8, 9, 10]));
+        let gate: Vec<bool> = (0..alpha.len()).map(|i| i % 3 != 0).collect();
+        let colors = decontaminate_colors(&rgb, &alpha);
+        apply_refined_boundary(&rgb, &mut current, &alpha, &gate);
+        for (i, p) in current.pixels().enumerate() {
+            if gate[i] {
+                assert_eq!(&p.0[..3], &colors[i]);
+                assert_eq!(p[3], (alpha[i] * 255.0).round() as u8);
+            } else {
+                assert_eq!(*p, Rgba([7, 8, 9, 10]));
+            }
+        }
+    }
 
     #[test]
     fn probability_luma_applies_the_requested_confidence_threshold() {
@@ -44,9 +78,7 @@ mod toonout_tests {
                 matte[y * 44 + x] = 1.0;
             }
         };
-        let main: Vec<(usize, usize)> = (0..8)
-            .flat_map(|y| (0..8).map(move |x| (x, y)))
-            .collect();
+        let main: Vec<(usize, usize)> = (0..8).flat_map(|y| (0..8).map(move |x| (x, y))).collect();
         fill(&mut matte, &main);
         fill(&mut matte, &[(42, 7)]); // 间距 34 > 32 且面积达标 → 移除
         fill(&mut matte, &[(10, 4)]); // 间距 2，紧贴 → 保留
@@ -148,7 +180,9 @@ mod toonout_tests {
             }
         }
 
-        assert!(matte_is_substantially_cleaner(&general, &toonout, width, height));
+        assert!(matte_is_substantially_cleaner(
+            &general, &toonout, width, height
+        ));
     }
 
     #[test]
@@ -209,7 +243,10 @@ mod toonout_tests {
         assert_eq!(file.name, "birefnext-aniseg-int8-v0.1.onnx");
         assert_eq!(file.size, ANIME_SPECIALIST_SIZE);
         assert!(model_uses_native_edge_alpha(specialist.id));
-        assert!(matches!(specialist.kind, ModelKind::BiRefNet { matting: false }));
+        assert!(matches!(
+            specialist.kind,
+            ModelKind::BiRefNet { matting: false }
+        ));
     }
 
     #[test]
@@ -373,9 +410,7 @@ mod toonout_tests {
                 .unwrap_or_else(|error| panic!("无法读取人工抠图真值 {}：{error}", path.display()))
                 .to_rgba8()
         });
-        let mut report = String::from(
-            "AIAS alpha A/B report\n"
-        );
+        let mut report = String::from("AIAS alpha A/B report\n");
         report.push_str(&format!("tag={tag}\n"));
         if let Some(path) = &gt_path {
             report.push_str(&format!("ground_truth={}\n", path.display()));
@@ -413,9 +448,7 @@ mod toonout_tests {
                 let alignment = source_gt_alignment(source, gt);
                 let alignment_line = format!(
                     "{stem}\talignment\tsolid_pixels={}\trgb_mae={:.4}\trgb_changed_ratio={:.5}\n",
-                    alignment.solid_pixels,
-                    alignment.rgb_mae,
-                    alignment.rgb_changed_ratio,
+                    alignment.solid_pixels, alignment.rgb_mae, alignment.rgb_changed_ratio,
                 );
                 print!("{alignment_line}");
                 report.push_str(&alignment_line);
@@ -481,11 +514,10 @@ mod toonout_tests {
                         alpha_error_heatmap(source, gt, &result, &heatmap);
                     }
                     if std::env::var_os("AIAS_AB_DEBUG").is_some() {
-                        let raw_path = output.with_file_name(format!("{stem}_{model}_matte_raw.png"));
+                        let raw_path =
+                            output.with_file_name(format!("{stem}_{model}_matte_raw.png"));
                         if raw_path.is_file() {
-                            let raw = image::open(&raw_path)
-                                .expect("原始遮罩可读")
-                                .to_luma8();
+                            let raw = image::open(&raw_path).expect("原始遮罩可读").to_luma8();
                             let raw_metrics = alpha_metrics_luma(gt, &raw);
                             let raw_line = format!(
                                 "{stem}\t{model}\tstage=raw\tmae={:.5}\tbg_leak_mean={:.5}\tbg_leak_ratio={:.5}\tfg_miss_mean={:.5}\tfg_miss_ratio={:.5}\tedge_mae={:.5}\tiou={:.5}\tinterior_miss_mean={:.5}\tboundary_mae={:.5}\texterior_leak_mean={:.5}\n",
@@ -510,8 +542,7 @@ mod toonout_tests {
                 }
             }
         }
-        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
-            .expect("A/B 指标报告写出");
+        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report).expect("A/B 指标报告写出");
     }
 
     /// 开发期翻转增强对照：同一 General 1024 分别推理原图与水平翻转图，将后者
@@ -536,13 +567,23 @@ mod toonout_tests {
             .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\flip-tta"));
         let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "flip-tta".into());
         fs::create_dir_all(&out_dir).expect("创建翻转增强输出目录");
-        assert!(is_model_ready(&base, "birefnet-general"), "测试需要 General 1024 模型");
+        assert!(
+            is_model_ready(&base, "birefnet-general"),
+            "测试需要 General 1024 模型"
+        );
 
         let original = image::open(&input).expect("原图可读").to_rgb8();
         let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
-        assert_eq!(original.dimensions(), gt.dimensions(), "原图与 GT 尺寸必须一致");
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
         let (w, h) = original.dimensions();
-        let stem = input.file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
 
         let started = std::time::Instant::now();
         let direct_mask = run_birefnet_single_for_test(&base, "birefnet-general", false, &original)
@@ -561,7 +602,9 @@ mod toonout_tests {
             direct_mask
                 .iter()
                 .zip(restored_flipped_mask.iter())
-                .map(|(direct, mirrored)| direct * (1.0 - flipped_weight) + mirrored * flipped_weight)
+                .map(|(direct, mirrored)| {
+                    direct * (1.0 - flipped_weight) + mirrored * flipped_weight
+                })
                 .collect::<Vec<f32>>()
         };
         let tta_mask = mean_with_horizontal_flip(&direct_mask, &flipped_mask, w, h);
@@ -620,7 +663,12 @@ mod toonout_tests {
         append_instance_metrics(&mut report, flip_quarter_label, &gt, &flip_quarter);
         append_instance_metrics(&mut report, tta_label, &gt, &tta);
         append_instance_metrics(&mut report, flip_sixty_label, &gt, &flip_sixty);
-        append_instance_metrics(&mut report, flip_three_quarter_label, &gt, &flip_three_quarter);
+        append_instance_metrics(
+            &mut report,
+            flip_three_quarter_label,
+            &gt,
+            &flip_three_quarter,
+        );
         append_instance_metrics(&mut report, flip_ninety_label, &gt, &flip_ninety);
         append_instance_metrics(&mut report, flip_only_label, &gt, &flip_only);
         fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
@@ -649,13 +697,23 @@ mod toonout_tests {
             .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\orientation-tta"));
         let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "orientation-tta".into());
         fs::create_dir_all(&out_dir).expect("创建方向增强输出目录");
-        assert!(is_model_ready(&base, "birefnet-general"), "测试需要 General 1024 模型");
+        assert!(
+            is_model_ready(&base, "birefnet-general"),
+            "测试需要 General 1024 模型"
+        );
 
         let original = image::open(&input).expect("原图可读").to_rgb8();
         let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
-        assert_eq!(original.dimensions(), gt.dimensions(), "原图与 GT 尺寸必须一致");
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
         let (w, h) = original.dimensions();
-        let stem = input.file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
         let restore = |mask: &[f32], flip_x: bool, flip_y: bool| {
             let (width, height) = (w as usize, h as usize);
             assert_eq!(mask.len(), width * height, "翻转 alpha 尺寸无效");
@@ -721,7 +779,10 @@ mod toonout_tests {
             true,
             true,
         );
-        println!("{tag} orientation TTA inference elapsed {:?}", started.elapsed());
+        println!(
+            "{tag} orientation TTA inference elapsed {:?}",
+            started.elapsed()
+        );
 
         // 先完成所有融合，随后才把 direct_mask 移交给正式后处理。
         let horizontal_mean = average(&[&direct_mask, &horizontal_mask]);
@@ -786,13 +847,23 @@ mod toonout_tests {
             .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\edge-contract"));
         let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "edge-contract".into());
         fs::create_dir_all(&out_dir).expect("创建边缘收缩输出目录");
-        assert!(is_model_ready(&base, "birefnet-general"), "测试需要 General 1024 模型");
+        assert!(
+            is_model_ready(&base, "birefnet-general"),
+            "测试需要 General 1024 模型"
+        );
 
         let original = image::open(&input).expect("原图可读").to_rgb8();
         let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
-        assert_eq!(original.dimensions(), gt.dimensions(), "原图与 GT 尺寸必须一致");
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
         let (w, h) = original.dimensions();
-        let stem = input.file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
 
         let started = std::time::Instant::now();
         let direct_mask = run_birefnet_single_for_test(&base, "birefnet-general", false, &original)
@@ -805,7 +876,10 @@ mod toonout_tests {
         )
         .expect("翻转图 General 1024 推理");
         let tta_mask = mean_with_horizontal_flip(&direct_mask, &flipped_mask, w, h);
-        println!("{tag} edge-contract inference elapsed {:?}", started.elapsed());
+        println!(
+            "{tag} edge-contract inference elapsed {:?}",
+            started.elapsed()
+        );
 
         let (width, height) = (w as usize, h as usize);
         let mut min3_mask = vec![0.0; tta_mask.len()];
@@ -821,8 +895,10 @@ mod toonout_tests {
             }
         }
 
-        let baseline = finalize_cutout_image_with_alpha_gamma(&original, tta_mask.clone(), true, 1.0);
-        let gamma_110 = finalize_cutout_image_with_alpha_gamma(&original, tta_mask.clone(), true, 1.10);
+        let baseline =
+            finalize_cutout_image_with_alpha_gamma(&original, tta_mask.clone(), true, 1.0);
+        let gamma_110 =
+            finalize_cutout_image_with_alpha_gamma(&original, tta_mask.clone(), true, 1.10);
         let gamma_125 = finalize_cutout_image_with_alpha_gamma(&original, tta_mask, true, 1.25);
         let min3 = finalize_cutout_image_with_alpha_gamma(&original, min3_mask, true, 1.0);
         // `finalize_cutout_image` 的正式阈值发生在同一后处理阶段；这里在最终
@@ -907,14 +983,24 @@ mod toonout_tests {
 
         let original = image::open(&input).expect("原图可读").to_rgb8();
         let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
-        assert_eq!(original.dimensions(), gt.dimensions(), "原图与 GT 尺寸必须一致");
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
         let (w, h) = original.dimensions();
-        let stem = input.file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
 
         let started = std::time::Instant::now();
         let mask = run_birefnet(&base, "anime-specialist", false, &original)
             .expect("AnimeSeg 专精模型推理");
-        println!("{tag} edge-contract inference elapsed {:?}", started.elapsed());
+        println!(
+            "{tag} edge-contract inference elapsed {:?}",
+            started.elapsed()
+        );
 
         let (width, height) = (w as usize, h as usize);
         let mut min3_mask = vec![0.0; mask.len()];
@@ -1004,13 +1090,23 @@ mod toonout_tests {
             .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\tiled-refine"));
         let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "tiled-refine".into());
         fs::create_dir_all(&out_dir).expect("创建分块复核输出目录");
-        assert!(is_model_ready(&base, "birefnet-general"), "测试需要 General 1024 模型");
+        assert!(
+            is_model_ready(&base, "birefnet-general"),
+            "测试需要 General 1024 模型"
+        );
 
         let original = image::open(&input).expect("原图可读").to_rgb8();
         let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
-        assert_eq!(original.dimensions(), gt.dimensions(), "原图与 GT 尺寸必须一致");
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
         let (w, h) = original.dimensions();
-        let stem = input.file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
         let starts = |length: u32, side: u32, stride: u32| {
             if length <= side {
                 return vec![0];
@@ -1051,9 +1147,11 @@ mod toonout_tests {
             for &left in &xs {
                 let tile_w = TILE.min(w - left);
                 let tile_h = TILE.min(h - top);
-                let tile = image::imageops::crop_imm(&original, left, top, tile_w, tile_h).to_image();
-                let tile_mask = run_birefnet_single_for_test(&base, "birefnet-general", false, &tile)
-                    .expect("分块 General 1024 推理");
+                let tile =
+                    image::imageops::crop_imm(&original, left, top, tile_w, tile_h).to_image();
+                let tile_mask =
+                    run_birefnet_single_for_test(&base, "birefnet-general", false, &tile)
+                        .expect("分块 General 1024 推理");
                 for y in 0..tile_h {
                     let fy = if top > 0 && y < FEATHER {
                         y as f32 / FEATHER as f32
@@ -1130,8 +1228,1073 @@ mod toonout_tests {
             .expect("分块复核指标报告写出");
     }
 
+    /// 开发期高分辨率 Alpha 精修实验：全图 AnimeSeg 先决定主体，局部 2048px
+    /// 分块只在全图 alpha 的对称边界带内接管。这样不让分块缺失全局上下文而重抠
+    /// 背景，同时为原图尺寸的轮廓提供约 2 倍于全图推理的采样密度。
+    #[test]
+    #[ignore = "手动执行：AnimeSeg 全图语义 + 边界分块精修对照"]
+    fn ab_anime_specialist_boundary_tiled_refine() {
+        let base = dirs::home_dir()
+            .expect("无法定位用户目录")
+            .join(r"AppData\Roaming\studio.avroracl.aias");
+        let input = std::env::var_os("AIAS_AB_INPUT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_INPUT 必须指向一张原图");
+        let gt_path = std::env::var_os("AIAS_AB_GT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_GT 必须指向人工 alpha 真值");
+        let out_dir = std::env::var_os("AIAS_AB_OUTPUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\anime-boundary-refine"));
+        let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "anime-boundary-refine".into());
+        fs::create_dir_all(&out_dir).expect("创建 AnimeSeg 边界精修输出目录");
+        assert!(
+            is_model_ready(&base, "anime-specialist"),
+            "测试需要 AnimeSeg 专精模型"
+        );
+
+        let original = image::open(&input).expect("原图可读").to_rgb8();
+        let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
+        let (w, h) = original.dimensions();
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        if let Some(resume_dir) = std::env::var_os("AIAS_AB_RESUME_ALPHA_DIR") {
+            let resume_dir = PathBuf::from(resume_dir);
+            assert!(
+                resume_dir.is_dir(),
+                "AIAS_AB_RESUME_ALPHA_DIR 必须指向 A/B 输出目录"
+            );
+            finalize_saved_alpha_variants(
+                &input,
+                &gt_path,
+                &original,
+                &gt,
+                &out_dir,
+                stem,
+                &tag,
+                &resume_dir,
+            );
+            return;
+        }
+        let starts = |length: u32, side: u32, stride: u32| {
+            if length <= side {
+                return vec![0];
+            }
+            let mut positions = vec![0];
+            let last = length - side;
+            while *positions.last().expect("至少一个分块起点") + stride < last {
+                positions.push(*positions.last().expect("分块起点") + stride);
+            }
+            if *positions.last().expect("分块起点") != last {
+                positions.push(last);
+            }
+            positions
+        };
+
+        // 整图输入下，一个 alpha 样本覆盖约 4.17x4.67 原图像素；2048px 分块
+        // 压进同一个 1024 模型输入后覆盖约 2x2 像素。重叠区域线性羽化，防止
+        // 分块推理的上下文差异留下接缝。
+        const TILE: u32 = 2048;
+        const STRIDE: u32 = 1792;
+        const FEATHER: u32 = 256;
+        const BOUNDARY_RADIUS: usize = 48;
+        let xs = starts(w, TILE, STRIDE);
+        let ys = starts(h, TILE, STRIDE);
+        let started = std::time::Instant::now();
+        let global_mask = run_birefnet_single_for_test(&base, "anime-specialist", false, &original)
+            .expect("整图 AnimeSeg 推理");
+
+        let mut tiled_sum = vec![0.0f32; (w * h) as usize];
+        let mut tiled_weight = vec![0.0f32; (w * h) as usize];
+        for &top in &ys {
+            for &left in &xs {
+                let tile_w = TILE.min(w - left);
+                let tile_h = TILE.min(h - top);
+                let tile =
+                    image::imageops::crop_imm(&original, left, top, tile_w, tile_h).to_image();
+                let tile_mask =
+                    run_birefnet_single_for_test(&base, "anime-specialist", false, &tile)
+                        .expect("分块 AnimeSeg 推理");
+                for y in 0..tile_h {
+                    let fy = if top > 0 && y < FEATHER {
+                        y as f32 / FEATHER as f32
+                    } else if top + tile_h < h && tile_h - 1 - y < FEATHER {
+                        (tile_h - 1 - y) as f32 / FEATHER as f32
+                    } else {
+                        1.0
+                    };
+                    for x in 0..tile_w {
+                        let fx = if left > 0 && x < FEATHER {
+                            x as f32 / FEATHER as f32
+                        } else if left + tile_w < w && tile_w - 1 - x < FEATHER {
+                            (tile_w - 1 - x) as f32 / FEATHER as f32
+                        } else {
+                            1.0
+                        };
+                        let index = ((top + y) * w + left + x) as usize;
+                        let weight = fx * fy;
+                        tiled_sum[index] += tile_mask[(y * tile_w + x) as usize] * weight;
+                        tiled_weight[index] += weight;
+                    }
+                }
+            }
+        }
+        let tiled_mask: Vec<f32> = tiled_sum
+            .into_iter()
+            .zip(tiled_weight)
+            .map(|(sum, weight)| if weight > 0.0 { sum / weight } else { 0.0 })
+            .collect();
+        let boundary_gate = alpha_boundary_gate(&global_mask, w, h, BOUNDARY_RADIUS);
+        let gate_pixels = boundary_gate.iter().filter(|keep| **keep).count();
+        println!(
+            "{tag} AnimeSeg boundary refine elapsed {:?}; grid={}x{}; gate={} px ({:.2}%)",
+            started.elapsed(),
+            xs.len(),
+            ys.len(),
+            gate_pixels,
+            100.0 * gate_pixels as f64 / (w as f64 * h as f64),
+        );
+
+        let gate_image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(w, h, |x, y| {
+            Luma([if boundary_gate[(y * w + x) as usize] {
+                255
+            } else {
+                0
+            }])
+        });
+        gate_image
+            .save(out_dir.join(format!("{stem}_anime-specialist_boundary_gate.png")))
+            .expect("边界门控图写出");
+
+        // `finalize_cutout_image` 的原图去污染会创建多组全尺寸工作缓冲。先将两张
+        // f32 Alpha 换成 8-bit 开发产物并释放，随后逐变体回读；这样 A/B 不会同时
+        // 持有 global、tiled、融合 Alpha 和去污染工作集，避免 4K 图把页面文件耗尽。
+        let global_raw_path = out_dir.join(format!("{stem}_anime-specialist-global_matte_raw.png"));
+        let global_raw = ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(w, h, |x, y| {
+            let alpha = global_mask[(y * w + x) as usize].clamp(0.0, 1.0);
+            Luma([(alpha * 255.0).round() as u8])
+        });
+        global_raw
+            .save(&global_raw_path)
+            .expect("整图原始 Alpha 写出");
+        let tiled_raw_path = out_dir.join(format!(
+            "{stem}_anime-specialist-tiled_intermediate_matte_raw.png"
+        ));
+        let tiled_raw = ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(w, h, |x, y| {
+            let alpha = tiled_mask[(y * w + x) as usize].clamp(0.0, 1.0);
+            Luma([(alpha * 255.0).round() as u8])
+        });
+        tiled_raw
+            .save(&tiled_raw_path)
+            .expect("分块原始 Alpha 写出");
+        drop(global_raw);
+        drop(tiled_raw);
+        drop(global_mask);
+        drop(tiled_mask);
+
+        let mut report = format!(
+            "AIAS AnimeSeg boundary tiled-refine A/B report\ntag={tag}\ninput={}\nground_truth={}\nstrategy=1024 global AnimeSeg semantic anchor + 2048px overlapping tiles (1792px stride / 256px feather), tiles apply only within a ±{BOUNDARY_RADIUS}px global-alpha boundary gate; development only\ngate_pixels={gate_pixels}\n",
+            input.display(),
+            gt_path.display(),
+        );
+        for (label, tile_weight) in [
+            ("anime-specialist-global", 0.0f32),
+            ("anime-specialist-boundary-tile-050", 0.50),
+            ("anime-specialist-boundary-tile-100", 1.0),
+        ] {
+            let global_raw = image::open(&global_raw_path)
+                .expect("整图原始 Alpha 可读")
+                .to_luma8();
+            let tiled_raw = image::open(&tiled_raw_path)
+                .expect("分块原始 Alpha 可读")
+                .to_luma8();
+            let mask: Vec<f32> = global_raw
+                .pixels()
+                .zip(tiled_raw.pixels())
+                .zip(boundary_gate.iter())
+                .map(|((global, tiled), in_boundary)| {
+                    let global = global[0] as f32 / 255.0;
+                    let tiled = tiled[0] as f32 / 255.0;
+                    if *in_boundary {
+                        global * (1.0 - tile_weight) + tiled * tile_weight
+                    } else {
+                        global
+                    }
+                })
+                .collect();
+            let raw = ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(w, h, |x, y| {
+                let alpha = mask[(y * w + x) as usize].clamp(0.0, 1.0);
+                Luma([(alpha * 255.0).round() as u8])
+            });
+            raw.save(out_dir.join(format!("{stem}_{label}_matte_raw.png")))
+                .expect("原始 Alpha 写出");
+            let raw_metrics = alpha_metrics_luma(&gt, &raw);
+            report.push_str(&format!(
+                "{label}\tstage=raw\tmae={:.5}\tiou={:.5}\tinterior_miss_mean={:.5}\tboundary_mae={:.5}\texterior_leak_mean={:.5}\n",
+                raw_metrics.mae,
+                raw_metrics.iou,
+                raw_metrics.interior_miss_mean,
+                raw_metrics.boundary_mae,
+                raw_metrics.exterior_leak_mean,
+            ));
+
+            let result = finalize_cutout_image(&original, mask, true);
+            result
+                .save(out_dir.join(format!("{stem}_{label}.png")))
+                .expect("边界精修结果写出");
+            ab_gt_preview(
+                &input,
+                &gt,
+                &result,
+                &out_dir.join(format!("{stem}_{label}_preview.jpg")),
+            );
+            alpha_error_heatmap(
+                &original,
+                &gt,
+                &result,
+                &out_dir.join(format!("{stem}_{label}_alpha_error.png")),
+            );
+            append_instance_metrics(&mut report, label, &gt, &result);
+        }
+        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
+            .expect("边界精修指标报告写出");
+    }
+
+    /// 开发期边缘 Alpha 精修：不再让局部分块判断“什么是主体”。它只读取已验证的
+    /// AnimeSeg 全图 alpha，并以原图亮度结构引导边缘过渡带；全局 alpha 边界外的
+    /// 像素绝不改变，因此背景线稿无法像分块分割那样被重新纳入主体。
+    #[test]
+    #[ignore = "手动执行：AnimeSeg 原图亮度引导的边界 Alpha 精修对照"]
+    fn ab_anime_specialist_luma_guided_boundary_refine() {
+        let input = std::env::var_os("AIAS_AB_INPUT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_INPUT 必须指向一张原图");
+        let gt_path = std::env::var_os("AIAS_AB_GT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_GT 必须指向人工 alpha 真值");
+        let out_dir = std::env::var_os("AIAS_AB_OUTPUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\anime-luma-guided-boundary"));
+        let tag =
+            std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "anime-luma-guided-boundary".into());
+        let base_alpha_path = std::env::var_os("AIAS_AB_BASE_ALPHA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(
+                r"F:\战争雷霆涂装\贴图素材\F15E 塞雷娅\AB测试结果\P55_anime_specialist_boundary_tiled_refine\原图_anime-specialist-global_matte_raw.png",
+            ));
+        assert!(
+            base_alpha_path.is_file(),
+            "基线原始 Alpha 不可读：{}",
+            base_alpha_path.display()
+        );
+        fs::create_dir_all(&out_dir).expect("创建亮度引导精修输出目录");
+
+        let original = image::open(&input).expect("原图可读").to_rgb8();
+        let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
+        let base_alpha = image::open(&base_alpha_path)
+            .expect("基线原始 Alpha 可读")
+            .to_luma8();
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
+        assert_eq!(
+            original.dimensions(),
+            base_alpha.dimensions(),
+            "基线 Alpha 尺寸必须一致"
+        );
+        let (w, h) = original.dimensions();
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        let base_mask: Vec<f32> = base_alpha
+            .as_raw()
+            .iter()
+            .map(|alpha| *alpha as f32 / 255.0)
+            .collect();
+
+        // 半径 24px 的门控远大于原始模型上采样的约 4-5px 过渡带，留出足够的
+        // 结构对齐余量；但仍远小于相邻背景物体，且滤波结果只能在此带内写回。
+        const GATE_RADIUS: usize = 24;
+        const TILE_CORE: u32 = 1024;
+        const TILE_PADDING: u32 = 24;
+        let gate = alpha_boundary_gate(&base_mask, w, h, GATE_RADIUS);
+        let gate_pixels = gate.iter().filter(|keep| **keep).count();
+        let gate_image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(w, h, |x, y| {
+            Luma([if gate[(y * w + x) as usize] { 255 } else { 0 }])
+        });
+        gate_image
+            .save(out_dir.join(format!("{stem}_anime-specialist_luma_guided_gate.png")))
+            .expect("亮度引导门控图写出");
+
+        let mut report = format!(
+            "AIAS AnimeSeg luma-guided boundary-refine A/B report\ntag={tag}\ninput={}\nground_truth={}\nbase_alpha={}\nstrategy=global AnimeSeg alpha remains the semantic anchor; tiled luminance guided filtering writes back only in a ±{GATE_RADIUS}px symmetric boundary gate; development only\ngate_pixels={gate_pixels}\n",
+            input.display(),
+            gt_path.display(),
+            base_alpha_path.display(),
+        );
+        let variants = [
+            ("anime-specialist-global", None),
+            ("anime-specialist-luma-guided-r4", Some((4usize, 1e-3f32))),
+            ("anime-specialist-luma-guided-r8", Some((8usize, 1e-3f32))),
+        ];
+        for (label, guide) in variants {
+            let raw = match guide {
+                None => base_alpha.clone(),
+                Some((radius, epsilon)) => tiled_luma_guided_boundary_refine(
+                    &original,
+                    &base_alpha,
+                    &gate,
+                    TILE_CORE,
+                    TILE_PADDING,
+                    radius,
+                    epsilon,
+                ),
+            };
+            raw.save(out_dir.join(format!("{stem}_{label}_matte_raw.png")))
+                .expect("亮度引导原始 Alpha 写出");
+            let raw_metrics = alpha_metrics_luma(&gt, &raw);
+            report.push_str(&format!(
+                "{label}\tstage=raw\tmae={:.5}\tiou={:.5}\tinterior_miss_mean={:.5}\tboundary_mae={:.5}\texterior_leak_mean={:.5}\n",
+                raw_metrics.mae,
+                raw_metrics.iou,
+                raw_metrics.interior_miss_mean,
+                raw_metrics.boundary_mae,
+                raw_metrics.exterior_leak_mean,
+            ));
+        }
+        drop(base_mask);
+        drop(gate);
+        drop(base_alpha);
+
+        // 逐变体读回并走同一正式后处理，避免高分辨率的去污染工作集与多张
+        // f32 Alpha 同时存在；这也是用户在软件中实际会看到的最终效果。
+        for (label, _) in variants {
+            let raw = image::open(out_dir.join(format!("{stem}_{label}_matte_raw.png")))
+                .expect("亮度引导原始 Alpha 可读")
+                .to_luma8();
+            let mask: Vec<f32> = raw
+                .as_raw()
+                .iter()
+                .map(|alpha| *alpha as f32 / 255.0)
+                .collect();
+            let result = finalize_cutout_image(&original, mask, true);
+            result
+                .save(out_dir.join(format!("{stem}_{label}.png")))
+                .expect("亮度引导精修结果写出");
+            ab_gt_preview(
+                &input,
+                &gt,
+                &result,
+                &out_dir.join(format!("{stem}_{label}_preview.jpg")),
+            );
+            alpha_error_heatmap(
+                &original,
+                &gt,
+                &result,
+                &out_dir.join(format!("{stem}_{label}_alpha_error.png")),
+            );
+            append_instance_metrics(&mut report, label, &gt, &result);
+        }
+        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
+            .expect("亮度引导精修指标报告写出");
+    }
+
+    /// 将外部 alpha 原型送进正式 `finalize_cutout_image`，验证开发期的 raw alpha
+    /// 改善在用户真正会导出的 RGBA 结果上是否仍然成立。此测试不改变产品路径。
+    #[test]
+    #[ignore = "手动执行：将开发期外部 Alpha 走正式合成管线"]
+    fn ab_finalize_external_alpha() {
+        let input = std::env::var_os("AIAS_AB_INPUT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_INPUT 必须指向一张原图");
+        let gt_path = std::env::var_os("AIAS_AB_GT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_GT 必须指向人工 alpha 真值");
+        let alpha_path = std::env::var_os("AIAS_AB_EXTERNAL_ALPHA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_EXTERNAL_ALPHA 必须指向原始 Alpha PNG");
+        let out_dir = std::env::var_os("AIAS_AB_OUTPUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\external-alpha-finalize"));
+        let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "external-alpha-finalize".into());
+        let label =
+            std::env::var("AIAS_AB_EXTERNAL_LABEL").unwrap_or_else(|_| "external-alpha".into());
+        fs::create_dir_all(&out_dir).expect("创建外部 Alpha 合成输出目录");
+
+        let original = image::open(&input).expect("原图可读").to_rgb8();
+        let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
+        let external_alpha = image::open(&alpha_path).expect("外部 Alpha 可读");
+        // Python A/B 原型会把原 RGB 与 alpha 一起写为 RGBA，直接 `to_luma8()`
+        // 会错误取 RGB 亮度而不是 alpha。单通道 PNG 则仍按原样读取。
+        let raw = if external_alpha.color().has_alpha() {
+            let rgba = external_alpha.to_rgba8();
+            ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(rgba.width(), rgba.height(), |x, y| {
+                Luma([rgba.get_pixel(x, y)[3]])
+            })
+        } else {
+            external_alpha.to_luma8()
+        };
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
+        assert_eq!(
+            original.dimensions(),
+            raw.dimensions(),
+            "外部 Alpha 尺寸必须一致"
+        );
+        let mask: Vec<f32> = raw
+            .as_raw()
+            .iter()
+            .map(|alpha| *alpha as f32 / 255.0)
+            .collect();
+        let raw_metrics = alpha_metrics_luma(&gt, &raw);
+        let result = finalize_cutout_image(&original, mask, true);
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        result
+            .save(out_dir.join(format!("{stem}_{label}_final.png")))
+            .expect("外部 Alpha 正式合成结果写出");
+        ab_gt_preview(
+            &input,
+            &gt,
+            &result,
+            &out_dir.join(format!("{stem}_{label}_final_preview.jpg")),
+        );
+        alpha_error_heatmap(
+            &original,
+            &gt,
+            &result,
+            &out_dir.join(format!("{stem}_{label}_final_alpha_error.png")),
+        );
+        let mut report = format!(
+            "AIAS external-alpha finalize A/B report\ntag={tag}\ninput={}\nground_truth={}\nraw_alpha={}\nlabel={label}\n",
+            input.display(),
+            gt_path.display(),
+            alpha_path.display(),
+        );
+        report.push_str(&format!(
+            "{label}\tstage=raw\tmae={:.5}\tiou={:.5}\tinterior_miss_mean={:.5}\tboundary_mae={:.5}\texterior_leak_mean={:.5}\n",
+            raw_metrics.mae,
+            raw_metrics.iou,
+            raw_metrics.interior_miss_mean,
+            raw_metrics.boundary_mae,
+            raw_metrics.exterior_leak_mean,
+        ));
+        append_instance_metrics(&mut report, &format!("{label}_final"), &gt, &result);
+        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
+            .expect("外部 Alpha 合成指标报告写出");
+    }
+
+    /// 开发期 Rust 闭式 matting 回归：直接读取正式 AnimeSeg raw alpha，使用与产品
+    /// 相同的纯 Rust 边缘精修函数，再走正式成图管线。人工真值只用于结果评分。
+    #[test]
+    #[ignore = "手动执行：Rust 闭式边缘 alpha A/B"]
+    fn ab_rust_closed_form_boundary_refine() {
+        let input = std::env::var_os("AIAS_AB_INPUT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_INPUT 必须指向一张原图");
+        let gt_path = std::env::var_os("AIAS_AB_GT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_GT 必须指向人工 alpha 真值");
+        let base_alpha_path = std::env::var_os("AIAS_AB_BASE_ALPHA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_BASE_ALPHA 必须指向正式 AnimeSeg raw alpha PNG");
+        let out_dir = std::env::var_os("AIAS_AB_OUTPUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\rust-closed-form"));
+        let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "rust-closed-form".into());
+        fs::create_dir_all(&out_dir).expect("创建 Rust 闭式 matting 输出目录");
+
+        let original = image::open(&input).expect("原图可读").to_rgb8();
+        let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
+        let base_alpha = image::open(&base_alpha_path)
+            .expect("正式 AnimeSeg raw alpha 可读")
+            .to_luma8();
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
+        assert_eq!(
+            original.dimensions(),
+            base_alpha.dimensions(),
+            "正式 raw alpha 尺寸必须一致"
+        );
+        let baseline_metrics = alpha_metrics_luma(&gt, &base_alpha);
+        let mask: Vec<f32> = base_alpha
+            .as_raw()
+            .iter()
+            .map(|alpha| *alpha as f32 / 255.0)
+            .collect();
+        let started = std::time::Instant::now();
+        let (refined_mask, diagnostics) = refine_closed_form_boundary_alpha_for_ab(&original, mask);
+        let elapsed = started.elapsed();
+        let (w, h) = original.dimensions();
+        let refined_alpha = ImageBuffer::<Luma<u8>, Vec<u8>>::from_fn(w, h, |x, y| {
+            Luma([(refined_mask[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0).round() as u8])
+        });
+        let raw_metrics = alpha_metrics_luma(&gt, &refined_alpha);
+        let final_image = finalize_cutout_image(&original, refined_mask, true);
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        refined_alpha
+            .save(out_dir.join(format!(
+                "{stem}_anime-specialist-rust-closed-form_matte_raw.png"
+            )))
+            .expect("Rust 闭式 raw alpha 写出");
+        final_image
+            .save(out_dir.join(format!("{stem}_anime-specialist-rust-closed-form.png")))
+            .expect("Rust 闭式正式结果写出");
+        ab_gt_preview(
+            &input,
+            &gt,
+            &final_image,
+            &out_dir.join(format!(
+                "{stem}_anime-specialist-rust-closed-form_preview.jpg"
+            )),
+        );
+        alpha_error_heatmap(
+            &original,
+            &gt,
+            &final_image,
+            &out_dir.join(format!(
+                "{stem}_anime-specialist-rust-closed-form_alpha_error.png"
+            )),
+        );
+        let mut report = format!(
+            "AIAS Rust closed-form boundary A/B report\ntag={tag}\ninput={}\nground_truth={}\nbase_alpha={}\nstrategy=AnimeSeg global semantic mask -> automatic 4px trimap -> tiled 3x3 closed-form alpha -> shipping finalization\nrefine_elapsed_ms={}\ntile_diagnostics={diagnostics:?}\n",
+            input.display(),
+            gt_path.display(),
+            base_alpha_path.display(),
+            elapsed.as_millis(),
+        );
+        for (label, metrics) in [
+            ("anime-specialist-global_raw", baseline_metrics),
+            ("anime-specialist-rust-closed-form_raw", raw_metrics),
+        ] {
+            report.push_str(&format!(
+                "{label}\tstage=raw\tmae={:.5}\tiou={:.5}\tinterior_miss_mean={:.5}\tboundary_mae={:.5}\texterior_leak_mean={:.5}\n",
+                metrics.mae,
+                metrics.iou,
+                metrics.interior_miss_mean,
+                metrics.boundary_mae,
+                metrics.exterior_leak_mean,
+            ));
+        }
+        append_instance_metrics(
+            &mut report,
+            "anime-specialist-rust-closed-form",
+            &gt,
+            &final_image,
+        );
+        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
+            .expect("Rust 闭式 matting 指标报告写出");
+    }
+
+    /// 开发期候选验证：以当前正式 alpha 自动生成 trimap，交给 ViTMatte
+    /// 在原图 1024px 局部块中重建 alpha。它不会注册为正式模型；若额外传入
+    /// `AIAS_AB_GT`，则只在开发期把候选与当前成图同人工真值作局部量化对照。
+    #[test]
+    #[ignore = "手动执行：ViTMatte 局部发丝候选验证"]
+    fn ab_vitmatte_local_hair_probe() {
+        const DEFAULT_TRIMAP_RADIUS: usize = 32;
+        let app_base = dirs::home_dir()
+            .expect("无法定位用户目录")
+            .join(r"AppData\Roaming\studio.avroracl.aias");
+        let input_path = std::env::var_os("AIAS_AB_INPUT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_INPUT 必须指向原图");
+        let base_alpha_path = std::env::var_os("AIAS_AB_BASE_ALPHA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_BASE_ALPHA 必须指向 AnimeSeg 原始 alpha");
+        let product_path = std::env::var_os("AIAS_AB_PRODUCT_RESULT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .expect("AIAS_AB_PRODUCT_RESULT 必须指向当前正式透明 PNG");
+        let gt_path = std::env::var_os("AIAS_AB_GT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file());
+        let model_path = std::env::var_os("AIAS_AB_VITMATTE_MODEL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\tmp\vitmatte-small\model.onnx"));
+        assert!(
+            model_path.is_file(),
+            "ViTMatte ONNX 不可读：{}",
+            model_path.display()
+        );
+        let out_dir = std::env::var_os("AIAS_AB_OUTPUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\vitmatte-local"));
+        let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "vitmatte-local".into());
+        let trimap_radius = std::env::var("AIAS_AB_TRIMAP_RADIUS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|radius| (2..=64).contains(radius))
+            .unwrap_or(DEFAULT_TRIMAP_RADIUS);
+        fs::create_dir_all(&out_dir).expect("创建 ViTMatte 输出目录");
+
+        let original = image::open(&input_path).expect("原图可读").to_rgb8();
+        let base_alpha = image::open(&base_alpha_path)
+            .expect("AnimeSeg 原始 alpha 可读")
+            .to_luma8();
+        let current_product = image::open(&product_path)
+            .expect("当前正式透明 PNG 可读")
+            .to_rgba8();
+        let ground_truth = gt_path
+            .as_ref()
+            .map(|path| image::open(path).expect("人工 alpha 真值可读").to_rgba8());
+        let (image_w, image_h) = original.dimensions();
+        assert_eq!(
+            base_alpha.dimensions(),
+            (image_w, image_h),
+            "原始 alpha 尺寸必须一致"
+        );
+        assert_eq!(
+            current_product.dimensions(),
+            (image_w, image_h),
+            "正式结果尺寸必须一致"
+        );
+        if let Some(ground_truth) = &ground_truth {
+            assert_eq!(
+                ground_truth.dimensions(),
+                (image_w, image_h),
+                "人工真值尺寸必须一致"
+            );
+        }
+
+        let parse_crop = |value: &str| -> Option<(u32, u32, u32, u32)> {
+            let values: Vec<u32> = value
+                .split(',')
+                .map(str::trim)
+                .map(str::parse)
+                .collect::<Result<_, _>>()
+                .ok()?;
+            (values.len() == 4).then(|| (values[0], values[1], values[2], values[3]))
+        };
+        let default_side = 1024u32.min(image_w).min(image_h);
+        let (crop_x, crop_y, crop_w, crop_h) = std::env::var("AIAS_AB_CROP")
+            .ok()
+            .as_deref()
+            .and_then(parse_crop)
+            .unwrap_or((
+                (image_w - default_side) / 2,
+                (image_h - default_side) / 2,
+                default_side,
+                default_side,
+            ));
+        assert!(
+            crop_w >= 32 && crop_h >= 32 && crop_w % 32 == 0 && crop_h % 32 == 0,
+            "裁切宽高必须是 32 的倍数"
+        );
+        assert!(
+            crop_x + crop_w <= image_w && crop_y + crop_h <= image_h,
+            "裁切范围超出原图"
+        );
+
+        // 使用已经过正式后处理的 alpha 来划定不确定带，而不是直接使用原始模型
+        // 的低置信噪点。这样已判为空的远处背景不会被送入候选模型重新“猜”前景。
+        let product_alpha: Vec<f32> = current_product
+            .pixels()
+            .map(|pixel| pixel[3] as f32 / 255.0)
+            .collect();
+        let gate = alpha_boundary_gate(&product_alpha, image_w, image_h, trimap_radius);
+        let crop_rgb =
+            image::imageops::crop_imm(&original, crop_x, crop_y, crop_w, crop_h).to_image();
+        let crop_product =
+            image::imageops::crop_imm(&current_product, crop_x, crop_y, crop_w, crop_h).to_image();
+        let plane = crop_w as usize * crop_h as usize;
+        let mut crop_unknown = vec![false; plane];
+        let mut tensor_data = vec![0.0f32; 4 * plane];
+        let mut trimap = ImageBuffer::<Luma<u8>, Vec<u8>>::new(crop_w, crop_h);
+        let mut trimap_counts = [0usize; 3];
+        for y in 0..crop_h {
+            for x in 0..crop_w {
+                let local = (y * crop_w + x) as usize;
+                let global = ((crop_y + y) * image_w + crop_x + x) as usize;
+                let pixel = crop_rgb.get_pixel(x, y);
+                tensor_data[local] = pixel[0] as f32 / 127.5 - 1.0;
+                tensor_data[plane + local] = pixel[1] as f32 / 127.5 - 1.0;
+                tensor_data[2 * plane + local] = pixel[2] as f32 / 127.5 - 1.0;
+                let (trimap_value, count_index) = if gate[global] {
+                    (128u8, 1usize)
+                } else if product_alpha[global] >= 0.5 {
+                    (255u8, 2usize)
+                } else {
+                    (0u8, 0usize)
+                };
+                crop_unknown[local] = gate[global];
+                tensor_data[3 * plane + local] = trimap_value as f32 / 255.0;
+                trimap.put_pixel(x, y, Luma([trimap_value]));
+                trimap_counts[count_index] += 1;
+            }
+        }
+
+        ensure_ort_runtime(&app_base).expect("ViTMatte 验证需要 ONNX Runtime");
+        let mut session = build_session(&model_path, true).expect("加载 ViTMatte ONNX");
+        assert_eq!(session.inputs().len(), 1, "ViTMatte 应只有一个拼接输入");
+        let input_name = session.inputs()[0].name().to_string();
+        let output_name = session.outputs()[0].name().to_string();
+        let input = Tensor::from_array((
+            vec![1usize, 4, crop_h as usize, crop_w as usize],
+            tensor_data,
+        ))
+        .expect("构造 ViTMatte [RGB+trimap] 张量");
+        let started = std::time::Instant::now();
+        let outputs = session
+            .run(ort::inputs![input_name.as_str() => input])
+            .expect("ViTMatte 推理");
+        let elapsed = started.elapsed();
+        let (shape, output) = outputs[output_name.as_str()]
+            .try_extract_tensor::<f32>()
+            .expect("读取 ViTMatte alpha 输出");
+        assert_eq!(
+            shape.as_ref(),
+            &[1, 1, crop_h as i64, crop_w as i64],
+            "ViTMatte alpha 尺寸异常"
+        );
+        let mut alpha: Vec<f32> = output.iter().copied().collect();
+        if alpha.iter().any(|value| *value < -0.01 || *value > 1.01) {
+            alpha
+                .iter_mut()
+                .for_each(|value| *value = stable_sigmoid(*value));
+        }
+        let min_alpha = alpha.iter().copied().fold(f32::INFINITY, f32::min);
+        let max_alpha = alpha.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let vitmatte = RgbaImage::from_fn(crop_w, crop_h, |x, y| {
+            let pixel = crop_rgb.get_pixel(x, y);
+            let alpha = (alpha[(y * crop_w + x) as usize].clamp(0.0, 1.0) * 255.0).round() as u8;
+            Rgba([pixel[0], pixel[1], pixel[2], alpha])
+        });
+        // 正式接入时的安全候选：ViTMatte 只允许修改 AnimeSeg 已标记为“不确定”
+        // 的窄边界带。可靠主体内部与远处背景保持当前正式结果，避免凭空造前景。
+        let vitmatte_boundary_blend = RgbaImage::from_fn(crop_w, crop_h, |x, y| {
+            let local = (y * crop_w + x) as usize;
+            if crop_unknown[local] {
+                *vitmatte.get_pixel(x, y)
+            } else {
+                *crop_product.get_pixel(x, y)
+            }
+        });
+        let metrics_report = ground_truth.as_ref().map_or_else(
+            || "ground_truth=not_provided\n".to_string(),
+            |ground_truth| {
+                let crop_gt = image::imageops::crop_imm(ground_truth, crop_x, crop_y, crop_w, crop_h).to_image();
+                let current_metrics = alpha_metrics(&crop_gt, &crop_product);
+                let vitmatte_metrics = alpha_metrics(&crop_gt, &vitmatte);
+                let blend_metrics = alpha_metrics(&crop_gt, &vitmatte_boundary_blend);
+                format!(
+                    "ground_truth={}\ncurrent_mae={:.6}\ncurrent_iou={:.6}\ncurrent_boundary_mae={:.6}\ncurrent_exterior_leak_mean={:.6}\nvitmatte_mae={:.6}\nvitmatte_iou={:.6}\nvitmatte_boundary_mae={:.6}\nvitmatte_exterior_leak_mean={:.6}\nboundary_blend_mae={:.6}\nboundary_blend_iou={:.6}\nboundary_blend_boundary_mae={:.6}\nboundary_blend_exterior_leak_mean={:.6}\n",
+                    gt_path.as_ref().expect("真值路径存在").display(),
+                    current_metrics.mae,
+                    current_metrics.iou,
+                    current_metrics.boundary_mae,
+                    current_metrics.exterior_leak_mean,
+                    vitmatte_metrics.mae,
+                    vitmatte_metrics.iou,
+                    vitmatte_metrics.boundary_mae,
+                    vitmatte_metrics.exterior_leak_mean,
+                    blend_metrics.mae,
+                    blend_metrics.iou,
+                    blend_metrics.boundary_mae,
+                    blend_metrics.exterior_leak_mean,
+                )
+            },
+        );
+
+        let stem = input_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
+        crop_rgb
+            .save(out_dir.join(format!("{stem}_source_crop.png")))
+            .expect("写出原图裁切");
+        trimap
+            .save(out_dir.join(format!("{stem}_vitmatte_trimap.png")))
+            .expect("写出自动 trimap");
+        crop_product
+            .save(out_dir.join(format!("{stem}_current_product_crop.png")))
+            .expect("写出当前产品裁切");
+        vitmatte
+            .save(out_dir.join(format!("{stem}_vitmatte_crop.png")))
+            .expect("写出 ViTMatte 裁切");
+        vitmatte_boundary_blend
+            .save(out_dir.join(format!("{stem}_vitmatte_boundary_blend_crop.png")))
+            .expect("写出 ViTMatte 边界融合裁切");
+
+        let crop_display = image::imageops::resize(&crop_rgb, crop_w, crop_h, FilterType::Triangle);
+        let current_display = ab_composite(&crop_product, [38.0, 42.0, 50.0]);
+        let vitmatte_display = ab_composite(&vitmatte, [38.0, 42.0, 50.0]);
+        let blend_display = ab_composite(&vitmatte_boundary_blend, [38.0, 42.0, 50.0]);
+        let gap = 8;
+        let mut preview = RgbImage::new(crop_w * 4 + gap * 3, crop_h);
+        image::imageops::overlay(&mut preview, &crop_display, 0, 0);
+        image::imageops::overlay(&mut preview, &current_display, (crop_w + gap) as i64, 0);
+        image::imageops::overlay(
+            &mut preview,
+            &vitmatte_display,
+            ((crop_w + gap) * 2) as i64,
+            0,
+        );
+        image::imageops::overlay(&mut preview, &blend_display, ((crop_w + gap) * 3) as i64, 0);
+        preview
+            .save(out_dir.join(format!("{stem}_vitmatte_compare.jpg")))
+            .expect("写出 ViTMatte 四联预览");
+        fs::write(
+            out_dir.join(format!("{tag}_report.txt")),
+            format!(
+                "ViTMatte local hair probe\ninput={}\nbase_alpha={}\nproduct_result={}\ntrimap_source=product_final_alpha\nmodel={}\ncrop={crop_x},{crop_y},{crop_w},{crop_h}\ntrimap_radius={trimap_radius}\ntrimap_background={}\ntrimap_unknown={}\ntrimap_foreground={}\ninput_name={input_name}\noutput_name={output_name}\noutput_shape={shape:?}\nelapsed_ms={}\nalpha_min={min_alpha:.6}\nalpha_max={max_alpha:.6}\n{metrics_report}",
+                input_path.display(), base_alpha_path.display(), product_path.display(), model_path.display(),
+                trimap_counts[0], trimap_counts[1], trimap_counts[2], elapsed.as_millis(),
+            ),
+        ).expect("写出 ViTMatte 验证报告");
+    }
+
+    /// 与软件共享同一精修函数，人工参考只参与评分，不参与 trimap 或推理。
+    #[test]
+    #[ignore = "手动执行：更窄边界带对照"]
+    fn ab_vitmatte_narrow_boundary() {
+        let base = dirs::data_dir().unwrap().join("studio.avroracl.aias");
+        let inputs = PathBuf::from(r"F:\战争雷霆涂装\贴图素材\F15E 塞雷娅\测试");
+        let results = inputs.parent().unwrap().join("AB测试结果");
+        let out = results.join("P105_vitmatte_narrow_boundary");
+        fs::create_dir_all(&out).unwrap();
+        let model = PathBuf::from(r"F:\AIAS\tmp\vitmatte-small\model.onnx");
+        release_vitmatte_session();
+        let mut report = String::from(
+            "P105: radius-only ablation. GT is evaluation-only. No threshold tuning.\n",
+        );
+        for stem in ["原图", "73307539_p0"] {
+            let input = inputs.join(if stem == "原图" {
+                "原图.png"
+            } else {
+                "73307539_p0.jpg"
+            });
+            let rgb = image::open(input).unwrap().to_rgb8();
+            let baseline_dir = if stem == "原图" {
+                "P77_production_animeseg_closed_form"
+            } else {
+                "P79_new_images_no_gt"
+            };
+            let baseline = image::open(
+                results
+                    .join(baseline_dir)
+                    .join(format!("{stem}_anime-specialist.png")),
+            )
+            .unwrap()
+            .to_rgba8();
+            let gt = if stem == "原图" {
+                Some(
+                    image::open(inputs.join("人工抠图版.png"))
+                        .unwrap()
+                        .to_rgba8(),
+                )
+            } else {
+                None
+            };
+            if let Some(gt) = &gt {
+                append_instance_metrics(&mut report, "baseline", gt, &baseline);
+            }
+            for radius in [2, 4] {
+                let started = std::time::Instant::now();
+                let candidate = try_refine_vitmatte_boundary_rgba(
+                    &base,
+                    &model,
+                    &rgb,
+                    baseline.clone(),
+                    radius,
+                    true,
+                )
+                .unwrap();
+                println!(
+                    "P105 {stem} radius={radius} elapsed={:?}",
+                    started.elapsed()
+                );
+                candidate
+                    .save(out.join(format!("{stem}_radius{radius}.png")))
+                    .unwrap();
+                if let Some(gt) = &gt {
+                    append_instance_metrics(
+                        &mut report,
+                        &format!("radius{radius}"),
+                        gt,
+                        &candidate,
+                    );
+                }
+                let a = ab_composite(&baseline, [96.0; 3]);
+                let b = ab_composite(&candidate, [96.0; 3]);
+                let (x, y, side) = if stem == "原图" {
+                    (1792, 0, 1024)
+                } else {
+                    (0, 0, 1024)
+                };
+                let mut preview = RgbImage::new(side * 2 + 8, side);
+                image::imageops::overlay(
+                    &mut preview,
+                    &image::imageops::crop_imm(&a, x, y, side, side).to_image(),
+                    0,
+                    0,
+                );
+                image::imageops::overlay(
+                    &mut preview,
+                    &image::imageops::crop_imm(&b, x, y, side, side).to_image(),
+                    (side + 8) as i64,
+                    0,
+                );
+                preview
+                    .save(out.join(format!("{stem}_radius{radius}_gray_1to1.png")))
+                    .unwrap();
+                fs::write(out.join("report.txt"), &report).unwrap();
+            }
+        }
+        release_vitmatte_session();
+    }
+
+    #[test]
+    #[ignore = "手动执行：真实模型六图回归，输出 P104"]
+    fn ab_vitmatte_full_boundary_refine() {
+        let base = dirs::data_dir().unwrap().join("studio.avroracl.aias");
+        let inputs = PathBuf::from(r"F:\战争雷霆涂装\贴图素材\F15E 塞雷娅\测试");
+        let results = inputs.parent().unwrap().join("AB测试结果");
+        let out = results.join("P104_vitmatte_production_color_refine");
+        fs::create_dir_all(&out).unwrap();
+        let model = PathBuf::from(r"F:\AIAS\tmp\vitmatte-small\model.onnx");
+        release_vitmatte_session();
+        let mut report = String::from("P104: original -> existing AnimeSeg product -> shared production ViTMatte radius=8 -> boundary RGB re-estimation\nGT is evaluation-only. No GT for the five additional samples.\nPreviews: left=baseline, right=refined; crop images are native pixel scale.\n");
+        for file in [
+            "原图.png",
+            "129085040_p0.jpg",
+            "130169544_p0.png",
+            "136565655_p0.jpg",
+            "142101839_p0.jpg",
+            "73307539_p0.jpg",
+        ] {
+            let input = inputs.join(file);
+            let stem = input.file_stem().unwrap().to_str().unwrap();
+            let baseline_dir = if stem == "原图" {
+                "P77_production_animeseg_closed_form"
+            } else {
+                "P79_new_images_no_gt"
+            };
+            let baseline_path = results
+                .join(baseline_dir)
+                .join(format!("{stem}_anime-specialist.png"));
+            let rgb = image::open(&input).unwrap().to_rgb8();
+            let baseline = image::open(&baseline_path).unwrap().to_rgba8();
+            assert_eq!(rgb.dimensions(), baseline.dimensions());
+            println!("P104 start {file} {}x{}", rgb.width(), rgb.height());
+            let started = std::time::Instant::now();
+            let candidate =
+                try_refine_vitmatte_boundary_rgba(&base, &model, &rgb, baseline.clone(), 8, true)
+                    .unwrap();
+            let elapsed = started.elapsed();
+            let (w, h) = rgb.dimensions();
+            let alpha: Vec<f32> = baseline.pixels().map(|p| p[3] as f32 / 255.0).collect();
+            let gate = vitmatte_boundary_gate(&alpha, w, h, 8);
+            let mut changed = 0;
+            for ((a, b), &inside) in baseline.pixels().zip(candidate.pixels()).zip(&gate) {
+                if !inside {
+                    assert_eq!(a, b, "outside trimap must remain byte-identical");
+                }
+                if a[3] != b[3] {
+                    changed += 1;
+                }
+            }
+            candidate
+                .save(out.join(format!("{stem}_anime-specialist_hair.png")))
+                .unwrap();
+            report.push_str(&format!("\n{file}\nbaseline={}\nsize={w}x{h}\nrefiner_ms={}\nchanged_alpha_pixels={changed}\noutside_gate_changed=0\n",baseline_path.display(),elapsed.as_millis()));
+            if stem == "原图" {
+                let gt = image::open(inputs.join("人工抠图版.png"))
+                    .unwrap()
+                    .to_rgba8();
+                assert_eq!(gt.dimensions(), (w, h));
+                append_instance_metrics(&mut report, "baseline", &gt, &baseline);
+                append_instance_metrics(&mut report, "refined", &gt, &candidate);
+            }
+            for (label, bg) in [
+                ("black", [0.0, 0.0, 0.0]),
+                ("gray", [96.0, 96.0, 96.0]),
+                ("white", [255.0, 255.0, 255.0]),
+            ] {
+                let a = ab_composite(&baseline, bg);
+                let b = ab_composite(&candidate, bg);
+                let (pw, ph) = (800u32, (h as f64 / w as f64 * 800.0).round() as u32);
+                let mut preview = RgbImage::new(pw * 2 + 8, ph);
+                image::imageops::overlay(
+                    &mut preview,
+                    &image::imageops::resize(&a, pw, ph, FilterType::Lanczos3),
+                    0,
+                    0,
+                );
+                image::imageops::overlay(
+                    &mut preview,
+                    &image::imageops::resize(&b, pw, ph, FilterType::Lanczos3),
+                    (pw + 8) as i64,
+                    0,
+                );
+                preview
+                    .save(out.join(format!("{stem}_{label}_overview.jpg")))
+                    .unwrap();
+                // 位置固定，避免只挑改善区域：上部中心、左上、右中三个 768px 窗口。
+                let side = 768.min(w).min(h);
+                for (region, x, y) in [
+                    ("top", (w - side) / 2, 0),
+                    ("left", 0, (h / 6).min(h - side)),
+                    ("right", w - side, (h / 2).min(h - side)),
+                ] {
+                    let mut crop = RgbImage::new(side * 2 + 8, side);
+                    image::imageops::overlay(
+                        &mut crop,
+                        &image::imageops::crop_imm(&a, x, y, side, side).to_image(),
+                        0,
+                        0,
+                    );
+                    image::imageops::overlay(
+                        &mut crop,
+                        &image::imageops::crop_imm(&b, x, y, side, side).to_image(),
+                        (side + 8) as i64,
+                        0,
+                    );
+                    crop.save(out.join(format!("{stem}_{label}_{region}_1to1.png")))
+                        .unwrap();
+                }
+            }
+            println!("P104 finished {file} refine={}ms", elapsed.as_millis());
+            fs::write(out.join("report.txt"), &report).unwrap();
+        }
+        release_vitmatte_session();
+    }
+
     /// 开发期本地官方导出验证：不注册、不下载、不暴露到正式 UI。将同一张原图
-    /// 分别跑当前正式 general 完整管线和本机 HR 导出的原始 alpha，确认 HR 的
+    /// 分别跑当前正式 AnimeSeg 完整管线和本机候选导出的原始 alpha，确认候选的
     /// 实际输入尺寸、显存可行性与遮罩质量后，才决定是否值得进入后续正式实验。
     #[test]
     #[ignore = "手动执行：本地 HR BiRefNet 对照"]
@@ -1147,29 +2310,48 @@ mod toonout_tests {
             .map(PathBuf::from)
             .filter(|path| path.is_file())
             .expect("AIAS_AB_GT 必须指向人工 alpha 真值");
+        let production_result_path = std::env::var_os("AIAS_AB_PRODUCTION_RESULT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file());
         let out_dir = std::env::var_os("AIAS_AB_OUTPUT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"F:\AIAS\ab\local-hr"));
         let tag = std::env::var("AIAS_AB_TAG").unwrap_or_else(|_| "local-hr".into());
         let local_label = std::env::var("AIAS_AB_LOCAL_LABEL").unwrap_or_else(|_| "hr".into());
+        let local_matting = matches!(
+            std::env::var("AIAS_AB_LOCAL_MATTING").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        );
         assert!(
             !local_label.is_empty()
                 && local_label
                     .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_')),
+                    .all(|character| character.is_ascii_alphanumeric()
+                        || matches!(character, '-' | '_')),
             "AIAS_AB_LOCAL_LABEL 只能包含 ASCII 字母、数字、-、_"
         );
         let model_path = std::env::var_os("AIAS_AB_LOCAL_MODEL")
             .map(PathBuf::from)
             .unwrap_or_else(|| models_dir(&base).join("BiRefNet_HR-general-epoch_130.onnx"));
-        assert!(model_path.is_file(), "本地 HR 模型不可读：{}", model_path.display());
+        assert!(
+            model_path.is_file(),
+            "本地 HR 模型不可读：{}",
+            model_path.display()
+        );
         fs::create_dir_all(&out_dir).expect("创建 HR 对照输出目录");
 
         let original = image::open(&input).expect("原图可读").to_rgb8();
         let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
-        assert_eq!(original.dimensions(), gt.dimensions(), "原图与 GT 尺寸必须一致");
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
         let (w, h) = original.dimensions();
-        let stem = input.file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
 
         let started = std::time::Instant::now();
         let hr_alpha = run_birefnet_local_file(
@@ -1177,12 +2359,16 @@ mod toonout_tests {
             &format!("ab-local-{local_label}"),
             &model_path,
             true,
-            false,
+            local_matting,
             &original,
         )
         .unwrap_or_else(|error| panic!("本地 HR BiRefNet 推理失败：{error}"));
         println!("{tag} local HR inference elapsed {:?}", started.elapsed());
         assert_eq!(hr_alpha.len(), (w * h) as usize, "HR alpha 尺寸无效");
+
+        // 局部候选与正式模型都是大分辨率 BiRefNet 系会话；必须先释放候选，
+        // 否则测试会因两个会话争抢显存而让基线退回 CPU，扭曲耗时和可行性判断。
+        release_birefnet_session(&format!("ab-local-{local_label}"));
 
         let mut hr_result = RgbaImage::new(w, h);
         let mut hr_matte = ImageBuffer::<Luma<u8>, Vec<u8>>::new(w, h);
@@ -1202,42 +2388,90 @@ mod toonout_tests {
         hr_matte
             .save(out_dir.join(format!("{stem}_{local_result_label}_matte.png")))
             .expect("HR alpha 遮罩写出");
+        // 大分辨率输入试验的第一道筛选只需要原始模型 alpha 与既有正式产物的
+        // MAE / IoU。跳过 debug 下极慢的全尺寸后处理、距离场和预览图，避免把
+        // 开发工具耗时误认为模型耗时。
+        let fast_metrics_only = matches!(
+            std::env::var("AIAS_AB_FAST_METRICS_ONLY").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE")
+        );
+        if fast_metrics_only {
+            let production_path = production_result_path
+                .as_ref()
+                .expect("快速量化需要 AIAS_AB_PRODUCTION_RESULT 指向正式成图");
+            let specialist = image::open(production_path)
+                .expect("正式 AnimeSeg 参照图可读")
+                .to_rgba8();
+            assert_eq!(
+                specialist.dimensions(),
+                (w, h),
+                "正式 AnimeSeg 参照图尺寸必须一致"
+            );
+            let alignment = source_gt_alignment(&original, &gt);
+            let (production_mae, production_iou) = alpha_basic_mae_iou(&gt, &specialist);
+            let (local_mae, local_iou) = alpha_basic_mae_iou(&gt, &hr_result);
+            let report = format!(
+                "AIAS local dynamic-input fast A/B report\ntag={tag}\ninput={}\nground_truth={}\nproduction_result={}\nlocal_model={}\nlocal_input_size={}\ncomparison=raw local alpha vs existing production AnimeSeg alpha; no debug postprocess or previews\nlocal_inference_ms={}\nalignment_rgb_mae={:.4}\nalignment_changed_ratio={:.5}\nproduction_mae={production_mae:.6}\nproduction_iou={production_iou:.6}\nlocal_raw_mae={local_mae:.6}\nlocal_raw_iou={local_iou:.6}\n",
+                input.display(),
+                gt_path.display(),
+                production_path.display(),
+                model_path.display(),
+                std::env::var("AIAS_AB_LOCAL_INPUT_SIZE").unwrap_or_else(|_| "model-default".into()),
+                started.elapsed().as_millis(),
+                alignment.rgb_mae,
+                alignment.rgb_changed_ratio,
+            );
+            fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
+                .expect("快速量化指标报告写出");
+            return;
+        }
         let local_final_label = format!("birefnet-{local_label}_final");
-        // 本开发用例的本地导出均为 1024 输入，使用与正式 General 1024 相同的
-        // 原生边缘策略，避免再引入低分辨率模型才需要的引导滤波。
+        // 对候选的原始 alpha 只走正式的统一后处理；模型输入尺寸和是否为
+        // matting 输出由模型文件与显式环境变量决定，不能在这里假定为 1024。
         let local_final = finalize_cutout_image(&original, hr_alpha, true);
         local_final
             .save(out_dir.join(format!("{stem}_{local_final_label}.png")))
             .expect("本地模型正式后处理结果写出");
 
-        // 同目录重跑当前正式结果，让本地模型与完整正式管线可独立复核。
-        let general_path = out_dir.join(format!("{stem}_birefnet-general_final.png"));
-        cutout_with_fallback(&base, "birefnet-general", &input, &general_path)
-            .expect("正式 general 参照推理");
-        let general = image::open(&general_path).expect("正式 general 可读").to_rgba8();
+        // 优先复用已在 release 流程得到的正式产物，避免在 debug 测试中重复执行
+        // 闭式 alpha 精修（会令 A/B 的时间几乎全花在无关的 CPU 求解上）。
+        let specialist = if let Some(path) = production_result_path.as_ref() {
+            let result = image::open(path)
+                .expect("正式 AnimeSeg 参照图可读")
+                .to_rgba8();
+            assert_eq!(
+                result.dimensions(),
+                (w, h),
+                "正式 AnimeSeg 参照图尺寸必须一致"
+            );
+            result
+        } else {
+            let specialist_path = out_dir.join(format!("{stem}_anime-specialist_final.png"));
+            cutout_with_fallback(&base, "anime-specialist", &input, &specialist_path)
+                .expect("正式 AnimeSeg 参照推理");
+            image::open(&specialist_path)
+                .expect("正式 AnimeSeg 可读")
+                .to_rgba8()
+        };
 
         let alignment = source_gt_alignment(&original, &gt);
         let mut report = format!(
-            "AIAS local BiRefNet A/B report\ntag={tag}\ninput={}\nground_truth={}\nlocal_model={}\ncomparison=local raw/final alpha vs current general final pipeline\nalignment_rgb_mae={:.4}\nalignment_changed_ratio={:.5}\n",
+            "AIAS local BiRefNet A/B report\ntag={tag}\ninput={}\nground_truth={}\nproduction_result={}\nlocal_model={}\nlocal_matting={}\ncomparison=local raw/final alpha vs current AnimeSeg final pipeline\nalignment_rgb_mae={:.4}\nalignment_changed_ratio={:.5}\n",
             input.display(),
             gt_path.display(),
+            production_result_path.as_ref().map_or_else(|| "rerun_in_test".to_string(), |path| path.display().to_string()),
             model_path.display(),
+            local_matting,
             alignment.rgb_mae,
             alignment.rgb_changed_ratio,
         );
-        append_instance_metrics(&mut report, "birefnet-general_final", &gt, &general);
-        append_instance_metrics(
-            &mut report,
-            &local_result_label,
-            &gt,
-            &hr_result,
-        );
+        append_instance_metrics(&mut report, "anime-specialist_final", &gt, &specialist);
+        append_instance_metrics(&mut report, &local_result_label, &gt, &hr_result);
         append_instance_metrics(&mut report, &local_final_label, &gt, &local_final);
-        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
-            .expect("HR 对照指标报告写出");
+        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report).expect("HR 对照指标报告写出");
 
         for (label, result) in [
-            ("birefnet-general_final", &general),
+            ("anime-specialist_final", &specialist),
             (local_result_label.as_str(), &hr_result),
             (local_final_label.as_str(), &local_final),
         ] {
@@ -1316,7 +2550,7 @@ mod toonout_tests {
                         (inner <= outer
                             && outer <= u16::MAX as usize - 1
                             && (0.0..=1.0).contains(&confidence))
-                            .then_some((inner, outer, confidence))
+                        .then_some((inner, outer, confidence))
                     })
                     .collect()
             })
@@ -1325,11 +2559,21 @@ mod toonout_tests {
 
         let original = image::open(&input).expect("原图可读").to_rgb8();
         let gt = image::open(&gt_path).expect("人工真值可读").to_rgba8();
-        assert_eq!(original.dimensions(), gt.dimensions(), "原图与 GT 尺寸必须一致");
-        assert!(is_model_ready(&base, "birefnet-general"), "测试需要 BiRefNet general");
+        assert_eq!(
+            original.dimensions(),
+            gt.dimensions(),
+            "原图与 GT 尺寸必须一致"
+        );
+        assert!(
+            is_model_ready(&base, "birefnet-general"),
+            "测试需要 BiRefNet general"
+        );
         assert!(is_model_ready(&base, "advanced"), "测试需要动漫精细模型");
 
-        let stem = input.file_stem().and_then(|value| value.to_str()).unwrap_or("image");
+        let stem = input
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image");
         let general_path = out_dir.join(format!("{stem}_instance_general.png"));
         cutout_with_fallback(&base, "birefnet-general", &input, &general_path)
             .expect("通用高质量 alpha 推理");
@@ -1393,13 +2637,8 @@ mod toonout_tests {
                     "adaptive_i{inner}_o{outer}_t{:02}",
                     (threshold * 100.0).round() as u8
                 );
-                let constrained = apply_adaptive_instance_gate(
-                    &general,
-                    &distance,
-                    inner,
-                    outer,
-                    threshold,
-                );
+                let constrained =
+                    apply_adaptive_instance_gate(&general, &distance, inner, outer, threshold);
                 constrained
                     .save(out_dir.join(format!("{stem}_instance_{label}.png")))
                     .expect("自适应实例约束结果写出");
@@ -1484,11 +2723,17 @@ mod toonout_tests {
                 distance[index] = best;
             }
         }
-        distance.into_iter().map(|value| value <= radius as u16).collect()
+        distance
+            .into_iter()
+            .map(|value| value <= radius as u16)
+            .collect()
     }
 
     fn apply_instance_gate(general: &RgbaImage, gate: &[bool]) -> RgbaImage {
-        assert_eq!(general.width() as usize * general.height() as usize, gate.len());
+        assert_eq!(
+            general.width() as usize * general.height() as usize,
+            gate.len()
+        );
         let mut constrained = general.clone();
         for (pixel, keep) in constrained.pixels_mut().zip(gate) {
             if !*keep {
@@ -1556,6 +2801,202 @@ mod toonout_tests {
         distance
     }
 
+    /// 全图 alpha 的两侧对称边界带。仅在这一带允许高密度分块结果影响输出，
+    /// 以免局部视野丢失人物语义时把远处动漫背景重新纳入前景。
+    fn alpha_boundary_gate(matte: &[f32], width: u32, height: u32, radius: usize) -> Vec<bool> {
+        let distance_to_foreground = instance_distance(matte, width, height, radius);
+        let inverse: Vec<f32> = matte.iter().map(|alpha| 1.0 - alpha).collect();
+        let distance_to_background = instance_distance(&inverse, width, height, radius);
+        distance_to_foreground
+            .into_iter()
+            .zip(distance_to_background)
+            .map(|(foreground, background)| {
+                foreground as usize <= radius && background as usize <= radius
+            })
+            .collect()
+    }
+
+    /// 单通道（由原图 RGB 转亮度）引导滤波。相比通用的 3×3 RGB 版本，它在动漫
+    /// 线稿这种强明暗边界上仍有足够的结构信息，同时将每块峰值内存控制在可用范围。
+    fn guided_filter_luma_alpha(
+        rgb: &RgbImage,
+        alpha: &[f32],
+        radius: usize,
+        epsilon: f32,
+    ) -> Vec<f32> {
+        let (w, h) = rgb.dimensions();
+        let (w, h) = (w as usize, h as usize);
+        assert_eq!(alpha.len(), w * h, "亮度引导 Alpha 尺寸不一致");
+        let radius = radius
+            .min(w.saturating_sub(1))
+            .min(h.saturating_sub(1))
+            .max(1);
+        let luma: Vec<f32> = rgb
+            .pixels()
+            .map(|pixel| {
+                (0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32)
+                    / 255.0
+            })
+            .collect();
+        let mean_luma = box_mean_f32(&luma, w, h, radius);
+        let mean_alpha = box_mean_f32(alpha, w, h, radius);
+        let mut product: Vec<f32> = luma.iter().map(|value| value * value).collect();
+        let mean_luma_square = box_mean_f32(&product, w, h, radius);
+        for (slot, (luma, alpha)) in product.iter_mut().zip(luma.iter().zip(alpha)) {
+            *slot = luma * alpha;
+        }
+        let mean_luma_alpha = box_mean_f32(&product, w, h, radius);
+
+        let mut a = vec![0.0f32; w * h];
+        let mut b = vec![0.0f32; w * h];
+        for index in 0..a.len() {
+            let variance = mean_luma_square[index] - mean_luma[index] * mean_luma[index];
+            let covariance = mean_luma_alpha[index] - mean_luma[index] * mean_alpha[index];
+            a[index] = covariance / (variance + epsilon.max(1e-6));
+            b[index] = mean_alpha[index] - a[index] * mean_luma[index];
+        }
+        drop(product);
+        drop(mean_luma_square);
+        drop(mean_luma_alpha);
+        drop(mean_alpha);
+        drop(mean_luma);
+
+        let mean_a = box_mean_f32(&a, w, h, radius);
+        let mean_b = box_mean_f32(&b, w, h, radius);
+        luma.iter()
+            .zip(mean_a.iter().zip(mean_b.iter()))
+            .map(|(luma, (a, b))| (a * luma + b).clamp(0.0, 1.0))
+            .collect()
+    }
+
+    /// 以 1024px 核心分块执行亮度引导滤波，滤波窗口以 padding 包含在块内；只有
+    /// `gate` 为真处可写回，故分块只是内存管理手段，并不重新解释整张图片语义。
+    fn tiled_luma_guided_boundary_refine(
+        rgb: &RgbImage,
+        base_alpha: &image::GrayImage,
+        gate: &[bool],
+        tile_core: u32,
+        padding: u32,
+        radius: usize,
+        epsilon: f32,
+    ) -> image::GrayImage {
+        let (w, h) = rgb.dimensions();
+        assert_eq!(base_alpha.dimensions(), (w, h), "基线 Alpha 尺寸不一致");
+        assert_eq!(gate.len(), (w * h) as usize, "边界门控尺寸不一致");
+        let mut refined = base_alpha.clone();
+        let tile_core = tile_core.max(1);
+        for top in (0..h).step_by(tile_core as usize) {
+            let bottom = (top + tile_core).min(h);
+            for left in (0..w).step_by(tile_core as usize) {
+                let right = (left + tile_core).min(w);
+                let has_gate =
+                    (top..bottom).any(|y| (left..right).any(|x| gate[(y * w + x) as usize]));
+                if !has_gate {
+                    continue;
+                }
+                let padded_left = left.saturating_sub(padding);
+                let padded_top = top.saturating_sub(padding);
+                let padded_right = (right + padding).min(w);
+                let padded_bottom = (bottom + padding).min(h);
+                let padded_w = padded_right - padded_left;
+                let padded_h = padded_bottom - padded_top;
+                let rgb_tile =
+                    image::imageops::crop_imm(rgb, padded_left, padded_top, padded_w, padded_h)
+                        .to_image();
+                let mut alpha_tile = Vec::with_capacity((padded_w * padded_h) as usize);
+                for y in padded_top..padded_bottom {
+                    for x in padded_left..padded_right {
+                        alpha_tile.push(base_alpha.get_pixel(x, y)[0] as f32 / 255.0);
+                    }
+                }
+                let filtered = guided_filter_luma_alpha(&rgb_tile, &alpha_tile, radius, epsilon);
+                for y in top..bottom {
+                    for x in left..right {
+                        let output_index = (y * w + x) as usize;
+                        if !gate[output_index] {
+                            continue;
+                        }
+                        let tile_index = ((y - padded_top) * padded_w + (x - padded_left)) as usize;
+                        refined.put_pixel(
+                            x,
+                            y,
+                            Luma([(filtered[tile_index].clamp(0.0, 1.0) * 255.0).round() as u8]),
+                        );
+                    }
+                }
+            }
+        }
+        refined
+    }
+
+    /// 分块推理已经完成而合成时内存不足时，复用已落盘的 raw Alpha 完成正式
+    /// 后处理。这样既不会重复耗时的模型推理，也能保证最终 PNG 仍走产品同一
+    /// 个 `finalize_cutout_image` 路径。
+    fn finalize_saved_alpha_variants(
+        input: &Path,
+        gt_path: &Path,
+        original: &RgbImage,
+        gt: &RgbaImage,
+        out_dir: &Path,
+        stem: &str,
+        tag: &str,
+        raw_dir: &Path,
+    ) {
+        let mut report = format!(
+            "AIAS AnimeSeg boundary tiled-refine A/B report\ntag={tag}\ninput={}\nground_truth={}\nstrategy=resume saved raw alpha with the shipping finalize_cutout_image path; development only\n",
+            input.display(),
+            gt_path.display(),
+        );
+        for label in [
+            "anime-specialist-global",
+            "anime-specialist-boundary-tile-050",
+            "anime-specialist-boundary-tile-100",
+        ] {
+            let raw_path = raw_dir.join(format!("{stem}_{label}_matte_raw.png"));
+            let raw = image::open(&raw_path)
+                .unwrap_or_else(|error| panic!("原始 Alpha 不可读 {}: {error}", raw_path.display()))
+                .to_luma8();
+            assert_eq!(
+                raw.dimensions(),
+                original.dimensions(),
+                "原始 Alpha 尺寸不一致"
+            );
+            let raw_metrics = alpha_metrics_luma(gt, &raw);
+            report.push_str(&format!(
+                "{label}\tstage=raw\tmae={:.5}\tiou={:.5}\tinterior_miss_mean={:.5}\tboundary_mae={:.5}\texterior_leak_mean={:.5}\n",
+                raw_metrics.mae,
+                raw_metrics.iou,
+                raw_metrics.interior_miss_mean,
+                raw_metrics.boundary_mae,
+                raw_metrics.exterior_leak_mean,
+            ));
+            let mask: Vec<f32> = raw
+                .as_raw()
+                .iter()
+                .map(|alpha| *alpha as f32 / 255.0)
+                .collect();
+            let result = finalize_cutout_image(original, mask, true);
+            result
+                .save(out_dir.join(format!("{stem}_{label}.png")))
+                .expect("恢复合成结果写出");
+            ab_gt_preview(
+                input,
+                gt,
+                &result,
+                &out_dir.join(format!("{stem}_{label}_preview.jpg")),
+            );
+            alpha_error_heatmap(
+                original,
+                gt,
+                &result,
+                &out_dir.join(format!("{stem}_{label}_alpha_error.png")),
+            );
+            append_instance_metrics(&mut report, label, gt, &result);
+        }
+        fs::write(out_dir.join(format!("{tag}_metrics.txt")), report)
+            .expect("恢复 A/B 指标报告写出");
+    }
+
     /// 近区完全信任主实例门控；远区只允许高置信度 General alpha 通过。它是
     /// 为长发/衣摆等离实例粗遮罩较远的细结构预留的受控通道，绝不会无边界地
     /// 放回整个背景。
@@ -1566,12 +3007,14 @@ mod toonout_tests {
         outer: usize,
         alpha_threshold: f32,
     ) -> RgbaImage {
-        assert_eq!(general.width() as usize * general.height() as usize, distance.len());
+        assert_eq!(
+            general.width() as usize * general.height() as usize,
+            distance.len()
+        );
         let mut constrained = general.clone();
         for (pixel, distance) in constrained.pixels_mut().zip(distance) {
             let keep = *distance as usize <= inner
-                || (*distance as usize <= outer
-                    && pixel[3] as f32 / 255.0 >= alpha_threshold);
+                || (*distance as usize <= outer && pixel[3] as f32 / 255.0 >= alpha_threshold);
             if !keep {
                 pixel[3] = 0;
             }
@@ -1596,7 +3039,8 @@ mod toonout_tests {
             let component = components.len() as u32;
             labels[start] = component;
             stack.push(start);
-            let (mut count, mut min_x, mut min_y, mut max_x, mut max_y) = (0usize, w, h, 0usize, 0usize);
+            let (mut count, mut min_x, mut min_y, mut max_x, mut max_y) =
+                (0usize, w, h, 0usize, 0usize);
             while let Some(index) = stack.pop() {
                 let (x, y) = (index % w, index / w);
                 count += 1;
@@ -1616,17 +3060,22 @@ mod toonout_tests {
             }
             components.push((count, min_x, min_y, max_x, max_y));
         }
-        let Some((best, _)) = components.iter().enumerate().max_by(|(_, left), (_, right)| {
-            let score = |component: &(usize, usize, usize, usize, usize)| {
-                let (count, min_x, min_y, max_x, max_y) = *component;
-                let area = count as f32 / (w * h).max(1) as f32;
-                let cx = (min_x + max_x) as f32 * 0.5 / w.max(1) as f32;
-                let cy = (min_y + max_y) as f32 * 0.5 / h.max(1) as f32;
-                let center = 1.0 - ((cx - 0.5).powi(2) + (cy - 0.5).powi(2)).sqrt() / 0.707_106_77;
-                area.sqrt() * 0.75 + center.clamp(0.0, 1.0) * 0.25
-            };
-            score(left).total_cmp(&score(right))
-        }) else {
+        let Some((best, _)) = components
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| {
+                let score = |component: &(usize, usize, usize, usize, usize)| {
+                    let (count, min_x, min_y, max_x, max_y) = *component;
+                    let area = count as f32 / (w * h).max(1) as f32;
+                    let cx = (min_x + max_x) as f32 * 0.5 / w.max(1) as f32;
+                    let cy = (min_y + max_y) as f32 * 0.5 / h.max(1) as f32;
+                    let center =
+                        1.0 - ((cx - 0.5).powi(2) + (cy - 0.5).powi(2)).sqrt() / 0.707_106_77;
+                    area.sqrt() * 0.75 + center.clamp(0.0, 1.0) * 0.25
+                };
+                score(left).total_cmp(&score(right))
+            })
+        else {
             return vec![0.0; matte.len()];
         };
         matte
@@ -1636,7 +3085,12 @@ mod toonout_tests {
             .collect()
     }
 
-    fn append_instance_metrics(report: &mut String, label: &str, gt: &RgbaImage, result: &RgbaImage) {
+    pub(crate) fn append_instance_metrics(
+        report: &mut String,
+        label: &str,
+        gt: &RgbaImage,
+        result: &RgbaImage,
+    ) {
         let metrics = alpha_metrics(gt, result);
         report.push_str(&format!(
             "{label}\tmae={:.5}\tiou={:.5}\tinterior_miss_mean={:.5}\tboundary_mae={:.5}\texterior_leak_mean={:.5}\n",
@@ -1705,13 +3159,37 @@ mod toonout_tests {
         alpha_metrics_bytes(gt, &alpha)
     }
 
+    /// 供超大图开发筛选使用的轻量指标：不构造边界距离场，只量化全图 alpha
+    /// 绝对误差与二值前景覆盖，确保测试时间主要反映模型推理而非诊断开销。
+    fn alpha_basic_mae_iou(gt: &RgbaImage, result: &RgbaImage) -> (f32, f32) {
+        assert_eq!(gt.dimensions(), result.dimensions());
+        let mut absolute_error = 0u64;
+        let mut intersection = 0u64;
+        let mut union = 0u64;
+        for (expected, actual) in gt.pixels().zip(result.pixels()) {
+            absolute_error += u8::abs_diff(expected[3], actual[3]) as u64;
+            let expected_foreground = expected[3] > 127;
+            let actual_foreground = actual[3] > 127;
+            intersection += u64::from(expected_foreground && actual_foreground);
+            union += u64::from(expected_foreground || actual_foreground);
+        }
+        let pixels = (gt.width() as u64 * gt.height() as u64).max(1);
+        (
+            absolute_error as f32 / (pixels * 255) as f32,
+            intersection as f32 / union.max(1) as f32,
+        )
+    }
+
     fn alpha_metrics_luma(gt: &RgbaImage, result: &image::GrayImage) -> AlphaMetrics {
         assert_eq!(gt.dimensions(), result.dimensions());
         alpha_metrics_bytes(gt, result.as_raw())
     }
 
     fn alpha_metrics_bytes(gt: &RgbaImage, predicted_alpha: &[u8]) -> AlphaMetrics {
-        assert_eq!(gt.width() as usize * gt.height() as usize, predicted_alpha.len());
+        assert_eq!(
+            gt.width() as usize * gt.height() as usize,
+            predicted_alpha.len()
+        );
         let (width, height) = gt.dimensions();
         let solid: Vec<bool> = gt.pixels().map(|pixel| pixel[3] > 127).collect();
         let dist_to_foreground = chebyshev_distance_clamped(&solid, width, height, 4);
@@ -1794,7 +3272,12 @@ mod toonout_tests {
     }
 
     /// 到最近 seed 的 8 邻域（Chebyshev）距离，最大只需区分到 4px 以外。
-    fn chebyshev_distance_clamped(seeds: &[bool], width: u32, height: u32, max: u8) -> Vec<u8> {
+    pub(crate) fn chebyshev_distance_clamped(
+        seeds: &[bool],
+        width: u32,
+        height: u32,
+        max: u8,
+    ) -> Vec<u8> {
         let (w, h) = (width as usize, height as usize);
         assert_eq!(seeds.len(), w * h);
         let mut distance: Vec<u8> = seeds
@@ -1868,7 +3351,11 @@ mod toonout_tests {
                 (source[2] as f32 * 0.22).round(),
             ];
             let intensity = ((delta.abs() - 0.05) / 0.95).clamp(0.0, 1.0);
-            let tint = if delta >= 0.0 { [255.0, 40.0, 40.0] } else { [45.0, 130.0, 255.0] };
+            let tint = if delta >= 0.0 {
+                [255.0, 40.0, 40.0]
+            } else {
+                [45.0, 130.0, 255.0]
+            };
             *target = image::Rgb([
                 (base[0] * (1.0 - intensity) + tint[0] * intensity).round() as u8,
                 (base[1] * (1.0 - intensity) + tint[1] * intensity).round() as u8,
@@ -1886,9 +3373,7 @@ mod toonout_tests {
             ((w as f32 * scale).round() as u32).max(1),
             ((h as f32 * scale).round() as u32).max(1),
         );
-        let original = image::open(input)
-            .expect("原图可读")
-            .to_rgb8();
+        let original = image::open(input).expect("原图可读").to_rgb8();
         let o_small = image::imageops::resize(&original, tw, th, FilterType::Triangle);
         let r_small = image::imageops::resize(result, tw, th, FilterType::Triangle);
         let over_white = ab_composite(&r_small, [255.0, 255.0, 255.0]);
@@ -1974,7 +3459,10 @@ mod toonout_tests {
         ort::init()
             .with_name("aias-cuda-diag")
             .with_logger(Arc::new(|level, category, _id, code_location, message| {
-                println!("[ORT {:?}] {} {} {}", level, category, code_location, message);
+                println!(
+                    "[ORT {:?}] {} {} {}",
+                    level, category, code_location, message
+                );
             }))
             .commit();
 
@@ -1997,7 +3485,15 @@ mod toonout_tests {
         for y in 0..1024 {
             for x in 0..1024 {
                 let inside = (128..896).contains(&x) && (128..896).contains(&y);
-                img.put_pixel(x, y, if inside { image::Rgb([244, 150, 58]) } else { image::Rgb([28, 34, 58]) });
+                img.put_pixel(
+                    x,
+                    y,
+                    if inside {
+                        image::Rgb([244, 150, 58])
+                    } else {
+                        image::Rgb([28, 34, 58])
+                    },
+                );
             }
         }
         let input = base.join("cuda-diag-in.png");

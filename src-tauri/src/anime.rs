@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 mod infer;
 mod postprocess;
+#[cfg(test)]
+mod recovery_tests;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -59,6 +61,19 @@ pub(crate) const BIREFNET_LITE_SIZE: u64 = 114_538_787;
 pub(crate) const BIREFNET_GENERAL_1024_FP16_SIZE: u64 = 489_666_272;
 
 pub(crate) const ANIME_SPECIALIST_SIZE: u64 = 117_239_813;
+
+/// ViTMatte small 的 ONNX 导出，仅作为 AnimeSeg 成图的可选 8px 边界 alpha
+/// 精修器；它不参与主模型下拉选择，也不会在未启用时被加载或下载。
+pub(crate) const HAIR_REFINER_ID: &str = "vitmatte-hair-refiner";
+pub(crate) const HAIR_REFINER_LABEL: &str = "精细发丝边缘（ViTMatte）";
+pub(crate) const HAIR_REFINER_FILE: &str = "vitmatte-small-distinctions-646.onnx";
+pub(crate) const HAIR_REFINER_SIZE: u64 = 103_885_865;
+pub(crate) const HAIR_REFINER_FILES: &[ModelFileSpec] = &[ModelFileSpec {
+    name: HAIR_REFINER_FILE,
+    size: HAIR_REFINER_SIZE,
+    mirror_url: "https://hf-mirror.com/Xenova/vitmatte-small-distinctions-646/resolve/da379332422700028fcade44e2cb915b6eed3548/onnx/model.onnx",
+    origin_url: "https://huggingface.co/Xenova/vitmatte-small-distinctions-646/resolve/da379332422700028fcade44e2cb915b6eed3548/onnx/model.onnx",
+}];
 
 pub const MODELS: &[ModelSpec] = &[
     // 专为二次元角色分割训练的动态 ONNX。正式推理固定为经人工真值回归验证的
@@ -212,6 +227,39 @@ pub fn models_status(base: &Path) -> Vec<ModelStatus> {
         .collect()
 }
 
+/// 发丝精修器是附属能力而非一个可单独抠图的模型，因此单独暴露其状态，避免
+/// 在主模型选择器中出现一个无法独立工作的选项。
+pub fn hair_refiner_status(base: &Path) -> ModelStatus {
+    let dir = models_dir(base);
+    let files: Vec<ModelFileStatus> = HAIR_REFINER_FILES
+        .iter()
+        .map(|file| {
+            let path = dir.join(file.name);
+            let size = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+            ModelFileStatus {
+                name: file.name.to_string(),
+                present: path.exists(),
+                size,
+                expected_size: file.size,
+            }
+        })
+        .collect();
+    let installed = files
+        .iter()
+        .all(|file| file.present && file.size == file.expected_size);
+    ModelStatus {
+        id: HAIR_REFINER_ID.to_string(),
+        label: HAIR_REFINER_LABEL.to_string(),
+        installed,
+        total_size: HAIR_REFINER_FILES.iter().map(|file| file.size).sum(),
+        files,
+    }
+}
+
+pub fn is_hair_refiner_ready(base: &Path) -> bool {
+    hair_refiner_status(base).installed
+}
+
 pub fn is_model_ready(base: &Path, id: &str) -> bool {
     models_status(base)
         .into_iter()
@@ -249,6 +297,29 @@ pub fn cutout_with_fallback(
     input: &Path,
     output: &Path,
 ) -> Result<CutoutOutcome, String> {
+    cutout_with_options(base, model_id, input, output, false, false)
+}
+
+/// 与默认抠图相同，但可显式启用实验性细节恢复与 ViTMatte 的窄边界发丝精修。
+/// 两个开关仅对用户直接选择的 AnimeSeg 生效，避免改变 ToonOut 回退链及其它
+/// 已验证模型的行为。
+pub fn cutout_with_options(
+    base: &Path,
+    model_id: &str,
+    input: &Path,
+    output: &Path,
+    refine_hair_edges: bool,
+    recover_details: bool,
+) -> Result<CutoutOutcome, String> {
+    if refine_hair_edges && model_id != "anime-specialist" {
+        return Err("精细发丝边缘目前仅支持动漫专精（AnimeSeg）。".into());
+    }
+    if refine_hair_edges && !is_hair_refiner_ready(base) {
+        return Err("精细发丝边缘模型未安装，请先在右侧栏下载。".into());
+    }
+    if recover_details && model_id != "anime-specialist" {
+        return Err("高分辨率细节补全目前仅支持动漫专精（AnimeSeg）。".into());
+    }
     let mut image = image::open(input).map_err(to_string_error)?;
     if let Some(orientation) = exif_orientation(input)? {
         image.apply_orientation(orientation);
@@ -259,9 +330,7 @@ pub fn cutout_with_fallback(
     let (mask, fallback_model) = match model_spec(model_id)?.kind {
         ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
         ModelKind::Advanced => (run_advanced(base, &rgb)?, model_id),
-        ModelKind::BiRefNet { matting } => {
-            (run_birefnet(base, model_id, matting, &rgb)?, model_id)
-        }
+        ModelKind::BiRefNet { matting } => (run_birefnet(base, model_id, matting, &rgb)?, model_id),
         ModelKind::Toonout => {
             let mask = run_birefnet(base, "toonout", false, &rgb)?;
             if toonout_likely_failed(&mask, w, h) {
@@ -271,7 +340,9 @@ pub fn cutout_with_fallback(
                 release_birefnet_session("toonout");
                 let specialist_candidate = if is_model_ready(base, "anime-specialist") {
                     match run_birefnet(base, "anime-specialist", false, &rgb) {
-                        Ok(candidate) if matte_is_substantially_cleaner(&candidate, &mask, w, h) => {
+                        Ok(candidate)
+                            if matte_is_substantially_cleaner(&candidate, &mask, w, h) =>
+                        {
                             Some(candidate)
                         }
                         _ => None,
@@ -341,11 +412,31 @@ pub fn cutout_with_fallback(
         let _ = raw_image.save(output.with_file_name(format!("{stem}_matte_raw.png")));
     }
 
-    let result = finalize_cutout_image(
-        &rgb,
-        mask,
-        model_uses_native_edge_alpha(fallback_model),
-    );
+    // AnimeSeg 固定以 1024 输入换取稳定的动漫主体语义。对于长边达到 1600px 的
+    // 原图，再只在其自动 4px 边界带上使用原始 RGB 求解 alpha，恢复高分辨率
+    // 轮廓；其它模型和较小图片保留既有输出，避免改变已验证的行为。
+    let mask = if fallback_model == "anime-specialist" {
+        refine_closed_form_boundary_alpha(&rgb, mask)
+    } else {
+        mask
+    };
+    let result = finalize_cutout_image(&rgb, mask, model_uses_native_edge_alpha(fallback_model));
+    let result = if recover_details
+        && model_id == "anime-specialist"
+        && fallback_model == "anime-specialist"
+    {
+        recover_anime_specialist_details_rgba(base, &rgb, result)?
+    } else {
+        result
+    };
+    let result = if refine_hair_edges
+        && model_id == "anime-specialist"
+        && fallback_model == "anime-specialist"
+    {
+        refine_vitmatte_boundary_rgba(base, &rgb, result)?
+    } else {
+        result
+    };
     result
         .save_with_format(output, image::ImageFormat::Png)
         .map_err(to_string_error)?;
@@ -370,7 +461,9 @@ pub fn cutout_with_fallback(
 }
 
 /// EXIF orientation via the format decoder; only JPEG actually carries it here.
-pub(crate) fn exif_orientation(input: &Path) -> Result<Option<image::metadata::Orientation>, String> {
+pub(crate) fn exif_orientation(
+    input: &Path,
+) -> Result<Option<image::metadata::Orientation>, String> {
     let file = fs::File::open(input).map_err(to_string_error)?;
     let mut decoder = match image::codecs::jpeg::JpegDecoder::new(std::io::BufReader::new(file)) {
         Ok(decoder) => decoder,

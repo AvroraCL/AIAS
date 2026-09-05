@@ -36,6 +36,28 @@ python tools/deliver.py exp1 P5
 调试辅助：`AIAS_AB_DEBUG=1` 额外导出引导滤波前的原始蒙版（`*_matte_raw.png`）与
 最终蒙版（`*_matte.png`），用于定位某一步后处理引入的偏差。
 
+## 实验开关基准（anime-specialist 专属，默认关闭）
+
+两个用户可见的实验选项各有对应的 `#[ignore]` 基准：
+
+```bash
+# 细节补全（两次上半部局部推理，只补不擦）：全图指标见输出 report.txt
+cargo test --release anime::recovery_tests::ab_production_detail_recovery_path -- --ignored --exact --nocapture
+
+# ViTMatte 发丝探针：需要 tmp/vitmatte-small/model.onnx（约 99MB）与
+# anime-specialist 的 _matte_raw.png（AIAS_AB_DEBUG=1 产生）作为基 alpha。
+# AIAS_AB_CROP=x,y,w,h 指定评估窗口——自动选窗可能落在毫无误差的区域，测不出差异。
+AIAS_AB_BASE_ALPHA=... AIAS_AB_PRODUCT_RESULT=... \
+  cargo test --release anime::tests::toonout_tests::ab_vitmatte_local_hair_probe -- --ignored --exact --nocapture
+```
+
+结论（2026-09，真值图实测）：
+
+- **细节补全为正收益**：mae 0.00358→0.00339，IoU 0.9930→0.9934，内部漏检 -21%，
+  边界误差 0.1695→0.1648，外溢不变；加性不变量（只补不擦）由测试锁定。
+- **ViTMatte 窄带精修在最难区域为负收益**（mae +25%、外溢 +0.025），保留为实验
+  选项默认关闭；其门控（只许在基图边缘窄带内改动）由测试锁定。
+
 ## 指标定义
 
 设 GT 实心 = `gt_alpha >= 128`，我们的实心 = `alpha >= 128`：

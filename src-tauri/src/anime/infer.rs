@@ -3,7 +3,7 @@
 use super::*;
 
 use image::imageops::FilterType;
-use image::{ImageBuffer, Luma, RgbImage};
+use image::{ImageBuffer, Luma, RgbImage, RgbaImage};
 use ort::session::Session;
 use ort::value::{Tensor, ValueType};
 use std::path::Path;
@@ -45,7 +45,13 @@ pub(crate) fn thumbnail_fit(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32
     (new_w.max(1), new_h.max(1))
 }
 
-pub(crate) fn bilinear_resize_luma(data: &[u8], width: u32, height: u32, new_w: u32, new_h: u32) -> Vec<u8> {
+pub(crate) fn bilinear_resize_luma(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    new_w: u32,
+    new_h: u32,
+) -> Vec<u8> {
     let source = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(width, height, data.to_vec())
         .expect("buffer size mismatch");
     image::imageops::resize(&source, new_w, new_h, FilterType::Triangle).into_raw()
@@ -209,8 +215,7 @@ pub(crate) struct CharacterCandidate {
 }
 
 pub(crate) fn main_subject_score(candidate: CharacterCandidate, width: u32, height: u32) -> f32 {
-    let area = ((candidate.x2 - candidate.x1).max(0.0)
-        * (candidate.y2 - candidate.y1).max(0.0)
+    let area = ((candidate.x2 - candidate.x1).max(0.0) * (candidate.y2 - candidate.y1).max(0.0)
         / (width.max(1) as f32 * height.max(1) as f32))
         .clamp(0.0, 1.0);
     let center_x = (candidate.x1 + candidate.x2) * 0.5;
@@ -678,7 +683,12 @@ pub(crate) fn birefnet_range_normalization_enabled() -> bool {
 /// 官方 fp32 导出在 1024² 下显存占用约为 fp16 的两倍（整图 ASPP 中间张量单笔
 /// 约 784MB），桌面应用占用较多显存的卡上 GPU 推理会 OOM：此时释放 GPU 会话、
 /// 改用 CPU 重建并重试一次，保证出图（慢但可用）。
-pub(crate) fn run_birefnet(base: &Path, id: &str, matting: bool, rgb: &RgbImage) -> Result<Vec<f32>, String> {
+pub(crate) fn run_birefnet(
+    base: &Path,
+    id: &str,
+    matting: bool,
+    rgb: &RgbImage,
+) -> Result<Vec<f32>, String> {
     #[cfg(test)]
     if std::env::var_os("AIAS_AB_FORCE_CPU").is_some() {
         return run_birefnet_on_provider(base, id, matting, rgb, false);
@@ -691,6 +701,495 @@ pub(crate) fn run_birefnet(base: &Path, id: &str, matting: bool, rgb: &RgbImage)
         }
         Err(error) => Err(error),
     }
+}
+
+/// 以当前正式结果为语义锚点，让 ViTMatte 只重算 8px 的不确定边界带。
+/// 它不是第二个“抠图模型”：主体内部与远处背景 alpha 均严格保留，因此不会
+/// 让局部分块把复杂动漫背景重新识别为前景。
+pub(crate) fn refine_vitmatte_boundary_rgba(
+    base: &Path,
+    rgb: &RgbImage,
+    current: RgbaImage,
+) -> Result<RgbaImage, String> {
+    const BOUNDARY_RADIUS: usize = 8;
+    if !is_hair_refiner_ready(base) {
+        return Err("精细发丝边缘模型未安装，请先在右侧栏下载。".into());
+    }
+    let path = models_dir(base).join(HAIR_REFINER_FILE);
+    match try_refine_vitmatte_boundary_rgba(
+        base,
+        &path,
+        rgb,
+        current.clone(),
+        BOUNDARY_RADIUS,
+        true,
+    ) {
+        Ok(result) => Ok(result),
+        Err(error) if is_gpu_oom_error(&error) => {
+            release_vitmatte_session();
+            try_refine_vitmatte_boundary_rgba(base, &path, rgb, current, BOUNDARY_RADIUS, false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Second-pass, high-resolution AnimeSeg recovery.  The first full-image
+/// result remains the semantic anchor; this pass may only add alpha within
+/// 96px of that result and only when two upper-subject crops agree strongly.
+/// It deliberately cannot claim to recover hair that neither crop sees.
+pub(crate) fn recover_anime_specialist_details_rgba(
+    base: &Path,
+    rgb: &RgbImage,
+    mut current: RgbaImage,
+) -> Result<RgbaImage, String> {
+    const MIN_LONG_SIDE: u32 = 1600;
+    if rgb.width().max(rgb.height()) < MIN_LONG_SIDE {
+        return Ok(current);
+    }
+    if current.dimensions() != rgb.dimensions() {
+        return Err("高分辨率细节补全：原图与基础 alpha 尺寸不一致".into());
+    }
+    let base_alpha: Vec<f32> = current
+        .pixels()
+        .map(|pixel| pixel[3] as f32 / 255.0)
+        .collect();
+    let (recovered, changed) = recover_anime_specialist_detail_alpha(base, rgb, &base_alpha)?;
+    if changed.iter().any(|changed| *changed) {
+        // Any newly visible pixel must be recolored from the source image;
+        // transparent RGB from the earlier result is not a valid foreground.
+        apply_refined_boundary(rgb, &mut current, &recovered, &changed);
+    }
+    Ok(current)
+}
+
+pub(crate) fn recover_anime_specialist_detail_alpha(
+    base: &Path,
+    rgb: &RgbImage,
+    base_alpha: &[f32],
+) -> Result<(Vec<f32>, Vec<bool>), String> {
+    const AGREEMENT_THRESHOLD: f32 = 0.60;
+    const SEARCH_RADIUS: u8 = 96;
+    const INNER_CONTEXT: u32 = 55;
+    const OUTER_CONTEXT: u32 = 75;
+    let (width, height) = rgb.dimensions();
+    if base_alpha.len() != (width as usize).saturating_mul(height as usize) {
+        return Err("高分辨率细节补全：基础 alpha 长度无效".into());
+    }
+    if width.max(height) < 1600 {
+        return Ok((base_alpha.to_vec(), vec![false; base_alpha.len()]));
+    }
+    let inner = recovery_upper_roi(base_alpha, width, height, INNER_CONTEXT);
+    let outer = recovery_upper_roi(base_alpha, width, height, OUTER_CONTEXT);
+    if !roi_contains(outer, inner) {
+        return Err("高分辨率细节补全：局部上下文范围无效".into());
+    }
+    let inner_rgb = image::imageops::crop_imm(rgb, inner.0, inner.1, inner.2, inner.3).to_image();
+    let inner_alpha = run_birefnet(base, "anime-specialist", false, &inner_rgb)?;
+    let outer_rgb = image::imageops::crop_imm(rgb, outer.0, outer.1, outer.2, outer.3).to_image();
+    let outer_alpha = run_birefnet(base, "anime-specialist", false, &outer_rgb)?;
+    let distance =
+        distance_to_foreground(base_alpha, width, height, SEARCH_RADIUS.saturating_add(1));
+    let mut recovered = base_alpha.to_vec();
+    let mut changed = vec![false; base_alpha.len()];
+    for y in inner.1..inner.1 + inner.3 {
+        for x in inner.0..inner.0 + inner.2 {
+            let index = (y * width + x) as usize;
+            let distance = distance[index];
+            if distance >= SEARCH_RADIUS || base_alpha[index] >= 0.98 {
+                continue;
+            }
+            let inner_value = inner_alpha[((y - inner.1) * inner.2 + x - inner.0) as usize];
+            let outer_value = outer_alpha[((y - outer.1) * outer.2 + x - outer.0) as usize];
+            if inner_value.min(outer_value) < AGREEMENT_THRESHOLD {
+                continue;
+            }
+            let edge_distance = (x - inner.0)
+                .min(inner.0 + inner.2 - 1 - x)
+                .min(y - inner.1)
+                .min(inner.1 + inner.3 - 1 - y);
+            let weight = ((SEARCH_RADIUS as f32 - distance as f32) / 32.0).clamp(0.0, 1.0)
+                * (edge_distance as f32 / 64.0).clamp(0.0, 1.0);
+            let value = recovery_alpha(base_alpha[index], inner_value, outer_value, weight);
+            changed[index] =
+                (value * 255.0).round() as u8 != (base_alpha[index] * 255.0).round() as u8;
+            recovered[index] = value;
+        }
+    }
+    Ok((recovered, changed))
+}
+
+/// Uses only the existing foreground's top 35% to locate a head/upper-body
+/// span. Both crops are capped so this is a true higher-density retry, not an
+/// expensive re-run of the whole image.
+pub(crate) fn recovery_upper_roi(
+    alpha: &[f32],
+    width: u32,
+    height: u32,
+    context_percent: u32,
+) -> (u32, u32, u32, u32) {
+    let mut bounds = (width, height, 0, 0);
+    for y in 0..height {
+        for x in 0..width {
+            if alpha[(y * width + x) as usize] >= 0.5 {
+                bounds.0 = bounds.0.min(x);
+                bounds.1 = bounds.1.min(y);
+                bounds.2 = bounds.2.max(x + 1);
+                bounds.3 = bounds.3.max(y + 1);
+            }
+        }
+    }
+    if bounds.0 >= bounds.2 {
+        return (0, 0, width, height);
+    }
+    let top_end = bounds.1 + (bounds.3 - bounds.1) * 35 / 100;
+    let (mut upper_left, mut upper_right) = (width, 0);
+    for y in bounds.1..top_end {
+        for x in 0..width {
+            if alpha[(y * width + x) as usize] >= 0.5 {
+                upper_left = upper_left.min(x);
+                upper_right = upper_right.max(x + 1);
+            }
+        }
+    }
+    if upper_left < upper_right {
+        bounds.0 = upper_left;
+        bounds.2 = upper_right;
+    }
+    let margin = ((bounds.2 - bounds.0).max(bounds.3 - bounds.1) / 12).max(16);
+    let left = bounds.0.saturating_sub(margin);
+    let top = bounds.1.saturating_sub(margin);
+    let right = (bounds.2 + margin).min(width);
+    let bottom = (bounds.1 + (bounds.3 - bounds.1) * context_percent / 100 + margin).min(height);
+    let cap = if context_percent <= 55 { 2048 } else { 2560 };
+    let crop_width = (right - left).min(cap).min(width);
+    let crop_height = (bottom - top).min(cap).min(height);
+    let center = (left + right) / 2;
+    let crop_left = center
+        .saturating_sub(crop_width / 2)
+        .min(width - crop_width);
+    (
+        crop_left,
+        top.min(height - crop_height),
+        crop_width,
+        crop_height,
+    )
+}
+
+fn roi_contains(outer: (u32, u32, u32, u32), inner: (u32, u32, u32, u32)) -> bool {
+    outer.0 <= inner.0
+        && outer.1 <= inner.1
+        && outer.0 + outer.2 >= inner.0 + inner.2
+        && outer.1 + outer.3 >= inner.1 + inner.3
+}
+
+pub(crate) fn recovery_alpha(base: f32, first: f32, second: f32, weight: f32) -> f32 {
+    base.max(base + (first.min(second) - base).max(0.0) * weight.clamp(0.0, 1.0))
+}
+
+pub(crate) fn distance_to_foreground(alpha: &[f32], width: u32, height: u32, max: u8) -> Vec<u8> {
+    let (w, h) = (width as usize, height as usize);
+    let mut distance: Vec<u8> = alpha
+        .iter()
+        .map(|value| if *value >= 0.5 { 0 } else { max })
+        .collect();
+    let step = |value: u8| value.saturating_add(1).min(max);
+    for y in 0..h {
+        for x in 0..w {
+            let index = y * w + x;
+            if distance[index] == 0 {
+                continue;
+            }
+            let mut best = distance[index];
+            if x > 0 {
+                best = best.min(step(distance[index - 1]));
+            }
+            if y > 0 {
+                best = best.min(step(distance[index - w]));
+                if x > 0 {
+                    best = best.min(step(distance[index - w - 1]));
+                }
+                if x + 1 < w {
+                    best = best.min(step(distance[index - w + 1]));
+                }
+            }
+            distance[index] = best;
+        }
+    }
+    for y in (0..h).rev() {
+        for x in (0..w).rev() {
+            let index = y * w + x;
+            if distance[index] == 0 {
+                continue;
+            }
+            let mut best = distance[index];
+            if x + 1 < w {
+                best = best.min(step(distance[index + 1]));
+            }
+            if y + 1 < h {
+                best = best.min(step(distance[index + w]));
+                if x > 0 {
+                    best = best.min(step(distance[index + w - 1]));
+                }
+                if x + 1 < w {
+                    best = best.min(step(distance[index + w + 1]));
+                }
+            }
+            distance[index] = best;
+        }
+    }
+    distance
+}
+
+pub(crate) fn try_refine_vitmatte_boundary_rgba(
+    base: &Path,
+    model_path: &Path,
+    rgb: &RgbImage,
+    mut current: RgbaImage,
+    radius: usize,
+    use_gpu: bool,
+) -> Result<RgbaImage, String> {
+    const TILE: u32 = 1024;
+    let (width, height) = rgb.dimensions();
+    if current.dimensions() != (width, height) {
+        return Err("精细发丝边缘：原图与基础 alpha 尺寸不一致".into());
+    }
+    if width == 0 || height == 0 {
+        return Err("精细发丝边缘：图片尺寸为空".into());
+    }
+    let base_alpha: Vec<f32> = current
+        .pixels()
+        .map(|pixel| pixel[3] as f32 / 255.0)
+        .collect();
+    let gate = vitmatte_boundary_gate(&base_alpha, width, height, radius);
+    if !gate.iter().any(|value| *value) {
+        return Ok(current);
+    }
+
+    ensure_ort_runtime(base)?;
+    // 先释放 AnimeSeg / BiRefNet 的会话再加载 ViTMatte，避免峰值显存叠加。
+    prune_sessions(SessionKeep::VitMatte);
+    let mut session_guard = vitmatte_slot().lock().map_err(lock_error)?;
+    if session_guard.is_none() {
+        *session_guard = Some(build_session(model_path, use_gpu)?);
+    }
+    let session = session_guard.as_mut().expect("ViTMatte 会话已初始化");
+    if session.inputs().len() != 1 || session.outputs().is_empty() {
+        return Err("精细发丝边缘模型的 ONNX 输入或输出不兼容".into());
+    }
+    let input_name = session.inputs()[0].name().to_string();
+    let output_name = session.outputs()[0].name().to_string();
+
+    let starts = |length: u32| {
+        let mut positions = vec![0];
+        let last = length.saturating_sub(TILE);
+        let stride = TILE * 3 / 4;
+        while *positions.last().expect("至少一个分块起点") + stride < last {
+            positions.push(*positions.last().expect("分块起点") + stride);
+        }
+        if *positions.last().expect("分块起点") != last {
+            positions.push(last);
+        }
+        positions
+    };
+    let xs = starts(width);
+    let ys = starts(height);
+    let mut refined_alpha = base_alpha.clone();
+    // 重叠块优先取离块边缘最远的一次预测；接缝仍需实图回归检查。
+    let mut best_context = vec![0u16; (width * height) as usize];
+    for &top in &ys {
+        for &left in &xs {
+            let tile_w = TILE.min(width - left);
+            let tile_h = TILE.min(height - top);
+            let has_gate = (top..top + tile_h)
+                .any(|y| (left..left + tile_w).any(|x| gate[(y * width + x) as usize]));
+            if !has_gate {
+                continue;
+            }
+            let plane = (TILE * TILE) as usize;
+            let mut input_data = vec![0.0f32; 4 * plane];
+            for y in 0..TILE {
+                for x in 0..TILE {
+                    let local = (y * TILE + x) as usize;
+                    // 窄图复制边缘补齐，保持原生像素尺度，不把整图再次拉伸。
+                    let gx = left + x.min(tile_w - 1);
+                    let gy = top + y.min(tile_h - 1);
+                    let global = (gy * width + gx) as usize;
+                    let pixel = rgb.get_pixel(gx, gy);
+                    input_data[local] = pixel[0] as f32 / 127.5 - 1.0;
+                    input_data[plane + local] = pixel[1] as f32 / 127.5 - 1.0;
+                    input_data[2 * plane + local] = pixel[2] as f32 / 127.5 - 1.0;
+                    input_data[3 * plane + local] = if gate[global] {
+                        128.0 / 255.0
+                    } else if base_alpha[global] >= 0.5 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                }
+            }
+            let tensor =
+                Tensor::from_array((vec![1usize, 4, TILE as usize, TILE as usize], input_data))
+                    .map_err(to_string_error)?;
+            let outputs = session
+                .run(ort::inputs![input_name.as_str() => tensor])
+                .map_err(to_string_error)?;
+            let (shape, alpha) = outputs[output_name.as_str()]
+                .try_extract_tensor::<f32>()
+                .map_err(to_string_error)?;
+            if shape.as_ref() != [1, 1, TILE as i64, TILE as i64] {
+                return Err(format!("精细发丝边缘模型输出尺寸异常：{shape:?}"));
+            }
+            if alpha
+                .iter()
+                .any(|value| !value.is_finite() || !(-0.01..=1.01).contains(value))
+            {
+                return Err("精细发丝边缘模型输出不是有效的 alpha 概率".into());
+            }
+            for y in 0..tile_h {
+                for x in 0..tile_w {
+                    let global = ((top + y) * width + left + x) as usize;
+                    if !gate[global] {
+                        continue;
+                    }
+                    let context = x.min(y).min(TILE - 1 - x).min(TILE - 1 - y) as u16;
+                    if context < best_context[global] {
+                        continue;
+                    }
+                    let value = alpha[(y * TILE + x) as usize];
+                    refined_alpha[global] = value.clamp(0.0, 1.0);
+                    best_context[global] = context;
+                }
+            }
+        }
+    }
+    drop(session_guard);
+    apply_refined_boundary(rgb, &mut current, &refined_alpha, &gate);
+    Ok(current)
+}
+
+/// 新 alpha 不能沿用旧透明像素的 RGB。按新 alpha 从原图重新解混，且只写边界带。
+/// 分块带 16px halo，与去色污染盒均值半径一致，避免全图多路 f64 缓冲的内存峰值。
+pub(crate) fn apply_refined_boundary(
+    rgb: &RgbImage,
+    current: &mut RgbaImage,
+    alpha: &[f32],
+    gate: &[bool],
+) {
+    let (w, h) = rgb.dimensions();
+    for top in (0..h).step_by(512) {
+        for left in (0..w).step_by(512) {
+            let right = (left + 512).min(w);
+            let bottom = (top + 512).min(h);
+            if !(top..bottom).any(|y| (left..right).any(|x| gate[(y * w + x) as usize])) {
+                continue;
+            }
+            let x0 = left.saturating_sub(16);
+            let y0 = top.saturating_sub(16);
+            let cw = (right + 16).min(w) - x0;
+            let ch = (bottom + 16).min(h) - y0;
+            let tile = image::imageops::crop_imm(rgb, x0, y0, cw, ch).to_image();
+            let local_alpha: Vec<f32> = (y0..y0 + ch)
+                .flat_map(|y| {
+                    alpha[(y * w + x0) as usize..(y * w + x0 + cw) as usize]
+                        .iter()
+                        .copied()
+                })
+                .collect();
+            let colors = decontaminate_colors(&tile, &local_alpha);
+            for y in top..bottom {
+                for x in left..right {
+                    let i = (y * w + x) as usize;
+                    if gate[i] {
+                        let color = colors[((y - y0) * cw + x - x0) as usize];
+                        *current.get_pixel_mut(x, y) = image::Rgba([
+                            color[0],
+                            color[1],
+                            color[2],
+                            (alpha[i].clamp(0.0, 1.0) * 255.0).round() as u8,
+                        ]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn vitmatte_boundary_gate(
+    matte: &[f32],
+    width: u32,
+    height: u32,
+    radius: usize,
+) -> Vec<bool> {
+    let (w, h) = (width as usize, height as usize);
+    if matte.len() != w.saturating_mul(h) || radius == 0 {
+        return vec![false; matte.len()];
+    }
+    let limit = (radius + 1) as u16;
+    let distance = |foreground: bool| {
+        let mut values: Vec<u16> = matte
+            .iter()
+            .map(|alpha| {
+                if (*alpha >= 0.5) == foreground {
+                    0
+                } else {
+                    limit
+                }
+            })
+            .collect();
+        let step = |value: u16| value.saturating_add(1).min(limit);
+        for y in 0..h {
+            for x in 0..w {
+                let index = y * w + x;
+                if values[index] == 0 {
+                    continue;
+                }
+                let mut best = values[index];
+                if x > 0 {
+                    best = best.min(step(values[index - 1]));
+                }
+                if y > 0 {
+                    best = best.min(step(values[index - w]));
+                    if x > 0 {
+                        best = best.min(step(values[index - w - 1]));
+                    }
+                    if x + 1 < w {
+                        best = best.min(step(values[index - w + 1]));
+                    }
+                }
+                values[index] = best;
+            }
+        }
+        for y in (0..h).rev() {
+            for x in (0..w).rev() {
+                let index = y * w + x;
+                if values[index] == 0 {
+                    continue;
+                }
+                let mut best = values[index];
+                if x + 1 < w {
+                    best = best.min(step(values[index + 1]));
+                }
+                if y + 1 < h {
+                    best = best.min(step(values[index + w]));
+                    if x > 0 {
+                        best = best.min(step(values[index + w - 1]));
+                    }
+                    if x + 1 < w {
+                        best = best.min(step(values[index + w + 1]));
+                    }
+                }
+                values[index] = best;
+            }
+        }
+        values
+    };
+    let foreground = distance(true);
+    let background = distance(false);
+    foreground
+        .into_iter()
+        .zip(background)
+        .map(|(fg, bg)| fg as usize <= radius && bg as usize <= radius)
+        .collect()
 }
 
 /// 高质量 General 1024 使用水平翻转增强：同一会话串行推理原图和翻转图，
@@ -888,9 +1387,8 @@ pub(crate) fn try_run_birefnet_path(
     let upscaled_mask = if mask_w == w && mask_h == h {
         native
     } else {
-        let source =
-            ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(mask_w, mask_h, native)
-                .ok_or("掩码缓冲无效")?;
+        let source = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(mask_w, mask_h, native)
+            .ok_or("掩码缓冲无效")?;
         image::imageops::resize(&source, w, h, FilterType::Lanczos3).into_raw()
     };
     if matting {
@@ -921,37 +1419,13 @@ pub(crate) fn run_birefnet_local_file(
     rgb: &RgbImage,
 ) -> Result<Vec<f32>, String> {
     if std::env::var_os("AIAS_AB_FORCE_CPU").is_some() {
-        return try_run_birefnet_path(
-            base,
-            session_id,
-            path,
-            normalize_range,
-            matting,
-            rgb,
-            false,
-        );
+        return try_run_birefnet_path(base, session_id, path, normalize_range, matting, rgb, false);
     }
-    match try_run_birefnet_path(
-        base,
-        session_id,
-        path,
-        normalize_range,
-        matting,
-        rgb,
-        true,
-    ) {
+    match try_run_birefnet_path(base, session_id, path, normalize_range, matting, rgb, true) {
         Ok(mask) => Ok(mask),
         Err(error) if is_gpu_oom_error(&error) => {
             release_birefnet_session(session_id);
-            try_run_birefnet_path(
-                base,
-                session_id,
-                path,
-                normalize_range,
-                matting,
-                rgb,
-                false,
-            )
+            try_run_birefnet_path(base, session_id, path, normalize_range, matting, rgb, false)
         }
         Err(error) => Err(error),
     }
@@ -975,13 +1449,19 @@ pub fn toonout_likely_failed(matte: &[f32], w: u32, h: u32) -> bool {
     border > BORDER_MEAN_THRESHOLD && fg > FG_RATIO_MIN
 }
 
-pub(crate) fn matte_is_substantially_cleaner(candidate: &[f32], baseline: &[f32], w: u32, h: u32) -> bool {
+pub(crate) fn matte_is_substantially_cleaner(
+    candidate: &[f32],
+    baseline: &[f32],
+    w: u32,
+    h: u32,
+) -> bool {
     if candidate.len() != baseline.len() || candidate.len() != (w * h) as usize {
         return false;
     }
-    let border_improvement = border_band_mean(baseline, w, h, 24)
-        - border_band_mean(candidate, w, h, 24);
-    let foreground_improvement = foreground_ratio(baseline, w, h) - foreground_ratio(candidate, w, h);
+    let border_improvement =
+        border_band_mean(baseline, w, h, 24) - border_band_mean(candidate, w, h, 24);
+    let foreground_improvement =
+        foreground_ratio(baseline, w, h) - foreground_ratio(candidate, w, h);
     // 复核仅在两者都大幅降低边框残留、且收缩至少 4% 的前景时接管，避免把
     // ToonOut 的独立细节误换成更小的通用遮罩。
     border_improvement >= 0.10 && foreground_improvement >= 0.04

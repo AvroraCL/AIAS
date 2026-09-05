@@ -317,6 +317,31 @@
                 </div>
               </section>
 
+              <section class="inspector-group" data-modes="anime-cutout">
+                <button class="group-toggle" type="button"><span>高分辨率细节补全（实验性）</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content hair-refiner-content">
+                  <label class="toggle-label"><input id="anime-detail-recovery" type="checkbox"><span class="toggle-track"><span class="toggle-thumb"></span></span><span>尝试补回高分辨率边缘细节</span></label>
+                  <small class="settings-hint">仅适用于动漫专精（AnimeSeg），默认关闭。会对主体上半部进行两次局部推理；只有两次都明确识别为前景时才补回边缘。耗时增加，复杂背景线条仍可能被误判为发丝。</small>
+                </div>
+              </section>
+
+              <section class="inspector-group" data-modes="anime-cutout">
+                <button class="group-toggle" type="button"><span>精细发丝边缘（实验性）</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content hair-refiner-content">
+                  <label class="toggle-label"><input id="anime-hair-refiner" type="checkbox"><span class="toggle-track"><span class="toggle-thumb"></span></span><span>启用原分辨率边缘精修</span></label>
+                  <small class="settings-hint">仅适用于动漫专精（AnimeSeg），默认关闭。局部重算边缘，耗时增加；部分图片可能变软或出现色边，无法保证找回完全漏掉的头发。</small>
+                  <small id="anime-hair-status" class="settings-hint">正在读取模型状态…</small>
+                  <div class="field-row">
+                    <button id="anime-hair-download" class="secondary-action hidden" type="button">下载 ViTMatte（约 99 MB）</button>
+                    <button id="anime-hair-uninstall" class="secondary-action hidden" type="button">卸载</button>
+                  </div>
+                  <div class="model-progress hidden" id="anime-hair-progress">
+                    <div class="model-progress-bar"><div class="model-progress-fill" id="anime-hair-progress-fill"></div></div>
+                    <small id="anime-hair-progress-text" class="settings-hint"></small>
+                  </div>
+                </div>
+              </section>
+
               <section class="inspector-group hidden" id="anime-gpu-section" data-modes="anime-cutout">
                 <button class="group-toggle" type="button"><span>GPU 加速</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">

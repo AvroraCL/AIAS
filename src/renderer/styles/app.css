@@ -681,6 +681,8 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .toggle-label input:checked + .toggle-track { border-color: var(--accent); background: var(--accent); }
 .toggle-label input:checked + .toggle-track .toggle-thumb { transform: translateX(15px); background: #0d0d0f; }
 .toggle-label input:focus-visible + .toggle-track { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.toggle-label input:disabled ~ span { opacity: 0.45; }
+.hair-refiner-content > .settings-hint { display: block; margin-top: 8px; }
 
 .run-area { padding: 14px 16px 16px; border-top: 1px solid var(--border); background: #0f0f11; }
 .run-area p { min-height: 17px; margin: 0 0 9px; color: var(--text-dim); font-size: 10px; }

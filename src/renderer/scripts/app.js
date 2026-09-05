@@ -58,6 +58,8 @@ const defaults = {
   scaleTarget: "none",
   skinManagerPath: "",
   animeModel: "anime-specialist",
+  animeHairRefiner: false,
+  animeDetailRecovery: false,
   animeCutoutOutputPath: ""
 };
 
@@ -90,6 +92,9 @@ const state = {
   animeFiles: [],
   animeModels: [],
   animeDownloading: false,
+  animeHairStatus: null,
+  animeHairDownloading: false,
+  animeRunning: false,
   gpuRuntime: null,
   gpuDownloading: false,
   animeResults: new Map(),
@@ -221,9 +226,11 @@ function syncCustomSelect(select) {
   const button = wrapper?.querySelector(".custom-select-button");
   if (!button) return;
   button.textContent = getSelectLabel(select);
+  button.disabled = select.disabled;
 }
 
 function openCustomSelect(select, wrapper, button) {
+  if (select.disabled) return;
   closeCustomSelect();
 
   const menu = document.createElement("div");
@@ -241,6 +248,7 @@ function openCustomSelect(select, wrapper, button) {
     item.setAttribute("aria-selected", String(option.selected));
     if (option.selected) item.classList.add("selected");
     item.addEventListener("click", () => {
+      if (select.disabled) { closeCustomSelect(); return; }
       select.value = option.value;
       select.dispatchEvent(new Event("change", { bubbles: true }));
       syncCustomSelect(select);
@@ -590,6 +598,9 @@ function createBrowserPreviewApi() {
     },
     anime: {
       modelsStatus: async () => modelsStatus(),
+      hairRefinerStatus: async () => null,
+      hairRefinerDownload: async () => { throw new Error("网页预览不能下载或运行模型，请在桌面软件中操作。"); },
+      hairRefinerUninstall: async () => { throw new Error("请在桌面软件中管理模型。"); },
       modelDownload: async (modelId) => setModelInstalled(modelId, true),
       modelUninstall: async (modelId) => setModelInstalled(modelId, false),
       cutout: () => previewOnly("AI 抠图")
@@ -659,6 +670,9 @@ function createTauriApi() {
     },
     anime: {
       modelsStatus: () => invoke("anime_models_status"),
+      hairRefinerStatus: () => invoke("anime_hair_refiner_status"),
+      hairRefinerDownload: () => invoke("anime_hair_refiner_download"),
+      hairRefinerUninstall: () => invoke("anime_hair_refiner_uninstall"),
       modelDownload: (modelId) => invoke("anime_model_download", { modelId }),
       modelUninstall: (modelId) => invoke("anime_model_uninstall", { modelId }),
       cutout: (options) => invoke("anime_cutout", { options }),
@@ -826,6 +840,7 @@ function describeAnimeModel(model) {
 async function refreshAnimeModelStatus() {
   try {
     state.animeModels = await api.anime.modelsStatus();
+    state.animeHairStatus = await api.anime.hairRefinerStatus();
   } catch (error) {
     state.animeModels = [];
     setText("anime-model-status", `无法读取模型状态：${error.message || error}`);
@@ -903,11 +918,22 @@ function renderAnimeModelStatus() {
   setText("anime-model-status", describeAnimeModel(model));
   const ready = Boolean(model?.installed);
   const downloading = state.animeDownloading;
+  const busy = downloading || state.animeHairDownloading || state.animeRunning;
+  for (const id of ["anime-model", "anime-hair-refiner", "anime-detail-recovery", "anime-model-download", "anime-model-uninstall", "anime-hair-download", "anime-hair-uninstall"]) {
+    if ($(id)) $(id).disabled = busy;
+  }
+  if ($("anime-hair-refiner")) $("anime-hair-refiner").disabled = busy || model?.id !== "anime-specialist";
+  if ($("anime-detail-recovery")) $("anime-detail-recovery").disabled = busy || model?.id !== "anime-specialist";
+  if ($("anime-model")) syncCustomSelect($("anime-model"));
+  setText("anime-hair-status", isTauriRuntime ? describeAnimeModel(state.animeHairStatus) : "网页仅预览界面；下载和推理请在桌面软件中操作");
+  $("anime-hair-download")?.classList.toggle("hidden", Boolean(state.animeHairStatus?.installed) || state.animeHairDownloading);
+  $("anime-hair-uninstall")?.classList.toggle("hidden", !state.animeHairStatus?.installed || state.animeHairDownloading);
+  $("anime-hair-progress")?.classList.toggle("hidden", !state.animeHairDownloading);
   $("anime-model-download")?.classList.toggle("hidden", ready || downloading);
   $("anime-model-uninstall")?.classList.toggle("hidden", !ready || downloading);
   $("anime-model-progress")?.classList.toggle("hidden", !downloading);
   const runButton = $("run-anime-cutout");
-  if (runButton) runButton.disabled = downloading;
+  if (runButton) runButton.disabled = busy;
   if (downloading) {
     $("anime-model-progress")?.classList.remove("hidden");
   } else {
@@ -919,7 +945,7 @@ function renderAnimeModelStatus() {
 
 async function downloadAnimeModel() {
   const modelId = $("anime-model")?.value || "anime-specialist";
-  if (state.animeDownloading) return;
+  if (state.animeDownloading || state.animeHairDownloading || state.animeRunning) return;
   state.animeDownloading = true;
   renderAnimeModelStatus();
   addActivity("开始下载模型", animeModelCatalog[modelId]?.label || modelId);
@@ -935,7 +961,7 @@ async function downloadAnimeModel() {
 
 async function uninstallAnimeModel() {
   const modelId = $("anime-model")?.value || "anime-specialist";
-  if (state.animeDownloading) return;
+  if (state.animeDownloading || state.animeHairDownloading || state.animeRunning) return;
   const model = animeModelById(modelId);
   const label = model?.label || animeModelCatalog[modelId]?.label || modelId;
   const confirmed = await openPreviewConfirm(
@@ -943,7 +969,7 @@ async function uninstallAnimeModel() {
     `即将删除「${label}」的本地模型文件（共 ${formatBytes(model?.totalSize || 0)}）。卸载后需要重新下载才能使用该模型，确定继续吗？`,
     { confirmText: "卸载", danger: true }
   );
-  if (!confirmed) return;
+  if (!confirmed || state.animeRunning || state.animeDownloading || state.animeHairDownloading) return;
   state.animeDownloading = true;
   renderAnimeModelStatus();
   try {
@@ -958,6 +984,31 @@ async function uninstallAnimeModel() {
 
 // ---------------------------------------------------------------- 动漫抠图画廊
 
+function wantsHairRefiner() {
+  return $("anime-model")?.value === "anime-specialist" && Boolean($("anime-hair-refiner")?.checked);
+}
+
+function wantsDetailRecovery() {
+  return $("anime-model")?.value === "anime-specialist" && Boolean($("anime-detail-recovery")?.checked);
+}
+
+async function manageHairRefiner(uninstall = false) {
+  if (state.animeDownloading || state.animeHairDownloading || state.animeRunning) return;
+  if (uninstall && !await openPreviewConfirm("卸载边缘模型", "仅删除 ViTMatte 模型，保留抠图模型及图片。确定卸载吗？", { confirmText: "卸载", danger: true })) return;
+  if (state.animeDownloading || state.animeHairDownloading || state.animeRunning) return;
+  state.animeHairDownloading = true;
+  renderAnimeModelStatus();
+  try {
+    state.animeHairStatus = await (uninstall ? api.anime.hairRefinerUninstall() : api.anime.hairRefinerDownload());
+    addActivity(uninstall ? "边缘模型已卸载" : "边缘模型下载完成", "ViTMatte", "success");
+  } catch (error) {
+    addActivity("边缘模型操作失败", error.message || String(error), "error");
+  } finally {
+    state.animeHairDownloading = false;
+    renderAnimeModelStatus();
+  }
+}
+
 function animeStem(file) {
   const name = basename(file);
   const dot = name.lastIndexOf(".");
@@ -966,14 +1017,21 @@ function animeStem(file) {
 
 // 后端输出名为 {原图stem}_{模型id}.png，这里用同样的组合键匹配结果，避免与原图同名覆盖
 function animeResultKey(file) {
-  return `${animeStem(file)}_${$("anime-model")?.value || "anime-specialist"}`;
+  const suffix = wantsDetailRecovery() && wantsHairRefiner()
+    ? "_detail-hair"
+    : wantsDetailRecovery()
+      ? "_detail"
+      : wantsHairRefiner()
+        ? "_hair"
+        : "";
+  return `${animeStem(file)}_${$("anime-model")?.value || "anime-specialist"}${suffix}`;
 }
 
 function animeLocalSrc(path) {
   return isTauriRuntime && path ? convertFileSrc(path) : "";
 }
 
-function applyAnimeOutputs(paths) {
+function applyAnimeOutputs(paths, requestKeys = null) {
   // 输出文件路径固定不变，重跑后内容已更新；换时间戳强制 <img> 重新加载
   state.animeResultEpoch = Date.now();
   for (const path of paths || []) {
@@ -985,7 +1043,7 @@ function applyAnimeOutputs(paths) {
       pathStem.startsWith(animeStem(file) + "_") || pathStem === animeStem(file)
     );
     if (hit) {
-      state.animeResults.set(animeResultKey(hit), path);
+      state.animeResults.set(requestKeys?.get(hit) || animeResultKey(hit), path);
     } else {
       // 匹配不到前端文件时退化为按路径 stem 存（保持原行为）。
       state.animeResults.set(pathStem, path);
@@ -1011,7 +1069,7 @@ function probeAnimeResult(file) {
   // ToonOut 在复杂背景上可能被后端自动回退到 General、advanced 或 simple。
   // 主候选（用户选择的模型）失败时，回退候选也要探测，否则回退结果在刷新后丢失角标/预览。
   const model = $("anime-model")?.value || "anime-specialist";
-  const candidates = [`${stem}_${model}.png`];
+  const candidates = [`${key}.png`];
   if (model === "toonout") {
     candidates.push(
       `${stem}_anime-specialist.png`,
@@ -1030,7 +1088,7 @@ function probeAnimeResult(file) {
       renderAnimeGallery();
     };
     probe.onerror = () => probeNext(index + 1);
-    probe.src = candidate;
+    probe.src = animeLocalSrc(candidate);
   };
   probeNext(0);
 }
@@ -1497,6 +1555,8 @@ function collectSettings() {
     scaleTarget: $("scale-target")?.value || "none",
     skinManagerPath: $("skin-path")?.value || "",
     animeModel: $("anime-model")?.value || "anime-specialist",
+    animeHairRefiner: Boolean($("anime-hair-refiner")?.checked),
+    animeDetailRecovery: Boolean($("anime-detail-recovery")?.checked),
     animeCutoutOutputPath: $("anime-output")?.value || ""
   };
 }
@@ -1521,6 +1581,8 @@ function applySettingsToForm() {
     "scale-target": settings.scaleTarget,
     "skin-path": settings.skinManagerPath,
     "anime-model": settings.animeModel || "anime-specialist",
+    "anime-hair-refiner": Boolean(settings.animeHairRefiner),
+    "anime-detail-recovery": Boolean(settings.animeDetailRecovery),
     "anime-output": settings.animeCutoutOutputPath
   };
 
@@ -1643,9 +1705,11 @@ function getRunBlocker(mode) {
       if (!$("image-output")?.value) return "请选择输出文件夹。";
       return null;
     case "anime-cutout":
+      if (state.animeRunning) return "抠图正在运行，请稍候。";
       if (!state.animeFiles.length) return "请添加图片。";
       if (!$("anime-output")?.value) return "请选择输出文件夹。";
-      if (state.animeDownloading) return "模型正在下载中，请稍候。";
+      if (state.animeDownloading || state.animeHairDownloading) return "模型正在下载中，请稍候。";
+      if (wantsHairRefiner() && !state.animeHairStatus?.installed) return "请先在右侧栏下载精细发丝边缘模型，或关闭实验选项。";
       if (!isAnimeModelReady($("anime-model")?.value || "anime-specialist")) return "当前模型未安装，请先在「抠图模型」中下载。";
       return null;
     default:
@@ -1750,6 +1814,18 @@ function bindWorkspaceActions() {
   });
 
   $("anime-model-download")?.addEventListener("click", () => downloadAnimeModel());
+  $("anime-hair-download")?.addEventListener("click", () => manageHairRefiner());
+  $("anime-hair-uninstall")?.addEventListener("click", () => manageHairRefiner(true));
+  $("anime-hair-refiner")?.addEventListener("change", () => {
+    saveSettings();
+    renderAnimeModelStatus();
+    renderAnimeGallery();
+  });
+  $("anime-detail-recovery")?.addEventListener("change", () => {
+    saveSettings();
+    renderAnimeModelStatus();
+    renderAnimeGallery();
+  });
   $("anime-gpu-install")?.addEventListener("click", () => installGpuRuntime());
   $("anime-model-uninstall")?.addEventListener("click", () => uninstallAnimeModel());
 
@@ -1989,19 +2065,31 @@ function bindRunActions() {
       return;
     }
     const modelId = $("anime-model")?.value || "anime-specialist";
-    addActivity("开始抠图", `${state.animeFiles.length} 张图片 · ${animeModelCatalog[modelId]?.label || modelId}`);
+    const recoverDetails = wantsDetailRecovery();
+    const refineHair = wantsHairRefiner();
+    const experimental = [recoverDetails && "高分辨率细节补全", refineHair && "精细发丝边缘"].filter(Boolean).join(" + ");
+    addActivity("开始抠图", `${state.animeFiles.length} 张图片 · ${animeModelCatalog[modelId]?.label || modelId}${experimental ? ` · ${experimental}` : ""}`);
+    const files = [...state.animeFiles];
+    const outputPath = $("anime-output").value;
+    const requestKeys = new Map(files.map((file) => [file, animeResultKey(file)]));
+    state.animeRunning = true;
+    renderAnimeModelStatus();
     const result = await withLog(
       "anime-log",
       event.currentTarget,
       () =>
         api.anime.cutout({
-          files: state.animeFiles,
-          outputPath: $("anime-output").value,
-          model: modelId
+          files,
+          outputPath,
+          model: modelId,
+          refineHair,
+          recoverDetails
         }),
       "AI 抠图"
     );
-    if (result?.outputs?.length) applyAnimeOutputs(result.outputs);
+    state.animeRunning = false;
+    renderAnimeModelStatus();
+    if (result?.outputs?.length) applyAnimeOutputs(result.outputs, requestKeys);
     refreshGpuRuntime();
   });
 }
@@ -2186,6 +2274,12 @@ async function init() {
     });
     await listen("model-progress", (event) => {
       const { modelId, file, completed, total } = event.payload;
+      if (modelId === "vitmatte-hair-refiner") {
+        const percent = total > 0 ? Math.min(100, Math.round(completed / total * 100)) : 0;
+        $("anime-hair-progress-fill")?.style.setProperty("width", `${percent}%`);
+        setText("anime-hair-progress-text", `${file} · ${percent}%`);
+        return;
+      }
       if (modelId === "ort-gpu") {
         const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
         const fill = $("anime-gpu-progress-fill");

@@ -2,7 +2,7 @@
 
 use super::*;
 use image::{RgbImage, Rgba, RgbaImage};
-
+use std::collections::HashMap;
 
 // P5 GT 诊断开关：只在测试构建中允许逐项绕过后处理，用于确定性 A/B；
 // 正式应用始终保持完整管线，避免环境变量改变用户产物。
@@ -415,7 +415,11 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
         return out;
     }
     let weight: Vec<f64> = matte.iter().map(|a| (1.0 - *a) as f64).collect();
-    let mut weighted = [Vec::with_capacity(total), Vec::with_capacity(total), Vec::with_capacity(total)];
+    let mut weighted = [
+        Vec::with_capacity(total),
+        Vec::with_capacity(total),
+        Vec::with_capacity(total),
+    ];
     for (index, pixel) in rgb.pixels().enumerate() {
         let wgt = weight[index];
         for ch in 0..3 {
@@ -514,7 +518,10 @@ pub(crate) fn guided_filter_matte(rgb: &RgbImage, p: &[f32], radius: usize, eps:
     if n == 0 || p.len() != n || radius == 0 {
         return p.to_vec();
     }
-    let radius = radius.min(w.saturating_sub(1)).min(h.saturating_sub(1)).max(1);
+    let radius = radius
+        .min(w.saturating_sub(1))
+        .min(h.saturating_sub(1))
+        .max(1);
 
     let mut r = vec![0f32; n];
     let mut g = vec![0f32; n];
@@ -533,13 +540,12 @@ pub(crate) fn guided_filter_matte(rgb: &RgbImage, p: &[f32], radius: usize, eps:
 
     // 协方差所需的二次项均值；逐项生成乘积数组，用完即弃控制内存。
     let mut prod = vec![0f32; n];
-    let mut pair_mean =
-        |a: &[f32], bch: &[f32]| -> Vec<f32> {
-            for i in 0..n {
-                prod[i] = a[i] * bch[i];
-            }
-            box_mean_f32(&prod, w, h, radius)
-        };
+    let mut pair_mean = |a: &[f32], bch: &[f32]| -> Vec<f32> {
+        for i in 0..n {
+            prod[i] = a[i] * bch[i];
+        }
+        box_mean_f32(&prod, w, h, radius)
+    };
     let mrr = pair_mean(&r, &r);
     let mrg = pair_mean(&r, &g);
     let mrb = pair_mean(&r, &b);
@@ -689,6 +695,542 @@ pub(crate) fn low_alpha_floor() -> f32 {
         return value;
     }
     0.08
+}
+
+/// 以 AnimeSeg 的全局语义遮罩生成自动 trimap，并在原图分辨率的窄轮廓带内
+/// 解闭式 alpha。它只负责恢复亚像素轮廓，不重新判断主体，因此不会像局部分块
+/// 模型那样把复杂动漫背景重新纳入前景。
+///
+/// 此函数刻意不依赖 Python/OpenCV：每个 512px 核心块只求解环绕主实例的未知带，
+/// 使 4K 图保持可控的内存占用。调用方应先在 A/B 中验证后再接入正式模型路径。
+pub(crate) fn refine_closed_form_boundary_alpha(rgb: &RgbImage, mask: Vec<f32>) -> Vec<f32> {
+    refine_closed_form_boundary_alpha_with_diagnostics(rgb, mask).0
+}
+
+/// 仅供开发期 A/B 测试读取分块求解的退出原因；正式路径只使用
+/// [`refine_closed_form_boundary_alpha`] 的 alpha 输出。
+#[cfg(test)]
+pub(crate) fn refine_closed_form_boundary_alpha_for_ab(
+    rgb: &RgbImage,
+    mask: Vec<f32>,
+) -> (Vec<f32>, ClosedFormRefineDiagnostics) {
+    refine_closed_form_boundary_alpha_with_diagnostics(rgb, mask)
+}
+
+#[derive(Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct ClosedFormRefineDiagnostics {
+    candidate_tiles: usize,
+    solved_tiles: usize,
+    anchored_unknown_rows: usize,
+    skipped_one_sided_tiles: usize,
+    invalid_matrix_tiles: usize,
+    unstable_solver_tiles: usize,
+}
+
+fn refine_closed_form_boundary_alpha_with_diagnostics(
+    rgb: &RgbImage,
+    mask: Vec<f32>,
+) -> (Vec<f32>, ClosedFormRefineDiagnostics) {
+    const MIN_LONG_SIDE: u32 = 1600;
+    const TRIMAP_RADIUS: usize = 4;
+    const TILE_CORE: usize = 512;
+    const TILE_PAD: usize = 16;
+
+    let (width, height) = rgb.dimensions();
+    let (w, h) = (width as usize, height as usize);
+    if width.max(height) < MIN_LONG_SIDE || mask.len() != w.saturating_mul(h) {
+        return (mask, ClosedFormRefineDiagnostics::default());
+    }
+    let Some(main) = cf_largest_component(&mask, w, h) else {
+        return (mask, ClosedFormRefineDiagnostics::default());
+    };
+    let main_pixels = main.iter().filter(|value| **value).count();
+    // 近乎整图或极小的“主件”不具备可靠的前/背景锚点，直接保持模型 alpha。
+    if main_pixels < 512 || main_pixels * 100 > mask.len() * 95 {
+        return (mask, ClosedFormRefineDiagnostics::default());
+    }
+    let foreground_known = cf_erode(&main, w, h, TRIMAP_RADIUS);
+    let dilated = cf_dilate(&main, w, h, TRIMAP_RADIUS);
+    let background_known: Vec<bool> = dilated.into_iter().map(|value| !value).collect();
+    let unknown: Vec<bool> = foreground_known
+        .iter()
+        .zip(background_known.iter())
+        .map(|(foreground, background)| !foreground && !background)
+        .collect();
+    if unknown.iter().filter(|value| **value).count() < 64 {
+        return (mask, ClosedFormRefineDiagnostics::default());
+    }
+
+    let mut refined = mask;
+    let mut diagnostics = ClosedFormRefineDiagnostics::default();
+    for top in (0..h).step_by(TILE_CORE) {
+        let bottom = (top + TILE_CORE).min(h);
+        for left in (0..w).step_by(TILE_CORE) {
+            let right = (left + TILE_CORE).min(w);
+            if !(top..bottom).any(|y| {
+                unknown[y * w + left..y * w + right]
+                    .iter()
+                    .any(|value| *value)
+            }) {
+                continue;
+            }
+            let padded_top = top.saturating_sub(TILE_PAD);
+            let padded_bottom = (bottom + TILE_PAD).min(h);
+            let padded_left = left.saturating_sub(TILE_PAD);
+            let padded_right = (right + TILE_PAD).min(w);
+            diagnostics.candidate_tiles += 1;
+            match cf_refine_tile(
+                rgb,
+                &foreground_known,
+                &background_known,
+                &unknown,
+                &mut refined,
+                w,
+                h,
+                left,
+                top,
+                right,
+                bottom,
+                padded_left,
+                padded_top,
+                padded_right,
+                padded_bottom,
+            ) {
+                CfTileOutcome::Solved { anchored_rows } => {
+                    diagnostics.solved_tiles += 1;
+                    diagnostics.anchored_unknown_rows += anchored_rows;
+                }
+                CfTileOutcome::OneSidedTrimap => diagnostics.skipped_one_sided_tiles += 1,
+                CfTileOutcome::InvalidMatrix => diagnostics.invalid_matrix_tiles += 1,
+                CfTileOutcome::UnstableSolver => diagnostics.unstable_solver_tiles += 1,
+            }
+        }
+    }
+    (refined, diagnostics)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CfTileOutcome {
+    Solved { anchored_rows: usize },
+    OneSidedTrimap,
+    InvalidMatrix,
+    UnstableSolver,
+}
+
+fn cf_largest_component(mask: &[f32], w: usize, h: usize) -> Option<Vec<bool>> {
+    if mask.len() != w.saturating_mul(h) || w == 0 || h == 0 {
+        return None;
+    }
+    let mut visited = vec![false; mask.len()];
+    let mut largest = Vec::<usize>::new();
+    for start in 0..mask.len() {
+        if visited[start] || mask[start] < 0.5 {
+            continue;
+        }
+        let mut component = vec![start];
+        visited[start] = true;
+        let mut cursor = 0;
+        while cursor < component.len() {
+            let index = component[cursor];
+            cursor += 1;
+            let x = index % w;
+            let y = index / w;
+            for neighbor in [
+                x.checked_sub(1).map(|nx| y * w + nx),
+                (x + 1 < w).then_some(y * w + x + 1),
+                y.checked_sub(1).map(|ny| ny * w + x),
+                (y + 1 < h).then_some((y + 1) * w + x),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !visited[neighbor] && mask[neighbor] >= 0.5 {
+                    visited[neighbor] = true;
+                    component.push(neighbor);
+                }
+            }
+        }
+        if component.len() > largest.len() {
+            largest = component;
+        }
+    }
+    if largest.is_empty() {
+        return None;
+    }
+    let mut result = vec![false; mask.len()];
+    for index in largest {
+        result[index] = true;
+    }
+    Some(result)
+}
+
+fn cf_dilate(input: &[bool], w: usize, h: usize, iterations: usize) -> Vec<bool> {
+    let mut current = input.to_vec();
+    for _ in 0..iterations {
+        let mut next = vec![false; current.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let index = y * w + x;
+                next[index] = current[index]
+                    || (x > 0 && current[index - 1])
+                    || (x + 1 < w && current[index + 1])
+                    || (y > 0 && current[index - w])
+                    || (y + 1 < h && current[index + w]);
+            }
+        }
+        current = next;
+    }
+    current
+}
+
+fn cf_erode(input: &[bool], w: usize, h: usize, iterations: usize) -> Vec<bool> {
+    let mut current = input.to_vec();
+    for _ in 0..iterations {
+        let mut next = vec![false; current.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let index = y * w + x;
+                if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+                    next[index] = false;
+                    continue;
+                }
+                next[index] = current[index]
+                    && current[index - 1]
+                    && current[index + 1]
+                    && current[index - w]
+                    && current[index + w];
+            }
+        }
+        current = next;
+    }
+    current
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cf_refine_tile(
+    rgb: &RgbImage,
+    foreground_known: &[bool],
+    background_known: &[bool],
+    unknown: &[bool],
+    result: &mut [f32],
+    image_w: usize,
+    image_h: usize,
+    core_left: usize,
+    core_top: usize,
+    core_right: usize,
+    core_bottom: usize,
+    left: usize,
+    top: usize,
+    right: usize,
+    bottom: usize,
+) -> CfTileOutcome {
+    const UNMAPPED: usize = usize::MAX;
+    const EPSILON: f64 = 1e-7;
+    const MAX_ITERATIONS: usize = 3_000;
+    const RELATIVE_TOLERANCE: f64 = 1e-6;
+
+    let tile_w = right - left;
+    let tile_h = bottom - top;
+    if tile_w < 3 || tile_h < 3 || right > image_w || bottom > image_h {
+        return CfTileOutcome::InvalidMatrix;
+    }
+    let tile_len = tile_w * tile_h;
+    let mut ids = vec![UNMAPPED; tile_len];
+    let mut unknown_local_positions = Vec::new();
+    let mut unknown_count = 0;
+    let mut has_foreground = false;
+    let mut has_background = false;
+    for y in 0..tile_h {
+        for x in 0..tile_w {
+            let global = (top + y) * image_w + left + x;
+            let local = y * tile_w + x;
+            if unknown[global] {
+                ids[local] = unknown_count;
+                unknown_local_positions.push(local);
+                unknown_count += 1;
+            } else {
+                has_foreground |= foreground_known[global];
+                has_background |= background_known[global];
+            }
+        }
+    }
+    if unknown_count == 0 || !has_foreground || !has_background {
+        return CfTileOutcome::OneSidedTrimap;
+    }
+    let mut colors = vec![[0.0f64; 3]; tile_len];
+    for y in 0..tile_h {
+        for x in 0..tile_w {
+            let pixel = rgb.get_pixel((left + x) as u32, (top + y) as u32);
+            colors[y * tile_w + x] = [
+                pixel[0] as f64 / 255.0,
+                pixel[1] as f64 / 255.0,
+                pixel[2] as f64 / 255.0,
+            ];
+        }
+    }
+    let mut rows: Vec<HashMap<usize, f64>> = (0..unknown_count)
+        .map(|_| HashMap::with_capacity(32))
+        .collect();
+    let mut b = vec![0.0f64; unknown_count];
+
+    // Levin et al. 的 3×3 closed-form matting Laplacian。只保留 unknown 行，
+    // 因而复杂度随窄 trimap 带增长，而不是随整张 4K 图片增长。
+    for cy in 1..tile_h - 1 {
+        for cx in 1..tile_w - 1 {
+            let mut window_has_unknown = false;
+            for wy in cy - 1..=cy + 1 {
+                for wx in cx - 1..=cx + 1 {
+                    if ids[wy * tile_w + wx] != UNMAPPED {
+                        window_has_unknown = true;
+                    }
+                }
+            }
+            if !window_has_unknown {
+                continue;
+            }
+            let mut mean = [0.0f64; 3];
+            for wy in cy - 1..=cy + 1 {
+                for wx in cx - 1..=cx + 1 {
+                    let color = colors[wy * tile_w + wx];
+                    for channel in 0..3 {
+                        mean[channel] += color[channel] / 9.0;
+                    }
+                }
+            }
+            let mut covariance = [[0.0f64; 3]; 3];
+            for wy in cy - 1..=cy + 1 {
+                for wx in cx - 1..=cx + 1 {
+                    let color = colors[wy * tile_w + wx];
+                    let d = [color[0] - mean[0], color[1] - mean[1], color[2] - mean[2]];
+                    for row in 0..3 {
+                        for column in 0..3 {
+                            covariance[row][column] += d[row] * d[column];
+                        }
+                    }
+                }
+            }
+            for axis in 0..3 {
+                covariance[axis][axis] += EPSILON;
+                for other in 0..3 {
+                    covariance[axis][other] /= 9.0;
+                }
+            }
+            let Some(inverse) = cf_inverse_3x3(covariance) else {
+                continue;
+            };
+            for iy in cy - 1..=cy + 1 {
+                for ix in cx - 1..=cx + 1 {
+                    let local_i = iy * tile_w + ix;
+                    let row_id = ids[local_i];
+                    if row_id == UNMAPPED {
+                        continue;
+                    }
+                    let color_i = colors[local_i];
+                    let di = [
+                        color_i[0] - mean[0],
+                        color_i[1] - mean[1],
+                        color_i[2] - mean[2],
+                    ];
+                    for jy in cy - 1..=cy + 1 {
+                        for jx in cx - 1..=cx + 1 {
+                            let local_j = jy * tile_w + jx;
+                            let color_j = colors[local_j];
+                            let dj = [
+                                color_j[0] - mean[0],
+                                color_j[1] - mean[1],
+                                color_j[2] - mean[2],
+                            ];
+                            let mut dot = 0.0;
+                            for row in 0..3 {
+                                for column in 0..3 {
+                                    dot += di[row] * inverse[row][column] * dj[column];
+                                }
+                            }
+                            let value =
+                                if local_i == local_j { 1.0 } else { 0.0 } - (1.0 + dot) / 9.0;
+                            let column_id = ids[local_j];
+                            if column_id == UNMAPPED {
+                                let global_j = (top + jy) * image_w + left + jx;
+                                let alpha = if foreground_known[global_j] { 1.0 } else { 0.0 };
+                                b[row_id] -= value * alpha;
+                            } else {
+                                *rows[row_id].entry(column_id).or_insert(0.0) += value;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut sparse_rows: Vec<Vec<(usize, f64)>> = rows
+        .into_iter()
+        .map(|row| {
+            let mut entries: Vec<_> = row
+                .into_iter()
+                .filter(|(_, value)| value.is_finite() && value.abs() > 1e-14)
+                .collect();
+            // HashMap 仅用于累计窗口贡献；求解时固定列顺序，避免不同进程的哈希
+            // 随机种子令同一张图出现不必要的浮点累加差异。
+            entries.sort_unstable_by_key(|(column, _)| *column);
+            entries
+        })
+        .collect();
+    let mut diagonal = vec![0.0f64; unknown_count];
+    let mut anchored_rows = 0;
+    for (row_id, row) in sparse_rows.iter_mut().enumerate() {
+        diagonal[row_id] = row
+            .iter()
+            .find_map(|(column, value)| (*column == row_id).then_some(*value))
+            .unwrap_or(0.0);
+        if !diagonal[row_id].is_finite() || diagonal[row_id].abs() < 1e-12 {
+            // 分块边缘偶尔会落在没有完整 3×3 窗口的未知像素上。Python 参考
+            // 实现借由 IChol 的移位继续处理同一块；这里显式把这种“没有方程”的
+            // 像素锁为原模型 alpha，避免整块被丢弃，同时不凭空扩张前景。
+            let local = unknown_local_positions[row_id];
+            let local_x = local % tile_w;
+            let local_y = local / tile_w;
+            let original_alpha =
+                result[(top + local_y) * image_w + left + local_x].clamp(0.0, 1.0) as f64;
+            row.clear();
+            row.push((row_id, 1.0));
+            diagonal[row_id] = 1.0;
+            b[row_id] = original_alpha;
+            anchored_rows += 1;
+        }
+    }
+    let mut x = vec![0.0f64; unknown_count];
+    for y in 0..tile_h {
+        for x_local in 0..tile_w {
+            let id = ids[y * tile_w + x_local];
+            if id != UNMAPPED {
+                x[id] = result[(top + y) * image_w + left + x_local].clamp(0.0, 1.0) as f64;
+            }
+        }
+    }
+    let multiply = |vector: &[f64]| -> Vec<f64> {
+        sparse_rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|(column, value)| value * vector[*column])
+                    .sum()
+            })
+            .collect()
+    };
+    let mut residual: Vec<f64> = b
+        .iter()
+        .zip(multiply(&x))
+        .map(|(right, left)| right - left)
+        .collect();
+    let norm_b = b
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt()
+        .max(1e-12);
+    let mut z: Vec<f64> = residual
+        .iter()
+        .zip(diagonal.iter())
+        .map(|(value, diagonal)| value / diagonal)
+        .collect();
+    let mut direction = z.clone();
+    let mut rz = residual
+        .iter()
+        .zip(z.iter())
+        .map(|(a, b)| a * b)
+        .sum::<f64>();
+    if !rz.is_finite() {
+        return CfTileOutcome::UnstableSolver;
+    }
+    for _ in 0..MAX_ITERATIONS {
+        let applied = multiply(&direction);
+        let denominator = direction
+            .iter()
+            .zip(applied.iter())
+            .map(|(a, b)| a * b)
+            .sum::<f64>();
+        if !denominator.is_finite() || denominator.abs() < 1e-18 {
+            return CfTileOutcome::UnstableSolver;
+        }
+        let step = rz / denominator;
+        if !step.is_finite() {
+            return CfTileOutcome::UnstableSolver;
+        }
+        for index in 0..unknown_count {
+            x[index] += step * direction[index];
+            residual[index] -= step * applied[index];
+        }
+        let residual_norm = residual
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>()
+            .sqrt();
+        if residual_norm <= norm_b * RELATIVE_TOLERANCE {
+            break;
+        }
+        for index in 0..unknown_count {
+            z[index] = residual[index] / diagonal[index];
+        }
+        let next_rz = residual
+            .iter()
+            .zip(z.iter())
+            .map(|(a, b)| a * b)
+            .sum::<f64>();
+        if !next_rz.is_finite() || rz.abs() < 1e-18 {
+            return CfTileOutcome::UnstableSolver;
+        }
+        let beta = next_rz / rz;
+        for index in 0..unknown_count {
+            direction[index] = z[index] + beta * direction[index];
+        }
+        rz = next_rz;
+    }
+    for y in core_top..core_bottom {
+        for x_local in core_left..core_right {
+            let local = (y - top) * tile_w + x_local - left;
+            let id = ids[local];
+            if id != UNMAPPED && x[id].is_finite() {
+                result[y * image_w + x_local] = x[id].clamp(0.0, 1.0) as f32;
+            }
+        }
+    }
+    CfTileOutcome::Solved { anchored_rows }
+}
+
+fn cf_inverse_3x3(matrix: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let a = matrix[0][0];
+    let b = matrix[0][1];
+    let c = matrix[0][2];
+    let d = matrix[1][0];
+    let e = matrix[1][1];
+    let f = matrix[1][2];
+    let g = matrix[2][0];
+    let h = matrix[2][1];
+    let i = matrix[2][2];
+    let determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if !determinant.is_finite() || determinant.abs() < 1e-20 {
+        return None;
+    }
+    let scale = 1.0 / determinant;
+    Some([
+        [
+            (e * i - f * h) * scale,
+            (c * h - b * i) * scale,
+            (b * f - c * e) * scale,
+        ],
+        [
+            (f * g - d * i) * scale,
+            (a * i - c * g) * scale,
+            (c * d - a * f) * scale,
+        ],
+        [
+            (d * h - e * g) * scale,
+            (b * g - a * h) * scale,
+            (a * e - b * d) * scale,
+        ],
+    ])
 }
 
 /// 将任意模型的全尺寸 alpha 套入统一的正式后处理与去污染步骤。

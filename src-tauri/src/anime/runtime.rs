@@ -226,8 +226,22 @@ pub(crate) fn head_content_length(url: &str) -> Option<u64> {
 
 pub fn download_model(app: Option<&AppHandle>, base: &Path, id: &str) -> Result<(), String> {
     let spec = model_spec(id)?;
+    download_model_files(app, base, id, spec.files)
+}
+
+/// 下载不参与主模型选择器的可选发丝边缘精修器。
+pub fn download_hair_refiner(app: Option<&AppHandle>, base: &Path) -> Result<(), String> {
+    download_model_files(app, base, HAIR_REFINER_ID, HAIR_REFINER_FILES)
+}
+
+fn download_model_files(
+    app: Option<&AppHandle>,
+    base: &Path,
+    id: &str,
+    files: &[ModelFileSpec],
+) -> Result<(), String> {
     fs::create_dir_all(models_dir(base)).map_err(to_string_error)?;
-    for file in spec.files {
+    for file in files {
         let dest = models_dir(base).join(file.name);
         let already_ok =
             dest.exists() && fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0) == file.size;
@@ -294,6 +308,25 @@ pub fn uninstall_model(base: &Path, id: &str) -> Result<(), String> {
     }
 }
 
+pub fn uninstall_hair_refiner(base: &Path) -> Result<(), String> {
+    // 先释放 ONNX 会话，确保 Windows 不会锁住模型文件。
+    release_vitmatte_session();
+    let mut errors = Vec::new();
+    for file in HAIR_REFINER_FILES {
+        let path = models_dir(base).join(file.name);
+        if path.exists() {
+            if let Err(error) = fs::remove_file(&path) {
+                errors.push(format!("删除 {} 失败：{error}", file.name));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("；"))
+    }
+}
+
 pub(crate) fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "会话锁已损坏".into()
 }
@@ -312,6 +345,10 @@ pub(crate) static SIMPLE_SESSION: OnceLock<Mutex<Option<SimpleSessions>>> = Once
 
 pub(crate) static ADVANCED_SESSIONS: OnceLock<Mutex<Option<AdvancedSessions>>> = OnceLock::new();
 
+/// ViTMatte 与主分割模型串行使用。单独缓存其会话并纳入 `prune_sessions`，避免
+/// 两个视觉 Transformer 同时占住显存而在中端显卡上触发 OOM。
+pub(crate) static VITMATTE_SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
+
 /// BiRefNet 系（toonout + birefnet-*）会话按模型 id 缓存：这些模型共享同一条
 /// 推理管线，仅输入分辨率与后处理策略不同。
 pub(crate) static BIREFNET_SESSIONS: OnceLock<Mutex<Vec<(String, Session)>>> = OnceLock::new();
@@ -322,6 +359,10 @@ pub(crate) fn simple_slot() -> &'static Mutex<Option<SimpleSessions>> {
 
 pub(crate) fn advanced_slot() -> &'static Mutex<Option<AdvancedSessions>> {
     ADVANCED_SESSIONS.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn vitmatte_slot() -> &'static Mutex<Option<Session>> {
+    VITMATTE_SESSION.get_or_init(|| Mutex::new(None))
 }
 
 pub(crate) fn birefnet_sessions() -> &'static Mutex<Vec<(String, Session)>> {
@@ -335,6 +376,12 @@ pub(crate) fn release_birefnet_session(id: &str) {
     }
 }
 
+pub(crate) fn release_vitmatte_session() {
+    if let Ok(mut session) = vitmatte_slot().lock() {
+        session.take();
+    }
+}
+
 /// 推理会话全局只保留当前在用的一套。这几组模型各自常驻 1-3GB 显存
 /// （BiRefNet 系 0.5-1GB 权重 + 大激活张量，RTMDet+精修是两个模型），
 /// 同时缓存多套会在切换模型时把显存挤爆：GPU OOM 转内存重试还可能
@@ -344,6 +391,7 @@ pub(crate) enum SessionKeep<'a> {
     Birefnet(&'a str),
     Simple,
     Advanced,
+    VitMatte,
 }
 
 pub(crate) fn prune_sessions(keep: SessionKeep<'_>) {
@@ -361,6 +409,11 @@ pub(crate) fn prune_sessions(keep: SessionKeep<'_>) {
     }
     if !matches!(keep, SessionKeep::Advanced) {
         if let Ok(mut slot) = advanced_slot().lock() {
+            *slot = None;
+        }
+    }
+    if !matches!(keep, SessionKeep::VitMatte) {
+        if let Ok(mut slot) = vitmatte_slot().lock() {
             *slot = None;
         }
     }
@@ -433,7 +486,9 @@ pub(crate) const GPU_ORT_DLLS: &[&str] = &[
 ];
 
 pub fn gpu_ort_capi_dir(base: &Path) -> PathBuf {
-    base.join("onnxruntime-gpu").join("onnxruntime").join("capi")
+    base.join("onnxruntime-gpu")
+        .join("onnxruntime")
+        .join("capi")
 }
 
 pub fn gpu_ort_ready(base: &Path) -> bool {
@@ -530,15 +585,13 @@ pub(crate) fn preload_cuda_runtime() {
         .iter()
         .all(|name| path.join(name).exists())
     });
-    let cudnn_root = cudnn_runtime_candidates()
-        .into_iter()
-        .find(|path| {
-            // cuDNN 运行时会按需加载 cublasLt64_1X 等依赖，找不到直接 abort 进程；
-            // 因此候选目录必须自带这些依赖，否则视为不可用。
-            CUDNN9_FILES.iter().all(|name| path.join(name).exists())
-                && dir_contains_prefix(path, "cublasLt64_")
-                && dir_contains_prefix(path, "cudart64_")
-        });
+    let cudnn_root = cudnn_runtime_candidates().into_iter().find(|path| {
+        // cuDNN 运行时会按需加载 cublasLt64_1X 等依赖，找不到直接 abort 进程；
+        // 因此候选目录必须自带这些依赖，否则视为不可用。
+        CUDNN9_FILES.iter().all(|name| path.join(name).exists())
+            && dir_contains_prefix(path, "cublasLt64_")
+            && dir_contains_prefix(path, "cudart64_")
+    });
     if let Some(dir) = &cuda_root {
         for name in ort::ep::cuda::CUDA_DYLIBS {
             let _ = ort::util::preload_dylib(dir.join(name));
@@ -585,9 +638,13 @@ pub(crate) fn dir_contains_prefix(dir: &Path, prefix: &str) -> bool {
     let prefix = prefix.to_ascii_lowercase();
     fs::read_dir(dir)
         .map(|entries| {
-            entries
-                .flatten()
-                .any(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase().starts_with(&prefix))
+            entries.flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .starts_with(&prefix)
+            })
         })
         .unwrap_or(false)
 }
