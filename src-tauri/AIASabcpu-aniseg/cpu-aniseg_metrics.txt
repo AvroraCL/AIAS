@@ -1,6 +1,0 @@
-AIAS alpha A/B report
-tag=cpu-aniseg
-ground_truth=F:\战争雷霆涂装\贴图素材\F15E 塞雷娅\测试\人工抠图版.png
-原图	alignment	solid_pixels=9816042	rgb_mae=0.0000	rgb_changed_ratio=0.00000
-原图	anime-specialist	actual=anime-specialist	mae=0.00368	bg_leak_mean=0.00423	bg_leak_ratio=0.00520	fg_miss_mean=0.00200	fg_miss_ratio=0.00182	edge_mae=0.36087	iou=0.99286
-原图	anime-specialist	regions	interior_miss_mean=0.00142	boundary_mae=0.17258	exterior_leak_mean=0.00248
