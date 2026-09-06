@@ -36,7 +36,8 @@ import {
   ImageOff,
   Check,
   AlertTriangle,
-  Download
+  Download,
+  Maximize2
 } from "lucide";
 
 const defaults = {
@@ -60,7 +61,8 @@ const defaults = {
   animeModel: "anime-specialist",
   animeHairRefiner: false,
   animeDetailRecovery: false,
-  animeCutoutOutputPath: ""
+  animeCutoutOutputPath: "",
+  superresOutputPath: ""
 };
 
 const animeModelCatalog = {
@@ -81,6 +83,7 @@ const modeMeta = {
   mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
   "image-dds": { title: "图片转 DDS", description: "批量转换图片并统一 DDS 压缩格式" },
   "anime-cutout": { title: "AI 抠图", description: "动漫 / 人像 / 商品等任意图片智能抠图，输出透明背景 PNG" },
+  superres: { title: "图片超分", description: "立绘 / 素材 RealESRGAN 本地超分，分辨率放大 4 倍" },
   skins: { title: "涂装管理", description: "管理 War Thunder UserSkins 资源" },
   settings: { title: "应用设置", description: "更新、数据路径与版本信息" }
 };
@@ -102,6 +105,12 @@ const state = {
   animeResultEpoch: 0,
   animeActiveIndex: 0,
   animeComparePos: 50,
+  superresFiles: [],
+  superresModels: [],
+  superresDownloadingId: "",
+  superresRunning: false,
+  superresResults: new Map(),
+  superresProbed: new Set(),
   activeMode: "merge",
   activityCount: 0,
   lastOutputPath: "",
@@ -140,7 +149,8 @@ const iconSet = {
   ImageOff,
   Check,
   AlertTriangle,
-  Download
+  Download,
+  Maximize2
 };
 
 const TOAST_LIMIT = 4;
@@ -177,6 +187,7 @@ function getModeOutputPath(mode = state.activeMode) {
     mipmap: "mipmap-output",
     "image-dds": "image-output",
     "anime-cutout": "anime-output",
+    superres: "superres-output",
     skins: "skin-path"
   };
   return $(fieldByMode[mode])?.value || "";
@@ -542,6 +553,17 @@ function createBrowserPreviewApi() {
     return modelsStatus();
   };
 
+  const superresPreviewModels = [
+    { id: "anime", label: "动漫超分（RealESRGAN 动漫 4x）", installed: true, totalSize: 18352469 },
+    { id: "general", label: "通用超分（RealESRGAN 通用 4x）", installed: false, totalSize: 67051616 }
+  ];
+
+  const setSuperresInstalled = (model, installed) => {
+    const target = superresPreviewModels.find((item) => item.id === model);
+    if (target) target.installed = installed;
+    return superresPreviewModels.map((item) => ({ ...item }));
+  };
+
   const save = () => {
     localStorage.setItem("aias-preview-settings", JSON.stringify(settings));
     return { ...settings };
@@ -604,6 +626,12 @@ function createBrowserPreviewApi() {
       modelDownload: async (modelId) => setModelInstalled(modelId, true),
       modelUninstall: async (modelId) => setModelInstalled(modelId, false),
       cutout: () => previewOnly("AI 抠图")
+    },
+    superres: {
+      modelsStatus: async () => superresPreviewModels.map((model) => ({ ...model })),
+      modelDownload: async (model) => setSuperresInstalled(model, true),
+      modelUninstall: async (model) => setSuperresInstalled(model, false),
+      run: () => previewOnly("图片超分")
     },
     skin: {
       autoDetect: async () => null,
@@ -678,6 +706,12 @@ function createTauriApi() {
       cutout: (options) => invoke("anime_cutout", { options }),
       gpuRuntimeState: () => invoke("gpu_runtime_state"),
       installGpuRuntime: () => invoke("install_gpu_runtime")
+    },
+    superres: {
+      modelsStatus: () => invoke("superres_models_status"),
+      modelDownload: (model) => invoke("superres_model_download", { model }),
+      modelUninstall: (model) => invoke("superres_model_uninstall", { model }),
+      run: (options) => invoke("superres_run", { options })
     },
     skin: {
       autoDetect: () => invoke("skin_auto_detect"),
@@ -1261,6 +1295,246 @@ function bindAnimeGallery() {
   window.addEventListener("resize", fitAnimeCompareFrame);
 }
 
+// ---------------------------------------------------------------- 图片超分
+
+const superresLabels = {
+  anime: "动漫超分",
+  general: "通用超分"
+};
+
+function superresResultKey(file, modelId) {
+  // 后端输出名固定为 {stem}_4x_{模型id}.png
+  return `${modelId}\u0000${file}`;
+}
+
+function superresLocalSrc(path) {
+  return isTauriRuntime && path ? convertFileSrc(path) : "";
+}
+
+function describeSuperresModel(model) {
+  if (!model) return "状态未知";
+  const size = formatBytes(model.totalSize);
+  if (model.installed) return `已安装 · ${size}`;
+  return `未安装 · 共 ${size}`;
+}
+
+function isSuperresModelReady(modelId) {
+  return Boolean(state.superresModels.find((model) => model.id === modelId)?.installed);
+}
+
+async function refreshSuperresModelStatus() {
+  try {
+    state.superresModels = await api.superres.modelsStatus();
+  } catch (error) {
+    state.superresModels = [];
+    setText("superres-anime-status", `无法读取模型状态：${error.message || error}`);
+    setText("superres-general-status", "");
+    return;
+  }
+  renderSuperresModelStatus();
+}
+
+function renderSuperresModelStatus() {
+  const busy = Boolean(state.superresDownloadingId) || state.superresRunning;
+  for (const modelId of ["anime", "general"]) {
+    const model = state.superresModels.find((item) => item.id === modelId) || null;
+    const ready = Boolean(model?.installed);
+    const downloading = state.superresDownloadingId === modelId;
+    setText(`superres-${modelId}-status`, describeSuperresModel(model));
+    const downloadButton = $(`superres-${modelId}-download`);
+    const uninstallButton = $(`superres-${modelId}-uninstall`);
+    if (downloadButton) {
+      downloadButton.disabled = busy;
+      downloadButton.classList.toggle("hidden", ready || Boolean(state.superresDownloadingId));
+    }
+    if (uninstallButton) {
+      uninstallButton.disabled = busy;
+      uninstallButton.classList.toggle("hidden", !ready || Boolean(state.superresDownloadingId));
+    }
+    $(`superres-${modelId}-progress`)?.classList.toggle("hidden", !downloading);
+    if (!downloading) {
+      $(`superres-${modelId}-progress-fill`)?.style.setProperty("width", "0%");
+      setText(`superres-${modelId}-progress-text`, "");
+    }
+  }
+  updateStatus();
+}
+
+async function downloadSuperresModel(modelId) {
+  if (state.superresDownloadingId || state.superresRunning) return;
+  state.superresDownloadingId = modelId;
+  renderSuperresModelStatus();
+  addActivity("开始下载模型", superresLabels[modelId] || modelId);
+  try {
+    state.superresModels = await api.superres.modelDownload(modelId);
+    addActivity("模型下载完成", superresLabels[modelId] || modelId, "success");
+  } catch (error) {
+    addActivity("模型下载失败", error.message || String(error), "error");
+  }
+  state.superresDownloadingId = "";
+  renderSuperresModelStatus();
+}
+
+async function uninstallSuperresModel(modelId) {
+  if (state.superresDownloadingId || state.superresRunning) return;
+  const confirmed = await openPreviewConfirm(
+    "卸载模型",
+    `即将删除「${superresLabels[modelId] || modelId}」的本地模型文件。卸载后需要重新下载才能使用，确定继续吗？`,
+    { confirmText: "卸载", danger: true }
+  );
+  if (!confirmed || state.superresDownloadingId || state.superresRunning) return;
+  state.superresDownloadingId = modelId;
+  renderSuperresModelStatus();
+  try {
+    state.superresModels = await api.superres.modelUninstall(modelId);
+    addActivity("模型已卸载", superresLabels[modelId] || modelId, "success");
+  } catch (error) {
+    addActivity("模型卸载失败", error.message || String(error), "error");
+  }
+  state.superresDownloadingId = "";
+  renderSuperresModelStatus();
+}
+
+function applySuperresOutputs(paths) {
+  for (const path of paths || []) {
+    // 输出名固定为 {stem}_4x_{模型id}.png，按后缀还原模型 id 与原图
+    const name = basename(path);
+    const match = name.match(/^(.*)_4x_(anime|general)\.png$/i);
+    if (!match) continue;
+    const stem = match[1];
+    const hit = (state.superresFiles || []).find((file) => animeStem(file) === stem);
+    if (hit) state.superresResults.set(superresResultKey(hit, match[2].toLowerCase()), path);
+  }
+  renderSuperresGallery();
+}
+
+function resetSuperresResults() {
+  state.superresResults.clear();
+  state.superresProbed.clear();
+}
+
+function probeSuperresResult(file, modelId) {
+  const key = superresResultKey(file, modelId);
+  if (state.superresResults.has(key) || state.superresProbed.has(key)) return;
+  state.superresProbed.add(key);
+  const dir = $("superres-output")?.value?.trim();
+  if (!dir || !isTauriRuntime) return;
+  const candidate = `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}_4x_${modelId}.png`;
+  const probe = new Image();
+  probe.onload = () => {
+    if (!state.superresFiles.includes(file)) return;
+    state.superresResults.set(key, candidate);
+    renderSuperresGallery();
+  };
+  probe.onerror = () => state.superresProbed.delete(key);
+  probe.src = superresLocalSrc(candidate);
+}
+
+function renderSuperresGallery() {
+  const files = state.superresFiles;
+  const hasFiles = files.length > 0;
+  $("superres-empty")?.classList.toggle("hidden", hasFiles);
+  $("superres-gallery")?.classList.toggle("hidden", !hasFiles);
+  setText("superres-toolbar-count", hasFiles ? `${files.length} 张图片` : "尚未添加图片");
+  updateStatus();
+  if (!hasFiles) return;
+  renderSuperresGrid(files);
+  files.forEach((file) => {
+    probeSuperresResult(file, "anime");
+    probeSuperresResult(file, "general");
+  });
+}
+
+function renderSuperresGrid(files) {
+  const grid = $("superres-grid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  files.forEach((file) => {
+    const card = document.createElement("div");
+    card.className = "superres-card";
+    card.title = file;
+
+    const img = document.createElement("img");
+    img.alt = basename(file);
+    img.draggable = false;
+    const animePath = state.superresResults.get(superresResultKey(file, "anime"));
+    const generalPath = state.superresResults.get(superresResultKey(file, "general"));
+    const preview = superresLocalSrc(generalPath || animePath || file);
+    if (preview) {
+      img.src = preview;
+    } else {
+      card.classList.add("placeholder");
+    }
+
+    const info = document.createElement("div");
+    info.className = "superres-card-info";
+    const name = document.createElement("strong");
+    name.textContent = basename(file);
+
+    const badges = document.createElement("div");
+    badges.className = "superres-card-badges";
+    for (const modelId of ["anime", "general"]) {
+      const done = Boolean(state.superresResults.get(superresResultKey(file, modelId)));
+      const badge = document.createElement("span");
+      badge.className = `thumb-badge ${done ? "done" : "pending"}`;
+      badge.textContent = superresLabels[modelId].replace("超分", "");
+      badge.title = done ? "已生成 4x 结果" : "待处理";
+      badges.appendChild(badge);
+    }
+    info.append(name, badges);
+
+    const remove = document.createElement("span");
+    remove.className = "thumb-remove";
+    remove.title = `移除 ${basename(file)}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.innerHTML = '<i data-lucide="x"></i>';
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      removeSuperresFile(file);
+    });
+
+    card.append(img, info, remove);
+    grid.appendChild(card);
+  });
+  refreshIcons(grid);
+}
+
+function removeSuperresFile(file) {
+  state.superresFiles = state.superresFiles.filter((item) => item !== file);
+  for (const modelId of ["anime", "general"]) {
+    state.superresResults.delete(superresResultKey(file, modelId));
+  }
+  renderSuperresGallery();
+  updateStatus();
+}
+
+async function runSuperres(modelId, button) {
+  await saveSettings();
+  const blocker = getRunBlocker("superres");
+  if (blocker) {
+    reportRunBlocker(blocker);
+    return;
+  }
+  if (!isSuperresModelReady(modelId)) {
+    reportRunBlocker(`${superresLabels[modelId]}模型未安装，请先在右侧栏下载。`);
+    return;
+  }
+  addActivity(`开始${superresLabels[modelId]}`, `${state.superresFiles.length} 张图片 · 放大 4 倍`);
+  const files = [...state.superresFiles];
+  const outputPath = $("superres-output").value;
+  state.superresRunning = true;
+  renderSuperresModelStatus();
+  const result = await withLog(
+    "superres-log",
+    button,
+    () => api.superres.run({ files, outputPath, model: modelId }),
+    "图片超分"
+  );
+  state.superresRunning = false;
+  renderSuperresModelStatus();
+  if (result?.outputs?.length) applySuperresOutputs(result.outputs);
+}
+
 function addActivity(title, body, tone = "idle") {
   appendActivityHistory(title, body, tone);
   const feed = $("toast-region");
@@ -1318,7 +1592,8 @@ function syncActiveLog(mode = state.activeMode) {
     split: "split-log",
     mipmap: "mipmap-log",
     "image-dds": "image-log",
-    "anime-cutout": "anime-log"
+    "anime-cutout": "anime-log",
+    superres: "superres-log"
   };
   document.querySelectorAll(".task-log").forEach((log) => {
     log.classList.toggle("active", log.id === logByMode[mode]);
@@ -1557,7 +1832,8 @@ function collectSettings() {
     animeModel: $("anime-model")?.value || "anime-specialist",
     animeHairRefiner: Boolean($("anime-hair-refiner")?.checked),
     animeDetailRecovery: Boolean($("anime-detail-recovery")?.checked),
-    animeCutoutOutputPath: $("anime-output")?.value || ""
+    animeCutoutOutputPath: $("anime-output")?.value || "",
+    superresOutputPath: $("superres-output")?.value || ""
   };
 }
 
@@ -1583,7 +1859,8 @@ function applySettingsToForm() {
     "anime-model": settings.animeModel || "anime-specialist",
     "anime-hair-refiner": Boolean(settings.animeHairRefiner),
     "anime-detail-recovery": Boolean(settings.animeDetailRecovery),
-    "anime-output": settings.animeCutoutOutputPath
+    "anime-output": settings.animeCutoutOutputPath,
+    "superres-output": settings.superresOutputPath
   };
 
   for (const [id, value] of Object.entries(map)) {
@@ -1611,16 +1888,20 @@ function updateRunButtons(mode) {
     split: "run-split",
     mipmap: "run-mipmap",
     "image-dds": "run-image-dds",
-    "anime-cutout": "run-anime-cutout"
+    "anime-cutout": "run-anime-cutout",
+    superres: "run-superres-anime"
   };
 
   document.querySelectorAll(".run-button").forEach((button) => button.classList.add("hidden"));
   const active = $(mapping[mode]);
   if (active) active.classList.remove("hidden");
+  // 超分模式同时展示「动漫超分」「通用超分」两个运行按钮
+  if (mode === "superres") $("run-superres-general")?.classList.remove("hidden");
 
   $("clear-split-files")?.classList.toggle("hidden", mode !== "split");
   $("clear-image-files")?.classList.toggle("hidden", mode !== "image-dds");
   $("clear-anime-files")?.classList.toggle("hidden", mode !== "anime-cutout");
+  $("clear-superres-files")?.classList.toggle("hidden", mode !== "superres");
   $("import-skins")?.classList.toggle("hidden", mode !== "skins");
   $("refresh-skins")?.classList.toggle("hidden", mode !== "skins");
 }
@@ -1643,7 +1924,8 @@ function updateInspector() {
     "mipmap-input": state.activeMode === "mipmap",
     "mipmap-output": state.activeMode === "mipmap",
     "image-output": state.activeMode === "image-dds",
-    "anime-output": state.activeMode === "anime-cutout"
+    "anime-output": state.activeMode === "anime-cutout",
+    "superres-output": state.activeMode === "superres"
   };
 
   for (const [id, visible] of Object.entries(fieldVisibility)) {
@@ -1654,7 +1936,7 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout"];
+  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres"];
   const blocker = getRunBlocker(mode);
   const ready = runnableModes.includes(mode) && !blocker;
 
@@ -1676,11 +1958,22 @@ function updateStatus() {
     split: "run-split",
     mipmap: "run-mipmap",
     "image-dds": "run-image-dds",
-    "anime-cutout": "run-anime-cutout"
+    "anime-cutout": "run-anime-cutout",
+    superres: "run-superres-anime"
   };
   const activeRunButton = $(runButtonByMode[mode]);
   if (activeRunButton && activeRunButton.dataset.busy !== "true") {
     activeRunButton.disabled = !ready;
+  }
+  // 超分有两个运行按钮，各自还要求对应模型已安装
+  if (mode === "superres") {
+    const generalButton = $("run-superres-general");
+    if (generalButton && generalButton.dataset.busy !== "true") {
+      generalButton.disabled = !ready || !isSuperresModelReady("general");
+    }
+    if (activeRunButton && activeRunButton.dataset.busy !== "true") {
+      activeRunButton.disabled = !ready || !isSuperresModelReady("anime");
+    }
   }
 
   $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnableModes.includes(mode));
@@ -1711,6 +2004,13 @@ function getRunBlocker(mode) {
       if (state.animeDownloading || state.animeHairDownloading) return "模型正在下载中，请稍候。";
       if (wantsHairRefiner() && !state.animeHairStatus?.installed) return "请先在右侧栏下载精细发丝边缘模型，或关闭实验选项。";
       if (!isAnimeModelReady($("anime-model")?.value || "anime-specialist")) return "当前模型未安装，请先在「抠图模型」中下载。";
+      return null;
+    case "superres":
+      if (state.superresRunning) return "超分正在运行，请稍候。";
+      if (!state.superresFiles.length) return "请添加图片。";
+      if (!$("superres-output")?.value) return "请选择输出文件夹。";
+      if (state.superresDownloadingId) return "模型正在下载中，请稍候。";
+      if (state.superresModels.length && !state.superresModels.some((model) => model.installed)) return "请先在右侧栏下载至少一个超分模型。";
       return null;
     default:
       return null;
@@ -1747,6 +2047,10 @@ function applyMode(mode) {
     refreshAnimeModelStatus();
     refreshGpuRuntime();
     renderAnimeGallery();
+  }
+  if (mode === "superres") {
+    refreshSuperresModelStatus();
+    renderSuperresGallery();
   }
   syncActiveLog(mode);
   updateRunButtons(mode);
@@ -1829,6 +2133,11 @@ function bindWorkspaceActions() {
   $("anime-gpu-install")?.addEventListener("click", () => installGpuRuntime());
   $("anime-model-uninstall")?.addEventListener("click", () => uninstallAnimeModel());
 
+  $("superres-anime-download")?.addEventListener("click", () => downloadSuperresModel("anime"));
+  $("superres-general-download")?.addEventListener("click", () => downloadSuperresModel("general"));
+  $("superres-anime-uninstall")?.addEventListener("click", () => uninstallSuperresModel("anime"));
+  $("superres-general-uninstall")?.addEventListener("click", () => uninstallSuperresModel("general"));
+
   document.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey) || event.key !== "Enter") return;
     const activeButton = document.querySelector(".run-button:not(.hidden)");
@@ -1904,6 +2213,10 @@ function bindDropZones() {
         resetAnimeResults();
         renderAnimeGallery();
       }
+      if (button.dataset.pickDir === "superres-output") {
+        resetSuperresResults();
+        renderSuperresGallery();
+      }
     });
     if (button.tagName === "BUTTON") return;
     button.addEventListener("keydown", async (event) => {
@@ -1937,6 +2250,15 @@ function bindDropZones() {
     renderAnimeGallery();
     updateStatus();
   });
+
+  $("pick-superres-files")?.addEventListener("click", async () => {
+    const files = await api.dialog.selectFiles({
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "tga"] }]
+    });
+    state.superresFiles = [...new Set([...state.superresFiles, ...files])];
+    renderSuperresGallery();
+    updateStatus();
+  });
 }
 
 function bindFileControls() {
@@ -1961,6 +2283,14 @@ function bindFileControls() {
     renderAnimeGallery();
     updateStatus();
     addActivity("已清空列表", "抠图图片列表已清空。");
+  });
+
+  $("clear-superres-files")?.addEventListener("click", () => {
+    state.superresFiles = [];
+    resetSuperresResults();
+    renderSuperresGallery();
+    updateStatus();
+    addActivity("已清空列表", "超分图片列表已清空。");
   });
 }
 
@@ -2089,8 +2419,16 @@ function bindRunActions() {
     );
     state.animeRunning = false;
     renderAnimeModelStatus();
-    if (result?.outputs?.length) applyAnimeOutputs(result.outputs, requestKeys);
+    if (result?.outputs?.length) applyAnimeOutputs(result.outputs);
     refreshGpuRuntime();
+  });
+
+  $("run-superres-anime")?.addEventListener("click", (event) => {
+    runSuperres("anime", event.currentTarget);
+  });
+
+  $("run-superres-general")?.addEventListener("click", (event) => {
+    runSuperres("general", event.currentTarget);
   });
 }
 
@@ -2247,6 +2585,11 @@ function bindDragDrop() {
         renderAnimeGallery();
         updateStatus();
         break;
+      case "superres":
+        state.superresFiles = [...new Set([...state.superresFiles, ...paths])];
+        renderSuperresGallery();
+        updateStatus();
+        break;
     }
   });
 }
@@ -2287,6 +2630,15 @@ async function init() {
         setText("anime-gpu-progress-text", `${file} · ${percent}%（${formatBytes(completed)} / ${formatBytes(total)}）`);
         return;
       }
+      // 超分模型下载进度（modelId 为 superres-anime / superres-general）
+      if (modelId.startsWith("superres-")) {
+        const target = modelId.slice("superres-".length);
+        const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+        const fill = $(`superres-${target}-progress-fill`);
+        if (fill) fill.style.width = `${percent}%`;
+        setText(`superres-${target}-progress-text`, `${file} · ${percent}%（${formatBytes(completed)} / ${formatBytes(total)}）`);
+        return;
+      }
       if (modelId !== ($("anime-model")?.value || "anime-specialist")) return;
       const percent = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
       const fill = $("anime-model-progress-fill");
@@ -2298,7 +2650,7 @@ async function init() {
   startSystemMonitor();
   // 兜底轮询：文件/目录变化事件若被遗漏，抠图按钮可用性 1.2s 内自动纠正
   setInterval(() => {
-    if (state.activeMode === "anime-cutout") updateStatus();
+    if (state.activeMode === "anime-cutout" || state.activeMode === "superres") updateStatus();
   }, 1200);
 
   renderChips("merge-chip-list", []);
@@ -2306,6 +2658,8 @@ async function init() {
   renderChips("mipmap-chip-list", []);
   renderChips("image-file-list", []);
   renderAnimeGallery();
+  renderSuperresGallery();
+  refreshSuperresModelStatus();
   await refreshSkins();
   syncPathChips();
   const savedMode = localStorage.getItem("aias-active-mode");

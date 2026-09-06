@@ -584,6 +584,66 @@ textarea:focus { border-color: var(--accent); }
 .anime-thumb:hover .thumb-remove, .thumb-remove:focus-visible { display: grid; }
 .thumb-remove:hover { background: rgba(200, 60, 60, 0.9); }
 
+/* 超分结果网格 */
+.superres-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 12px;
+  padding: 2px;
+  align-content: start;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.superres-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+.superres-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  -webkit-user-drag: none;
+}
+.superres-card.placeholder img { visibility: hidden; }
+.superres-card.placeholder::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 34px;
+  background: linear-gradient(135deg, #232428 0%, #1a1b1e 100%);
+}
+.superres-card-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.superres-card-info strong {
+  flex: 1;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.superres-card-badges { display: flex; gap: 4px; flex: none; }
+.superres-card-badges .thumb-badge {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+}
+.superres-card .thumb-remove { display: none; }
+.superres-card:hover .thumb-remove, .superres-card .thumb-remove:focus-visible { display: grid; }
+
 /* 资源监视器（饼状图） */
 
 @property --usage {

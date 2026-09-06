@@ -130,10 +130,10 @@ pub(crate) fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelProgress {
-    model_id: String,
-    file: String,
-    completed: u64,
-    total: u64,
+    pub(crate) model_id: String,
+    pub(crate) file: String,
+    pub(crate) completed: u64,
+    pub(crate) total: u64,
 }
 
 pub(crate) fn emit_progress(app: Option<&AppHandle>, progress: ModelProgress) {
@@ -758,6 +758,8 @@ pub(crate) fn is_gpu_oom_error(error: &str) -> bool {
         "out of memory",
         "out_of_memory",
         "cuda error",
+        // cuDNN 执行失败（5003）常见于显存/工作区不足，按 GPU 故障处理回退 CPU。
+        "cudnn",
     ]
     .iter()
     .any(|needle| message.contains(needle))

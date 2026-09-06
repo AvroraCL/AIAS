@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod anime;
+mod superres;
 
 use image::{DynamicImage, ImageBuffer, Luma, Rgba, RgbaImage};
 use image_dds::ddsfile::Dds;
@@ -51,6 +52,8 @@ struct Settings {
     anime_hair_refiner: bool,
     #[serde(default)]
     anime_detail_recovery: bool,
+    #[serde(default)]
+    superres_output_path: String,
 }
 
 fn default_comfyui_address() -> String {
@@ -86,6 +89,7 @@ impl Default for Settings {
             anime_model: default_anime_model(),
             anime_hair_refiner: false,
             anime_detail_recovery: false,
+            superres_output_path: String::new(),
         }
     }
 }
@@ -166,6 +170,15 @@ struct AnimeCutoutOptions {
     refine_hair: bool,
     #[serde(default)]
     recover_details: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuperResRunOptions {
+    files: Vec<String>,
+    output_path: String,
+    /// "anime"（动漫超分）或 "general"（通用超分）。
+    model: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -384,6 +397,10 @@ fn main() {
             anime_hair_refiner_download,
             anime_hair_refiner_uninstall,
             anime_cutout,
+            superres_models_status,
+            superres_model_download,
+            superres_model_uninstall,
+            superres_run,
             gpu_runtime_state,
             install_gpu_runtime,
             skin_auto_detect,
@@ -1070,6 +1087,154 @@ async fn anime_cutout(app: AppHandle, options: AnimeCutoutOptions) -> Result<Tas
         .map_err(to_string_error)?
 }
 
+// ---------------------------------------------------------------------------
+// AI 超分：立绘 / 素材 4x 放大（RealESRGAN 通用 + 动漫特化）
+// ---------------------------------------------------------------------------
+
+fn superres_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+fn superres_supported_extension(extension: &str) -> bool {
+    matches!(extension, "png" | "jpg" | "jpeg" | "webp" | "tga")
+}
+
+#[tauri::command]
+fn superres_models_status(app: AppHandle) -> Result<Vec<superres::SuperResModelStatus>, String> {
+    let base = superres_base_dir(&app)?;
+    Ok(superres::models_status(&base))
+}
+
+#[tauri::command]
+async fn superres_model_download(app: AppHandle, model: String) -> Result<Vec<superres::SuperResModelStatus>, String> {
+    let base = superres_base_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        superres::download_model(Some(&app), &base, &model)?;
+        Ok(superres::models_status(&base))
+    })
+    .await
+    .map_err(to_string_error)?
+}
+
+#[tauri::command]
+async fn superres_model_uninstall(app: AppHandle, model: String) -> Result<Vec<superres::SuperResModelStatus>, String> {
+    let base = superres_base_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        superres::uninstall_model(&base, &model)?;
+        Ok(superres::models_status(&base))
+    })
+    .await
+    .map_err(to_string_error)?
+}
+
+fn superres_run_inner(
+    app: Option<&AppHandle>,
+    options: SuperResRunOptions,
+) -> Result<TaskResult, String> {
+    fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
+    let base = match app {
+        Some(handle) => superres_base_dir(handle)?,
+        None => dirs::data_dir()
+            .map(|dir| dir.join("studio.avroracl.aias"))
+            .ok_or_else(|| "无法定位应用数据目录".to_string())?,
+    };
+    if !superres::is_model_ready(&base, &options.model) {
+        return Err("超分模型未安装，请先在右侧栏下载。".into());
+    }
+    anime::ensure_ort_runtime(&base)?;
+
+    let mut logs = Vec::new();
+    logs.push(if anime::cuda_ep_compiled() {
+        "推理后端：CUDA（GPU 加速）".to_string()
+    } else {
+        "推理后端：CPU（通用模型较慢，NVIDIA 显卡可在 AI 抠图页下载 GPU 运行库）".to_string()
+    });
+    let mut outputs = Vec::new();
+    let mut completed = 0usize;
+
+    for file in &options.files {
+        let input = Path::new(file);
+        if !input.exists() {
+            logs.push(format!("跳过（文件不存在）：{file}"));
+            continue;
+        }
+        let Some(stem) = input.file_stem().and_then(|value| value.to_str()) else {
+            logs.push(format!("跳过（文件名无效）：{file}"));
+            continue;
+        };
+        let extension = input
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_lowercase())
+            .unwrap_or_default();
+        if !superres_supported_extension(&extension) {
+            logs.push(format!("跳过（暂不支持 {extension} 格式）：{stem}"));
+            continue;
+        }
+        let target = Path::new(&options.output_path).join(format!("{stem}_4x_{}.png", options.model));
+        let label = input
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(file);
+        if let Some(handle) = app {
+            emit_task_progress(
+                handle,
+                completed,
+                options.files.len(),
+                format!("超分中 {label}"),
+            );
+        }
+        match superres::upscale(&base, &options.model, input, &target) {
+            Ok(()) => {
+                completed += 1;
+                let name = target
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("output.png")
+                    .to_string();
+                logs.push(format!("完成 {} → {}", stem, name));
+                outputs.push(target.display().to_string());
+                if let Some(handle) = app {
+                    emit_task_progress(
+                        handle,
+                        completed,
+                        options.files.len(),
+                        format!("完成 {stem}"),
+                    );
+                }
+            }
+            Err(error) => {
+                logs.push(format!("失败 {stem}：{error}"));
+            }
+        }
+    }
+
+    if completed == 0 {
+        let detail = logs.last().cloned().unwrap_or_default();
+        return Err(if detail.is_empty() {
+            "没有图片被处理。".into()
+        } else {
+            format!("没有图片被处理。{detail}")
+        });
+    }
+
+    Ok(TaskResult {
+        completed,
+        total: options.files.len(),
+        logs,
+        outputs,
+    })
+}
+
+#[tauri::command]
+async fn superres_run(app: AppHandle, options: SuperResRunOptions) -> Result<TaskResult, String> {
+    tauri::async_runtime::spawn_blocking(move || superres_run_inner(Some(&app), options))
+        .await
+        .map_err(to_string_error)?
+}
+
 #[tauri::command]
 fn skin_auto_detect() -> Result<Option<String>, String> {
     let Some(steam_path) = find_steam_path()? else {
@@ -1725,6 +1890,7 @@ mod tests {
 
     #[test]
     fn anime_cutout_runs_locally_without_comfyui() {
+        let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
         let Some(base) = anime_base_dir_for_tests() else {
             eprintln!("skip: app data dir unavailable");
@@ -1767,7 +1933,129 @@ mod tests {
     }
 
     #[test]
+    fn superres_models_status_reports_catalog() {
+        let dir = std::env::temp_dir().join("aias_superres_status_test");
+        let _ = fs::remove_dir_all(&dir);
+        let status = superres::models_status(&dir);
+        assert_eq!(status.len(), 2);
+        assert_eq!(status[0].id, "anime");
+        assert_eq!(status[1].id, "general");
+        assert!(!status[0].installed);
+        assert!(status[0].total_size > 0);
+        assert!(!superres::is_model_ready(&dir, "anime"));
+        assert!(superres::superres_spec("anime").is_ok());
+        assert!(superres::superres_spec("nope").is_err());
+    }
+
+    /// 重型 GPU 测试共享一把锁：并发加载多套 ONNX 会话会在显存紧张的机器上
+    /// 触发 cuDNN/驱动级失败，串行执行才反映真实使用方式。
+    static GPU_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    #[ignore]
+    fn superres_full_image_bench() {
+        // 手动基准：AIAS_AB_SR_INPUT=图片 AIAS_AB_SR_MODELS=anime,general
+        let input = std::env::var("AIAS_AB_SR_INPUT")
+            .unwrap_or_else(|_| "F:/AIAS/ab/inref-small/原图.png".into());
+        let models = std::env::var("AIAS_AB_SR_MODELS").unwrap_or_else(|_| "anime,general".into());
+        let Some(base) = anime_base_dir_for_tests() else {
+            eprintln!("skip: app data dir unavailable");
+            return;
+        };
+        let output = std::env::temp_dir().join("aias_superres_bench");
+        let _ = fs::remove_dir_all(&output);
+        for model in models.split(',') {
+            if !superres::is_model_ready(&base, model) {
+                eprintln!("skip: model {model} not installed");
+                continue;
+            }
+            let started = std::time::Instant::now();
+            let result = superres_run_inner(
+                None,
+                SuperResRunOptions {
+                    files: vec![input.clone()],
+                    output_path: path_to_string(&output),
+                    model: model.to_string(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("{model}: {error}"));
+            assert_eq!(result.completed, 1);
+            println!("[sr-bench] model={model} elapsed={:?}", started.elapsed());
+        }
+    }
+
+    #[test]
+    fn superres_anime_upscale_runs_locally() {
+        let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(base) = anime_base_dir_for_tests() else {
+            eprintln!("skip: app data dir unavailable");
+            return;
+        };
+        if !superres::is_model_ready(&base, "anime") {
+            eprintln!("skip: superres anime model not found");
+            return;
+        }
+        // 300x96 红蓝棋盘测试图：横向跨 2 个推理块（验证拼接与颜色通道），
+        // 右半带半透明 Alpha（验证 Alpha 通道超分）。
+        let mut input_image = image::RgbaImage::new(300, 96);
+        for (x, y, pixel) in input_image.enumerate_pixels_mut() {
+            let check = (x / 8 + y / 8) % 2 == 0;
+            *pixel = image::Rgba([if check { 220 } else { 40 }, 90, if check { 30 } else { 200 }, if x < 150 { 255 } else { 120 }]);
+        }
+        let input = std::env::temp_dir().join("aias_superres_input.png");
+        input_image.save(&input).expect("save test input");
+        let output_dir = std::env::temp_dir().join("aias_superres_run_test");
+        let _ = fs::remove_dir_all(&output_dir);
+        let result = superres_run_inner(
+            None,
+            SuperResRunOptions {
+                files: vec![path_to_string(&input)],
+                output_path: path_to_string(&output_dir),
+                model: "anime".into(),
+            },
+        )
+        .expect("superres run should succeed");
+        assert_eq!(result.completed, 1);
+        let saved = output_dir.join("aias_superres_input_4x_anime.png");
+        let image = image::open(&saved).expect("output should be readable");
+        assert_eq!((image.width(), image.height()), (1200, 384), "4x output size");
+        let rgba = image.to_rgba8();
+        // Alpha 通道也被超分：右半 (x>=600) 的不透明度应明显低于左半。
+        let left: u64 = rgba.pixels().filter(|p| p[3] >= 200).count() as u64;
+        let right_soft: u64 = rgba
+            .enumerate_pixels()
+            .filter(|(x, _, p)| *x >= 600 && p[3] > 100 && p[3] < 220)
+            .count() as u64;
+        assert!(left > 1200 * 384 / 4, "left half should stay mostly opaque");
+        assert!(right_soft > 10_000, "right half should be partially transparent after alpha superres");
+        // 颜色通道必须保持（回归：曾把 NCHW 输出按 HWC 读取，输出变灰度乱块）。
+        let reddish = rgba.pixels().filter(|p| p[0] as i32 > p[2] as i32 + 40).count();
+        let bluish = rgba.pixels().filter(|p| p[2] as i32 > p[0] as i32 + 40).count();
+        assert!(reddish > 50_000, "checkerboard red blocks should survive superres");
+        assert!(bluish > 50_000, "checkerboard blue blocks should survive superres");
+
+        // 无 Alpha 的图输出必须是全不透明（回归：曾输出 alpha=0 的全透明 PNG）。
+        let opaque_input = std::env::temp_dir().join("aias_superres_input_opaque.png");
+        image::DynamicImage::ImageRgba8(input_image).to_rgb8().save(&opaque_input).expect("save opaque input");
+        let result = superres_run_inner(
+            None,
+            SuperResRunOptions {
+                files: vec![path_to_string(&opaque_input)],
+                output_path: path_to_string(&output_dir),
+                model: "anime".into(),
+            },
+        )
+        .expect("opaque superres run should succeed");
+        assert_eq!(result.completed, 1);
+        let opaque = image::open(output_dir.join("aias_superres_input_opaque_4x_anime.png"))
+            .expect("opaque output should be readable")
+            .to_rgba8();
+        assert_eq!(opaque.pixels().filter(|p| p[3] == 255).count(), (1200 * 384) as usize, "opaque input must stay fully opaque");
+    }
+
+    #[test]
     fn anime_advanced_cutout_runs_locally() {
+        let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
         let Some(base) = anime_base_dir_for_tests() else {
             eprintln!("skip: app data dir unavailable");
