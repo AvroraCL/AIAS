@@ -37,7 +37,8 @@ import {
   Check,
   AlertTriangle,
   Download,
-  Maximize2
+  Maximize2,
+  Wand2
 } from "lucide";
 
 const defaults = {
@@ -83,7 +84,8 @@ const modeMeta = {
   mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
   "image-dds": { title: "图片转 DDS", description: "批量转换图片并统一 DDS 压缩格式" },
   "anime-cutout": { title: "AI 抠图", description: "动漫 / 人像 / 商品等任意图片智能抠图，输出透明背景 PNG" },
-  superres: { title: "图片超分", description: "立绘 / 素材 RealESRGAN 本地超分，分辨率放大 4 倍" },
+  "superres-anime": { title: "动漫超分", description: "RealESRGAN 动漫特化模型，立绘插画放大 4 倍" },
+  "superres-general": { title: "通用超分", description: "RealESRGAN 通用模型，照片素材放大 4 倍" },
   skins: { title: "涂装管理", description: "管理 War Thunder UserSkins 资源" },
   settings: { title: "应用设置", description: "更新、数据路径与版本信息" }
 };
@@ -150,7 +152,8 @@ const iconSet = {
   Check,
   AlertTriangle,
   Download,
-  Maximize2
+  Maximize2,
+  Wand2
 };
 
 const TOAST_LIMIT = 4;
@@ -187,7 +190,8 @@ function getModeOutputPath(mode = state.activeMode) {
     mipmap: "mipmap-output",
     "image-dds": "image-output",
     "anime-cutout": "anime-output",
-    superres: "superres-output",
+    "superres-anime": "superres-output",
+    "superres-general": "superres-output",
     skins: "skin-path"
   };
   return $(fieldByMode[mode])?.value || "";
@@ -1510,7 +1514,7 @@ function removeSuperresFile(file) {
 
 async function runSuperres(modelId, button) {
   await saveSettings();
-  const blocker = getRunBlocker("superres");
+  const blocker = getRunBlocker(`superres-${modelId}`);
   if (blocker) {
     reportRunBlocker(blocker);
     return;
@@ -1593,7 +1597,8 @@ function syncActiveLog(mode = state.activeMode) {
     mipmap: "mipmap-log",
     "image-dds": "image-log",
     "anime-cutout": "anime-log",
-    superres: "superres-log"
+    "superres-anime": "superres-log",
+    "superres-general": "superres-log"
   };
   document.querySelectorAll(".task-log").forEach((log) => {
     log.classList.toggle("active", log.id === logByMode[mode]);
@@ -1889,19 +1894,18 @@ function updateRunButtons(mode) {
     mipmap: "run-mipmap",
     "image-dds": "run-image-dds",
     "anime-cutout": "run-anime-cutout",
-    superres: "run-superres-anime"
+    "superres-anime": "run-superres-anime",
+    "superres-general": "run-superres-general"
   };
 
   document.querySelectorAll(".run-button").forEach((button) => button.classList.add("hidden"));
   const active = $(mapping[mode]);
   if (active) active.classList.remove("hidden");
-  // 超分模式同时展示「动漫超分」「通用超分」两个运行按钮
-  if (mode === "superres") $("run-superres-general")?.classList.remove("hidden");
 
   $("clear-split-files")?.classList.toggle("hidden", mode !== "split");
   $("clear-image-files")?.classList.toggle("hidden", mode !== "image-dds");
   $("clear-anime-files")?.classList.toggle("hidden", mode !== "anime-cutout");
-  $("clear-superres-files")?.classList.toggle("hidden", mode !== "superres");
+  $("clear-superres-files")?.classList.toggle("hidden", !mode.startsWith("superres"));
   $("import-skins")?.classList.toggle("hidden", mode !== "skins");
   $("refresh-skins")?.classList.toggle("hidden", mode !== "skins");
 }
@@ -1925,7 +1929,7 @@ function updateInspector() {
     "mipmap-output": state.activeMode === "mipmap",
     "image-output": state.activeMode === "image-dds",
     "anime-output": state.activeMode === "anime-cutout",
-    "superres-output": state.activeMode === "superres"
+    "superres-output": state.activeMode.startsWith("superres")
   };
 
   for (const [id, visible] of Object.entries(fieldVisibility)) {
@@ -1936,7 +1940,7 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres"];
+  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general"];
   const blocker = getRunBlocker(mode);
   const ready = runnableModes.includes(mode) && !blocker;
 
@@ -1959,21 +1963,15 @@ function updateStatus() {
     mipmap: "run-mipmap",
     "image-dds": "run-image-dds",
     "anime-cutout": "run-anime-cutout",
-    superres: "run-superres-anime"
+    "superres-anime": "run-superres-anime",
+    "superres-general": "run-superres-general"
   };
   const activeRunButton = $(runButtonByMode[mode]);
   if (activeRunButton && activeRunButton.dataset.busy !== "true") {
-    activeRunButton.disabled = !ready;
-  }
-  // 超分有两个运行按钮，各自还要求对应模型已安装
-  if (mode === "superres") {
-    const generalButton = $("run-superres-general");
-    if (generalButton && generalButton.dataset.busy !== "true") {
-      generalButton.disabled = !ready || !isSuperresModelReady("general");
-    }
-    if (activeRunButton && activeRunButton.dataset.busy !== "true") {
-      activeRunButton.disabled = !ready || !isSuperresModelReady("anime");
-    }
+    // 超分各模式还要求对应模型已安装
+    activeRunButton.disabled = !ready
+      || (mode === "superres-anime" && !isSuperresModelReady("anime"))
+      || (mode === "superres-general" && !isSuperresModelReady("general"));
   }
 
   $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnableModes.includes(mode));
@@ -2005,12 +2003,15 @@ function getRunBlocker(mode) {
       if (wantsHairRefiner() && !state.animeHairStatus?.installed) return "请先在右侧栏下载精细发丝边缘模型，或关闭实验选项。";
       if (!isAnimeModelReady($("anime-model")?.value || "anime-specialist")) return "当前模型未安装，请先在「抠图模型」中下载。";
       return null;
-    case "superres":
+    case "superres-anime":
+    case "superres-general":
       if (state.superresRunning) return "超分正在运行，请稍候。";
       if (!state.superresFiles.length) return "请添加图片。";
       if (!$("superres-output")?.value) return "请选择输出文件夹。";
       if (state.superresDownloadingId) return "模型正在下载中，请稍候。";
-      if (state.superresModels.length && !state.superresModels.some((model) => model.installed)) return "请先在右侧栏下载至少一个超分模型。";
+      if (!isSuperresModelReady(mode === "superres-anime" ? "anime" : "general")) {
+        return `${superresLabels[mode === "superres-anime" ? "anime" : "general"]}模型未安装，请先在右侧栏下载。`;
+      }
       return null;
     default:
       return null;
@@ -2033,8 +2034,10 @@ function applyMode(mode) {
     button.setAttribute("aria-current", button.dataset.view === mode ? "page" : "false");
   });
   $("footer-settings")?.classList.toggle("active", mode === "settings");
+  // 超分两个入口共用同一个视图
+  const viewId = mode.startsWith("superres") ? "view-superres" : `view-${mode}`;
   document.querySelectorAll(".mode-view").forEach((view) => {
-    view.classList.toggle("active", view.id === `view-${mode}`);
+    view.classList.toggle("active", view.id === viewId);
   });
   // Settings & skins mode: hide inspector; expand to full width
   const isFull = mode === "settings" || mode === "skins";
@@ -2048,7 +2051,7 @@ function applyMode(mode) {
     refreshGpuRuntime();
     renderAnimeGallery();
   }
-  if (mode === "superres") {
+  if (mode.startsWith("superres")) {
     refreshSuperresModelStatus();
     renderSuperresGallery();
   }
@@ -2585,7 +2588,8 @@ function bindDragDrop() {
         renderAnimeGallery();
         updateStatus();
         break;
-      case "superres":
+      case "superres-anime":
+      case "superres-general":
         state.superresFiles = [...new Set([...state.superresFiles, ...paths])];
         renderSuperresGallery();
         updateStatus();
@@ -2650,7 +2654,7 @@ async function init() {
   startSystemMonitor();
   // 兜底轮询：文件/目录变化事件若被遗漏，抠图按钮可用性 1.2s 内自动纠正
   setInterval(() => {
-    if (state.activeMode === "anime-cutout" || state.activeMode === "superres") updateStatus();
+    if (state.activeMode === "anime-cutout" || state.activeMode.startsWith("superres")) updateStatus();
   }, 1200);
 
   renderChips("merge-chip-list", []);

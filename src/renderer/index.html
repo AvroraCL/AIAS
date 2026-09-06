@@ -37,8 +37,11 @@
             <button class="mode-tab" data-view="anime-cutout" type="button">
               <i data-lucide="scissors" aria-hidden="true"></i><span>AI 抠图</span>
             </button>
-            <button class="mode-tab" data-view="superres" type="button">
-              <i data-lucide="maximize-2" aria-hidden="true"></i><span>超分</span>
+            <button class="mode-tab" data-view="superres-anime" type="button">
+              <i data-lucide="wand-2" aria-hidden="true"></i><span>动漫超分</span>
+            </button>
+            <button class="mode-tab" data-view="superres-general" type="button">
+              <i data-lucide="maximize-2" aria-hidden="true"></i><span>通用超分</span>
             </button>
           </div>
 
@@ -339,10 +342,9 @@
                 </div>
               </section>
 
-              <section class="inspector-group" data-modes="superres">
-                <button class="group-toggle" type="button"><span>超分模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+              <section class="inspector-group" data-modes="superres-anime">
+                <button class="group-toggle" type="button"><span>动漫超分模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
-                  <label>动漫超分</label>
                   <div class="model-status-row">
                     <small id="superres-anime-status" class="settings-hint">正在读取模型状态…</small>
                   </div>
@@ -354,7 +356,13 @@
                     <div class="model-progress-bar"><div class="model-progress-fill" id="superres-anime-progress-fill"></div></div>
                     <small id="superres-anime-progress-text" class="settings-hint"></small>
                   </div>
-                  <label>通用超分</label>
+                  <small class="settings-hint">RealESRGAN 动漫特化模型（约 18 MB），适合立绘、插画等二次元图片；下载后可离线使用</small>
+                </div>
+              </section>
+
+              <section class="inspector-group" data-modes="superres-general">
+                <button class="group-toggle" type="button"><span>通用超分模型</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content">
                   <div class="model-status-row">
                     <small id="superres-general-status" class="settings-hint">正在读取模型状态…</small>
                   </div>
@@ -366,7 +374,7 @@
                     <div class="model-progress-bar"><div class="model-progress-fill" id="superres-general-progress-fill"></div></div>
                     <small id="superres-general-progress-text" class="settings-hint"></small>
                   </div>
-                  <small class="settings-hint">动漫超分（约 18 MB）适合立绘插画，通用超分（约 64 MB）适合照片和一般素材；模型保存在应用数据文件夹，下载完成后可离线使用</small>
+                  <small class="settings-hint">RealESRGAN 通用模型（约 64 MB），适合照片和一般素材；下载后可离线使用</small>
                 </div>
               </section>
 
@@ -427,7 +435,7 @@
                 </div>
               </section>
 
-              <section class="inspector-group" data-modes="merge split mipmap image-dds anime-cutout superres">
+              <section class="inspector-group" data-modes="merge split mipmap image-dds anime-cutout superres-anime superres-general">
                 <button class="group-toggle" type="button"><span>导出文件夹</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
                   <div class="field-row" data-field="pbr-output"><input id="pbr-output" readonly aria-label="PBR 输出文件夹" title="PBR 输出文件夹" /><button data-pick-dir="pbr-output" type="button">选择</button></div>
@@ -439,7 +447,7 @@
                 </div>
               </section>
 
-              <section class="inspector-group" data-modes="split image-dds anime-cutout superres">
+              <section class="inspector-group" data-modes="split image-dds anime-cutout superres-anime superres-general">
                 <button class="group-toggle" type="button"><span>文件列表</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content"><button id="clear-split-files" class="secondary-action hidden" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>清空 DDS 列表</button><button id="clear-image-files" class="secondary-action hidden" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>清空图片列表</button><button id="clear-anime-files" class="secondary-action hidden" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>清空图片列表</button><button id="clear-superres-files" class="secondary-action hidden" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>清空图片列表</button></div>
               </section>
