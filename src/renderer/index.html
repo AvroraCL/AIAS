@@ -387,6 +387,21 @@
                 </div>
               </section>
 
+              <section class="inspector-group" data-modes="superres-anime superres-general">
+                <button class="group-toggle" type="button"><span>超分倍率</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content">
+                  <div class="scale-field" id="superres-scale-field">
+                    <div class="scale-head">
+                      <span id="superres-scale-text">放大 4 倍</span>
+                    </div>
+                    <div class="scale-slider" id="superres-scale-slider">
+                      <input type="range" id="superres-scale" min="2" max="4" step="1" value="4" aria-label="超分倍率" title="2–4 倍；模型原生 4 倍，其余倍率在 4 倍结果上重采样" />
+                      <div class="scale-track" aria-hidden="true"><div class="scale-thumb"></div></div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
               <section class="inspector-group" data-modes="anime-cutout">
                 <button class="group-toggle" type="button"><span>高分辨率细节补全（实验性）</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content hair-refiner-content">

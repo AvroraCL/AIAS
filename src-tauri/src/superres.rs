@@ -154,29 +154,33 @@ fn release_session(id: &str) {
     }
 }
 
-/// 立绘/素材 4x 超分：RGB 走模型分块推理；带 Alpha 的图（如抠图结果、
-/// 带透明的立绘）把 Alpha 当灰度图再过一遍同一网络，保持硬边缘不糊。
-/// 输出固定为 `{原图名}_4x_{模型id}.png`。
-pub fn upscale(base: &Path, id: &str, input: &Path, output: &Path) -> Result<(), String> {
+/// 立绘/素材超分：模型固定 4x 推理（RGB 走分块推理；带 Alpha 的图把 Alpha
+/// 当灰度图再过一遍同一网络，保持硬边缘不糊），再按目标倍率 2–8 做 Lanczos
+/// 重采样——低于 4x 是高质量缩小，高于 4x 是插值放大（不新增细节）。
+/// 输出固定为 `{原图名}_{倍率}x_{模型id}.png`。
+pub fn upscale(base: &Path, id: &str, input: &Path, output: &Path, scale: u32) -> Result<(), String> {
+    let scale = scale.clamp(2, 8);
     crate::anime::ensure_ort_runtime(base)?;
     superres_spec(id)?;
     let image = image::open(input)
         .map_err(crate::anime::to_string_error)?
         .to_rgba8();
     let (w, h) = image.dimensions();
-    let out_w = w as u64 * 4;
-    let out_h = h as u64 * 4;
-    if out_w.max(out_h) > 16384 {
+    // 中间产物是 4x，最终尺寸由 scale 决定，两者都不得超出安全上限。
+    let peak = w.max(h) as u64 * u64::from(scale.max(4));
+    if peak > 16384 {
         return Err(format!(
-            "图片过大（4x 后约 {out_w}x{out_h}），请先缩小后再超分。"
+            "图片过大（{scale}x 后约 {}x{}），请先缩小图片或降低倍率。",
+            w as u64 * u64::from(scale),
+            h as u64 * u64::from(scale)
         ));
     }
 
-    match try_upscale_with(base, id, &image, output, true) {
+    match try_upscale_with(base, id, &image, output, true, scale) {
         Ok(()) => Ok(()),
         Err(error) if is_gpu_oom_error(&error) => {
             release_session(id);
-            try_upscale_with(base, id, &image, output, false).map_err(|cpu_error| {
+            try_upscale_with(base, id, &image, output, false, scale).map_err(|cpu_error| {
                 if is_gpu_oom_error(&cpu_error) {
                     // CPU 回退仍分配失败：机器可提交内存耗尽（GPU 会话与图块缓冲叠加）。
                     "内存不足，无法完成超分：请关闭部分程序释放内存后重试，或改用更小的图片。".to_string()
@@ -195,6 +199,7 @@ fn try_upscale_with(
     image: &RgbaImage,
     output: &Path,
     use_gpu: bool,
+    scale: u32,
 ) -> Result<(), String> {
     let path = model_path(base, id)?;
     if !path.exists() {
@@ -266,7 +271,13 @@ fn try_upscale_with(
 
     let framed = image::RgbaImage::from_raw(w * 4, h * 4, result)
         .ok_or("超分输出缓冲尺寸无效")?;
-    framed
+    // 模型只会输出 4x；其余倍率在 4x 结果上做一次 Lanczos 重采样。
+    let final_image = if scale == 4 {
+        framed
+    } else {
+        image::imageops::resize(&framed, w * scale, h * scale, image::imageops::FilterType::Lanczos3)
+    };
+    final_image
         .save_with_format(output, image::ImageFormat::Png)
         .map_err(crate::anime::to_string_error)?;
     Ok(())

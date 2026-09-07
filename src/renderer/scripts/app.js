@@ -66,7 +66,8 @@ const defaults = {
   animeHairRefiner: false,
   animeDetailRecovery: false,
   animeCutoutOutputPath: "",
-  superresOutputPath: ""
+  superresOutputPath: "",
+  superresScale: "4"
 };
 
 const animeModelCatalog = {
@@ -1311,9 +1312,38 @@ const superresLabels = {
   general: "通用超分"
 };
 
-function superresResultKey(file, modelId) {
-  // 后端输出名固定为 {stem}_4x_{模型id}.png
-  return `${modelId}\u0000${file}`;
+const SUPERRES_SCALE_MIN = 2;
+const SUPERRES_SCALE_MAX = 4;
+
+function superresScale() {
+  const value = Number($("superres-scale")?.value);
+  if (!Number.isFinite(value)) return 4;
+  return Math.min(SUPERRES_SCALE_MAX, Math.max(SUPERRES_SCALE_MIN, Math.round(value)));
+}
+
+function updateSuperresScaleControl() {
+  const scale = superresScale();
+  const slider = $("superres-scale");
+  if (slider && Number(slider.value) !== scale) slider.value = String(scale);
+  // 自绘圆点位置（0–1），由 CSS 对 left 做过渡实现滑动动画
+  $("superres-scale-slider")?.style?.setProperty?.(
+    "--pos",
+    String((scale - SUPERRES_SCALE_MIN) / (SUPERRES_SCALE_MAX - SUPERRES_SCALE_MIN))
+  );
+  const label = `放大 ${scale} 倍`;
+  const textEl = $("superres-scale-text");
+  if (textEl && textEl.textContent !== label) {
+    textEl.textContent = label;
+    // 重触发数值文字的弹跳动画（真实 DOM 需先移除类再强制回流）
+    textEl.classList?.remove("scale-pop");
+    void textEl.offsetWidth;
+    textEl.classList?.add("scale-pop");
+  }
+}
+
+function superresResultKey(file, modelId, scale = superresScale()) {
+  // 后端输出名固定为 {stem}_{倍率}x_{模型id}.png
+  return `${modelId}\u0000${scale}\u0000${file}`;
 }
 
 function superresLocalSrc(path) {
@@ -1404,15 +1434,19 @@ async function uninstallSuperresModel(modelId) {
   renderSuperresModelStatus();
 }
 
-function applySuperresOutputs(paths) {
+function applySuperresOutputs(paths, requestKeys) {
   for (const path of paths || []) {
-    // 输出名固定为 {stem}_4x_{模型id}.png，按后缀还原模型 id 与原图
+    // 输出名固定为 {stem}_{倍率}x_{模型id}.png，按后缀还原倍率与模型 id
     const name = basename(path);
-    const match = name.match(/^(.*)_4x_(anime|general)\.png$/i);
+    const match = name.match(/^(.*)_([2-4])x_(anime|general)\.png$/i);
     if (!match) continue;
     const stem = match[1];
+    const scale = Number(match[2]);
+    const modelId = match[3].toLowerCase();
     const hit = (state.superresFiles || []).find((file) => animeStem(file) === stem);
-    if (hit) state.superresResults.set(superresResultKey(hit, match[2].toLowerCase()), path);
+    if (!hit) continue;
+    // 运行开始时捕获的键优先（运行期间用户可能已经改了倍率）。
+    state.superresResults.set(requestKeys?.get(hit) || superresResultKey(hit, modelId, scale), path);
   }
   renderSuperresGallery();
 }
@@ -1428,7 +1462,7 @@ function probeSuperresResult(file, modelId) {
   state.superresProbed.add(key);
   const dir = $("superres-output")?.value?.trim();
   if (!dir || !isTauriRuntime) return;
-  const candidate = `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}_4x_${modelId}.png`;
+  const candidate = `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}_${superresScale()}x_${modelId}.png`;
   const probe = new window.Image();
   probe.onload = () => {
     if (!state.superresFiles.includes(file)) return;
@@ -1487,7 +1521,7 @@ function renderSuperresGrid(files) {
       const badge = document.createElement("span");
       badge.className = `thumb-badge ${done ? "done" : "pending"}`;
       badge.textContent = superresLabels[modelId].replace("超分", "");
-      badge.title = done ? "已生成 4x 结果" : "待处理";
+      badge.title = done ? `已生成 ${superresScale()}x 结果` : "待处理";
       badges.appendChild(badge);
     }
     info.append(name, badges);
@@ -1528,20 +1562,22 @@ async function runSuperres(modelId, button) {
     reportRunBlocker(`${superresLabels[modelId]}模型未安装，请先在右侧栏下载。`);
     return;
   }
-  addActivity(`开始${superresLabels[modelId]}`, `${state.superresFiles.length} 张图片 · 放大 4 倍`);
+  const scale = superresScale();
+  addActivity(`开始${superresLabels[modelId]}`, `${state.superresFiles.length} 张图片 · 放大 ${scale} 倍`);
   const files = [...state.superresFiles];
   const outputPath = $("superres-output").value;
+  const requestKeys = new Map(files.map((file) => [file, superresResultKey(file, modelId, scale)]));
   state.superresRunning = true;
   renderSuperresModelStatus();
   const result = await withLog(
     "superres-log",
     button,
-    () => api.superres.run({ files, outputPath, model: modelId }),
+    () => api.superres.run({ files, outputPath, model: modelId, scale }),
     "图片超分"
   );
   state.superresRunning = false;
   renderSuperresModelStatus();
-  if (result?.outputs?.length) applySuperresOutputs(result.outputs);
+  if (result?.outputs?.length) applySuperresOutputs(result.outputs, requestKeys);
 }
 
 function addActivity(title, body, tone = "idle") {
@@ -1843,7 +1879,8 @@ function collectSettings() {
     animeHairRefiner: Boolean($("anime-hair-refiner")?.checked),
     animeDetailRecovery: Boolean($("anime-detail-recovery")?.checked),
     animeCutoutOutputPath: $("anime-output")?.value || "",
-    superresOutputPath: $("superres-output")?.value || ""
+    superresOutputPath: $("superres-output")?.value || "",
+    superresScale: String(superresScale())
   };
 }
 
@@ -1870,7 +1907,8 @@ function applySettingsToForm() {
     "anime-hair-refiner": Boolean(settings.animeHairRefiner),
     "anime-detail-recovery": Boolean(settings.animeDetailRecovery),
     "anime-output": settings.animeCutoutOutputPath,
-    "superres-output": settings.superresOutputPath
+    "superres-output": settings.superresOutputPath,
+    "superres-scale": settings.superresScale || "4"
   };
 
   for (const [id, value] of Object.entries(map)) {
@@ -1880,6 +1918,7 @@ function applySettingsToForm() {
     else el.value = value || "";
     if (el.tagName === "SELECT") syncCustomSelect(el);
   }
+  updateSuperresScaleControl();
   syncPathChips();
 }
 
@@ -2475,6 +2514,15 @@ function bindRunActions() {
 
   $("run-superres-general")?.addEventListener("click", (event) => {
     runSuperres("general", event.currentTarget);
+  });
+
+  $("superres-scale")?.addEventListener("input", updateSuperresScaleControl);
+  $("superres-scale")?.addEventListener("change", async () => {
+    updateSuperresScaleControl();
+    // 倍率变了，旧结果文件名对不上新倍率：清空后按新倍率重新探测。
+    resetSuperresResults();
+    renderSuperresGallery();
+    await saveSettings();
   });
 }
 

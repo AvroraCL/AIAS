@@ -181,6 +181,14 @@ struct SuperResRunOptions {
     output_path: String,
     /// "anime"（动漫超分）或 "general"（通用超分）。
     model: String,
+    /// 目标倍率 2–8；缺省 4（模型原生倍率）。
+    #[serde(default)]
+    scale: Option<u32>,
+}
+
+/// 输出文件名统一为 `{stem}_{倍率}x_{模型id}.png`。
+fn superres_output_name(stem: &str, model: &str, scale: u32) -> String {
+    format!("{stem}_{scale}x_{model}.png")
 }
 
 #[derive(Debug, Serialize)]
@@ -1156,6 +1164,7 @@ fn superres_run_inner(
     });
     let mut outputs = Vec::new();
     let mut completed = 0usize;
+    let scale = options.scale.unwrap_or(4).clamp(2, 8);
 
     for file in &options.files {
         let input = Path::new(file);
@@ -1176,7 +1185,7 @@ fn superres_run_inner(
             logs.push(format!("跳过（暂不支持 {extension} 格式）：{stem}"));
             continue;
         }
-        let target = Path::new(&options.output_path).join(format!("{stem}_4x_{}.png", options.model));
+        let target = Path::new(&options.output_path).join(superres_output_name(stem, &options.model, scale));
         let label = input
             .file_name()
             .and_then(|value| value.to_str())
@@ -1189,7 +1198,7 @@ fn superres_run_inner(
                 format!("超分中 {label}"),
             );
         }
-        match superres::upscale(&base, &options.model, input, &target) {
+        match superres::upscale(&base, &options.model, input, &target, scale) {
             Ok(()) => {
                 completed += 1;
                 let name = target
@@ -1979,6 +1988,7 @@ mod tests {
                     files: vec![input.clone()],
                     output_path: path_to_string(&output),
                     model: model.to_string(),
+                    scale: None,
                 },
             )
             .unwrap_or_else(|error| panic!("{model}: {error}"));
@@ -2015,6 +2025,7 @@ mod tests {
                 files: vec![path_to_string(&input)],
                 output_path: path_to_string(&output_dir),
                 model: "anime".into(),
+                scale: None,
             },
         )
         .expect("superres run should succeed");
@@ -2046,6 +2057,7 @@ mod tests {
                 files: vec![path_to_string(&opaque_input)],
                 output_path: path_to_string(&output_dir),
                 model: "anime".into(),
+                scale: None,
             },
         )
         .expect("opaque superres run should succeed");
@@ -2054,6 +2066,34 @@ mod tests {
             .expect("opaque output should be readable")
             .to_rgba8();
         assert_eq!(opaque.pixels().filter(|p| p[3] == 255).count(), (1200 * 384) as usize, "opaque input must stay fully opaque");
+
+        // 非原生倍率：2x 在 4x 结果上缩小，8x 插值放大；输出名与尺寸都带倍率。
+        for scale in [2_u32, 6, 8] {
+            let result = superres_run_inner(
+                None,
+                SuperResRunOptions {
+                    files: vec![path_to_string(&input)],
+                    output_path: path_to_string(&output_dir),
+                    model: "anime".into(),
+                    scale: Some(scale),
+                },
+            )
+            .unwrap_or_else(|error| panic!("scale {scale}: {error}"));
+            assert_eq!(result.completed, 1);
+            let saved = output_dir.join(superres_output_name("aias_superres_input", "anime", scale));
+            let image = image::open(&saved).unwrap_or_else(|error| panic!("scale {scale}: {error}"));
+            assert_eq!(
+                (image.width(), image.height()),
+                (300 * scale, 96 * scale),
+                "{scale}x output size"
+            );
+        }
+    }
+
+    #[test]
+    fn superres_output_name_uses_scale() {
+        assert_eq!(superres_output_name("hero", "anime", 4), "hero_4x_anime.png");
+        assert_eq!(superres_output_name("hero", "general", 6), "hero_6x_general.png");
     }
 
     #[test]

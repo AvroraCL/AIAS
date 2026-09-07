@@ -869,6 +869,41 @@ button.danger-action:hover:not(:disabled) { border-color: #ef6a6d; background: #
 
 .hidden { display: none !important; }
 
+/* 超分倍率滑块（右侧栏，2–4 倍）：原生 input 仅承载交互，自绘轨道圆点带移动过渡 */
+.scale-field { display: grid; gap: 6px; padding-top: 8px; }
+.scale-head { color: var(--text-soft); font-size: 12px; font-weight: 600; }
+.scale-head #superres-scale-text { display: inline-block; }
+.scale-head .scale-pop { animation: scale-pop 220ms var(--motion-ease); }
+.scale-slider { position: relative; height: 24px; --pos: 1; }
+.scale-slider input[type="range"] {
+  position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; margin: 0; padding: 0;
+  border: none; border-radius: 0; background: transparent; box-shadow: none; opacity: 0;
+  cursor: pointer; -webkit-appearance: none; appearance: none;
+}
+.scale-track {
+  position: absolute; top: 50%; left: 6px; right: 6px; height: 2px; transform: translateY(-50%);
+  border-radius: 999px; background: var(--border-strong); transition: background-color 160ms ease;
+  pointer-events: none; /* 装饰层放行点击，命中一律落在下层原生 input */
+}
+.scale-thumb {
+  position: absolute; top: 50%; left: calc(var(--pos) * 100%); width: 12px; height: 12px;
+  border-radius: 999px; background: var(--text); transform: translate(-50%, -50%);
+  transition: left 160ms var(--motion-ease), transform 160ms var(--motion-ease), box-shadow 160ms ease;
+}
+.scale-slider input:hover ~ .scale-track,
+.scale-slider input:active ~ .scale-track { background: var(--text-dim); }
+.scale-slider input:hover ~ .scale-track .scale-thumb { transform: translate(-50%, -50%) scale(1.18); }
+.scale-slider input:active ~ .scale-track .scale-thumb { transform: translate(-50%, -50%) scale(1.32); box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.08); }
+.scale-slider input:focus-visible ~ .scale-track .scale-thumb { box-shadow: 0 0 0 3px var(--border-strong); }
+@keyframes scale-pop {
+  from { transform: translateY(-2px) scale(0.9); opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scale-head .scale-pop { animation: none; }
+  .scale-thumb { transition: none; }
+  .scale-track { transition: none; }
+}
+
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
