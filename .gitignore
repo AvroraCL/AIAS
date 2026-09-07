@@ -66,3 +66,6 @@ tmp/
 # the banner png is whitelisted because README.md embeds it.
 docs/*
 !docs/AIAS-ico.png
+
+# 测试区：图片功能测试专用（输入/输出/实验报告），永不入库
+测试区/
