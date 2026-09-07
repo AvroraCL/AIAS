@@ -2,6 +2,7 @@ const { defineConfig } = require("vite");
 const path = require("node:path");
 
 module.exports = defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(require("./package.json").version) },
   root: path.resolve(__dirname, "src/renderer"),
   server: {
     host: "127.0.0.1",

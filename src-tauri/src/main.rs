@@ -2,6 +2,8 @@
 
 mod anime;
 mod superres;
+mod updater;
+use updater::updater_check_mirror;
 
 use image::{DynamicImage, ImageBuffer, Luma, Rgba, RgbaImage};
 use image_dds::ddsfile::Dds;
@@ -383,6 +385,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            updater_check_mirror,
             settings_get,
             settings_set,
             texture_find_groups,

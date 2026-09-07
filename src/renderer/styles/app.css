@@ -872,13 +872,7 @@ button.danger-action:hover:not(:disabled) { border-color: #ef6a6d; background: #
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1120px) {
-  :root { --sidebar-width: 76px; --inspector-width: 322px; }
-  .brand-block { display: none; }
-  .nav-section-label,
-  .mode-tab span,
-  .footer-copy { display: none; }
-  .mode-tab { grid-template-columns: 1fr; place-items: center; padding: 0; }
-  .sidebar-footer { justify-content: center; padding-inline: 0; }
+  :root { --inspector-width: 322px; }
 }
 
 @media (max-width: 880px) {

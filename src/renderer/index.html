@@ -7,10 +7,11 @@
     <link rel="icon" type="image/png" href="./Aias.png" />
     <link rel="stylesheet" href="./styles/app.css" />
     <link rel="stylesheet" href="./styles/performance.css" />
+    <link rel="stylesheet" href="./styles/workshop.css" />
   </head>
   <body>
     <div class="app-shell">
-      <aside class="app-sidebar">
+      <aside class="app-sidebar" id="app-sidebar">
         <div class="brand-block">
           <img class="brand-logo" src="./Aias.png" alt="AIAS" />
           <div class="brand-copy">
@@ -20,7 +21,7 @@
         </div>
 
         <nav class="mode-tabs" aria-label="功能模式">
-          <div class="nav-section-label">纹理工具</div>
+          <div class="nav-section-label">纹理处理</div>
           <div class="tabs-track" id="modeTabsTrack">
             <button class="mode-tab active" data-view="merge" type="button">
               <i data-lucide="layers-3" aria-hidden="true"></i><span>PBR 合成</span>
@@ -34,6 +35,9 @@
             <button class="mode-tab" data-view="image-dds" type="button">
               <i data-lucide="image" aria-hidden="true"></i><span>图片转 DDS</span>
             </button>
+          </div>
+          <div class="nav-section-label">AI 图像</div>
+          <div class="tabs-track">
             <button class="mode-tab" data-view="anime-cutout" type="button">
               <i data-lucide="scissors" aria-hidden="true"></i><span>AI 抠图</span>
             </button>
@@ -53,13 +57,18 @@
           </div>
         </nav>
 
-        <button class="sidebar-footer" id="footer-settings" type="button">
-          <span class="footer-icon"><i data-lucide="settings-2" aria-hidden="true"></i></span>
+        <button class="sidebar-footer" id="footer-settings" type="button" aria-label="设置" title="设置">
+          <span class="footer-icon"><i data-lucide="settings" aria-hidden="true"></i></span>
           <span class="footer-copy">
             <strong>设置</strong>
             <small id="runtime-badge">Ready</small>
           </span>
         </button>
+        <div class="sidebar-edge" id="sidebar-edge" title="点击收起侧栏">
+          <button class="sidebar-toggle" id="sidebar-toggle" type="button" aria-controls="app-sidebar" aria-expanded="true" aria-label="收起侧栏">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9.5 4-4 4 4 4" /></svg>
+          </button>
+        </div>
       </aside>
 
       <section class="app-main">
@@ -275,7 +284,7 @@
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="refresh-cw" aria-hidden="true"></i></span><div><h3>更新</h3><p>保持应用版本最新</p></div></div>
                   <label class="toggle-label setting-toggle"><input id="set-auto-update" type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span><span>启动时自动检查更新</span></label>
-                  <div class="settings-row"><button id="set-check-update" class="secondary-action" type="button">检查更新</button><small id="set-version" class="settings-hint">当前版本 5.2.0</small></div>
+                  <div class="settings-row"><button id="set-check-update" class="secondary-action" type="button">检查更新</button><small id="set-version" class="settings-hint">正在读取版本…</small></div>
                 </section>
 
                 <section class="settings-section">
@@ -288,7 +297,7 @@
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="info" aria-hidden="true"></i></span><div><h3>关于</h3><p>AIAS Texture Workshop</p></div></div>
                   <dl class="about-list">
-                    <div><dt>版本</dt><dd>5.2.0</dd></div>
+                    <div><dt>版本</dt><dd id="about-version">—</dd></div>
                     <div><dt>框架</dt><dd>Tauri 2</dd></div>
                     <div><dt>平台</dt><dd>Windows</dd></div>
                   </dl>

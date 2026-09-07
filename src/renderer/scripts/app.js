@@ -1,7 +1,10 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, Update } from "@tauri-apps/plugin-updater";
+import { getVersion } from "@tauri-apps/api/app";
+import { animateView, toggleGroup } from "./motion.js";
+import { createUpdateController, scheduleUpdateCheck } from "./updater.mjs";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -13,7 +16,7 @@ import {
   Images,
   Shirt,
   Scissors,
-  Settings2,
+  Settings,
   History,
   Bell,
   FolderInput,
@@ -128,7 +131,7 @@ const iconSet = {
   Images,
   Shirt,
   Scissors,
-  Settings2,
+  Settings,
   History,
   Bell,
   FolderInput,
@@ -908,7 +911,10 @@ function describeGpuRuntime() {
 }
 
 async function refreshGpuRuntime() {
-  if (!isTauriRuntime) return;
+  if (!isTauriRuntime) {
+    renderGpuRuntime();
+    return;
+  }
   try {
     state.gpuRuntime = await api.anime.gpuRuntimeState();
   } catch {
@@ -921,7 +927,7 @@ function renderGpuRuntime() {
   const section = $("anime-gpu-section");
   if (!section) return;
   const info = describeGpuRuntime();
-  section.classList.toggle("hidden", !info.relevant);
+  section.classList.toggle("hidden", state.activeMode !== "anime-cutout" || !info.relevant);
   if (!info.relevant) return;
   setText("anime-gpu-status", info.text);
   const installing = state.gpuDownloading;
@@ -953,7 +959,7 @@ async function installGpuRuntime() {
 
 function renderAnimeModelStatus() {
   const model = animeModelById($("anime-model")?.value || "anime-specialist");
-  setText("anime-model-status", describeAnimeModel(model));
+  setText("anime-model-status", isTauriRuntime ? describeAnimeModel(model) : `网页演示状态：${describeAnimeModel(model)}（实际安装状态请在桌面软件中查看）`);
   const ready = Boolean(model?.installed);
   const downloading = state.animeDownloading;
   const busy = downloading || state.animeHairDownloading || state.animeRunning;
@@ -1077,9 +1083,8 @@ function applyAnimeOutputs(paths, requestKeys = null) {
     // 用「原图 stem」匹配前端当前选中的文件，把结果挂到 animeResultKey(file) 下，
     // 这样渲染/角标/对比图用同一个 key 就能查到，与后端实际模型无关。
     const pathStem = animeStem(path); // 例如 73307539_p0_simple
-    const hit = (state.animeFiles || []).find((file) =>
-      pathStem.startsWith(animeStem(file) + "_") || pathStem === animeStem(file)
-    );
+    const inputStem = pathStem.replace(/_(?:anime-specialist|toonout|birefnet-general|birefnet-lite|advanced|simple)(?:_detail-hair|_detail|_hair)?$/, "");
+    const hit = (state.animeFiles || []).find((file) => animeStem(file) === inputStem);
     if (hit) {
       state.animeResults.set(requestKeys?.get(hit) || animeResultKey(hit), path);
     } else {
@@ -1099,9 +1104,9 @@ function resetAnimeResults() {
 function probeAnimeResult(file) {
   const key = animeResultKey(file);
   if (state.animeResults.has(key) || state.animeProbed.has(key)) return;
-  state.animeProbed.add(key);
   const dir = $("anime-output")?.value?.trim();
   if (!dir || !isTauriRuntime) return;
+  state.animeProbed.add(key);
   const dirTrimmed = dir.replace(/[\\/]+$/, "");
   const stem = animeStem(file);
   // ToonOut 在复杂背景上可能被后端自动回退到 General、advanced 或 simple。
@@ -1119,9 +1124,9 @@ function probeAnimeResult(file) {
   const probeNext = (index) => {
     if (index >= candidates.length) return;
     const candidate = `${dirTrimmed}/${candidates[index]}`;
-    const probe = new Image();
+    const probe = new window.Image();
     probe.onload = () => {
-      if (!state.animeFiles.some((item) => animeStem(item) === stem)) return;
+      if ($("anime-output")?.value?.trim() !== dir || !state.animeFiles.includes(file) || state.animeResults.has(key)) return;
       state.animeResults.set(key, candidate);
       renderAnimeGallery();
     };
@@ -1424,7 +1429,7 @@ function probeSuperresResult(file, modelId) {
   const dir = $("superres-output")?.value?.trim();
   if (!dir || !isTauriRuntime) return;
   const candidate = `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}_4x_${modelId}.png`;
-  const probe = new Image();
+  const probe = new window.Image();
   probe.onload = () => {
     if (!state.superresFiles.includes(file)) return;
     state.superresResults.set(key, candidate);
@@ -1915,6 +1920,7 @@ function updateInspector() {
     const modes = (group.dataset.modes || "").split(/\s+/).filter(Boolean);
     group.classList.toggle("hidden", modes.length > 0 && !modes.includes(state.activeMode));
   });
+  renderGpuRuntime();
 
   document.querySelectorAll(".mode-field").forEach((field) => {
     const modes = (field.dataset.modes || "").split(/\s+/).filter(Boolean);
@@ -2026,6 +2032,7 @@ function reportRunBlocker(message) {
 }
 
 function applyMode(mode) {
+  const changed = state.activeMode !== mode;
   closeCustomSelect();
   state.activeMode = mode;
   localStorage.setItem("aias-active-mode", mode);
@@ -2059,11 +2066,48 @@ function applyMode(mode) {
   updateRunButtons(mode);
   updateInspector();
   updateStatus();
+  if (changed) animateView($(viewId));
+}
+
+function bindSidebar() {
+  const shell = document.querySelector(".app-shell");
+  const edge = $("sidebar-edge");
+  const toggle = $("sidebar-toggle");
+  const compact = window.matchMedia("(max-width: 1120px)");
+  let preference = localStorage.getItem("aias-sidebar");
+  let collapsed = preference === "collapsed" || (preference !== "expanded" && compact.matches);
+  const render = () => {
+    shell.classList.toggle("sidebar-collapsed", collapsed);
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-label", collapsed ? "展开侧栏" : "收起侧栏");
+    edge.title = collapsed ? "点击展开侧栏" : "点击收起侧栏";
+  };
+  const change = (next) => {
+    collapsed = next;
+    preference = collapsed ? "collapsed" : "expanded";
+    localStorage.setItem("aias-sidebar", preference);
+    closeCustomSelect();
+    render();
+  };
+  edge.addEventListener("click", () => change(!collapsed));
+  edge.addEventListener("keydown", (event) => {
+    if (!["Enter", " ", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    change(event.key === "ArrowLeft" ? true : event.key === "ArrowRight" ? false : !collapsed);
+  });
+  compact.addEventListener("change", () => {
+    if (preference === "collapsed" || preference === "expanded") return;
+    collapsed = compact.matches;
+    closeCustomSelect();
+    render();
+  });
+  render();
 }
 
 function bindTabs() {
   document.querySelectorAll(".mode-tab").forEach((button) => {
     button.title = button.textContent.trim();
+    button.setAttribute("aria-label", button.title);
     button.addEventListener("click", () => applyMode(button.dataset.view));
   });
   $("footer-settings")?.addEventListener("click", () => applyMode("settings"));
@@ -2073,8 +2117,7 @@ function bindInspectorGroups() {
   document.querySelectorAll(".group-toggle").forEach((button) => {
     button.setAttribute("aria-expanded", "true");
     button.addEventListener("click", () => {
-      const expanded = button.getAttribute("aria-expanded") !== "false";
-      button.setAttribute("aria-expanded", String(!expanded));
+      toggleGroup(button);
     });
   });
 }
@@ -2422,7 +2465,7 @@ function bindRunActions() {
     );
     state.animeRunning = false;
     renderAnimeModelStatus();
-    if (result?.outputs?.length) applyAnimeOutputs(result.outputs);
+    if (result?.outputs?.length && $("anime-output").value === outputPath) applyAnimeOutputs(result.outputs, requestKeys);
     refreshGpuRuntime();
   });
 
@@ -2487,54 +2530,30 @@ async function refreshSkins({ notify = false } = {}) {
   updateStatus();
 }
 
-async function checkForUpdates(silent = true) {
-  if (state.updateInProgress) return;
-
-  try {
-    const update = await check();
-    if (!update) {
-      if (!silent) addActivity("已是最新版本", "当前版本 " + (state.settings.version || "5.2.0"), "success");
-      return;
-    }
-    $("update-button")?.classList.remove("hidden");
-    addActivity("更新可用", update.version + " — 点击下载", "success");
-    if (!silent) {
-      const confirmed = await openPreviewConfirm("发现新版本", "版本 " + update.version + " 可用。\n\n是否立即下载并安装更新？");
-      if (!confirmed) return;
-      state.updateInProgress = true;
-      $("update-button")?.setAttribute("disabled", "");
-      addActivity("正在下载更新", update.version);
-      let downloaded = 0;
-      let total = 0;
-      await update.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          total = Number(event.data.contentLength) || 0;
-          $("runtime-badge").textContent = total ? "下载 0%" : "正在下载";
-        } else if (event.event === "Progress") {
-          downloaded += Number(event.data.chunkLength) || 0;
-          $("runtime-badge").textContent = total
-            ? "下载 " + Math.min(100, Math.round((downloaded / total) * 100)) + "%"
-            : "已下载 " + formatSize(downloaded);
-        } else if (event.event === "Finished") {
-          $("runtime-badge").textContent = "正在验签并启动安装器";
-          addActivity("下载完成", "正在验证更新并启动安装器");
-        }
-      });
-      addActivity("更新安装器已启动", "应用将退出以完成更新", "success");
-    }
-  } catch (error) {
-    if (!silent) {
-      const message = error.message || String(error);
-      $("runtime-badge").textContent = "更新失败";
-      addActivity("更新失败", message, "error");
-      setActivityPanel(true);
-      await openPreviewMessage("更新失败", message);
-    }
-  } finally {
-    state.updateInProgress = false;
-    $("update-button")?.removeAttribute("disabled");
+const checkForUpdates = createUpdateController({
+  isDesktop: isTauriRuntime,
+  check,
+  checkMirror: async () => {
+    const metadata = await invoke("updater_check_mirror");
+    return metadata ? new Update(metadata) : null;
+  },
+  getVersion,
+  ui: {
+    busy(value) {
+      state.updateInProgress = value;
+      for (const id of ["update-button", "set-check-update"]) {
+        const button = $(id);
+        if (button) button.disabled = value;
+      }
+    },
+    available(value) { $("update-button")?.classList.toggle("hidden", !value); },
+    activity: addActivity,
+    status(value) { setText("runtime-badge", value); },
+    confirm: openPreviewConfirm,
+    message: openPreviewMessage,
+    formatSize
   }
-}
+});
 
 function bindDragDrop() {
   if (!isTauriRuntime) return;
@@ -2599,6 +2618,10 @@ function bindDragDrop() {
 }
 
 async function init() {
+  bindSidebar();
+  const appVersion = isTauriRuntime ? await getVersion().catch(() => __APP_VERSION__) : __APP_VERSION__;
+  setText("set-version", "当前版本 " + appVersion);
+  setText("about-version", appVersion);
   state.settings = await api.settings.get();
   refreshIcons();
   enhanceSelectMenus();
@@ -2670,7 +2693,7 @@ async function init() {
   applyMode(modeMeta[savedMode] ? savedMode : "merge");
 
   // Check for updates silently on startup
-  if (isTauriRuntime) setTimeout(() => checkForUpdates(true), 2000);
+  scheduleUpdateCheck(isTauriRuntime, state.settings, setTimeout, checkForUpdates);
 }
 
 init();
