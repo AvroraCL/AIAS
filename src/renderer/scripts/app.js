@@ -1452,6 +1452,7 @@ function applySuperresOutputs(paths, requestKeys) {
 }
 
 function resetSuperresResults() {
+  state.superresPreviewRevision = (state.superresPreviewRevision || 0) + 1;
   state.superresResults.clear();
   state.superresProbed.clear();
 }
@@ -1459,17 +1460,20 @@ function resetSuperresResults() {
 function probeSuperresResult(file, modelId) {
   const key = superresResultKey(file, modelId);
   if (state.superresResults.has(key) || state.superresProbed.has(key)) return;
-  state.superresProbed.add(key);
   const dir = $("superres-output")?.value?.trim();
   if (!dir || !isTauriRuntime) return;
+  state.superresProbed.add(key);
+  const revision = state.superresPreviewRevision || 0;
   const candidate = `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}_${superresScale()}x_${modelId}.png`;
   const probe = new window.Image();
   probe.onload = () => {
-    if (!state.superresFiles.includes(file)) return;
+    if ((state.superresPreviewRevision || 0) !== revision || $("superres-output")?.value?.trim() !== dir || !state.superresFiles.includes(file) || state.superresResults.has(key)) return;
     state.superresResults.set(key, candidate);
     renderSuperresGallery();
   };
-  probe.onerror = () => state.superresProbed.delete(key);
+  probe.onerror = () => {
+    if ((state.superresPreviewRevision || 0) === revision) state.superresProbed.delete(key);
+  };
   probe.src = superresLocalSrc(candidate);
 }
 
@@ -1502,7 +1506,9 @@ function renderSuperresGrid(files) {
     img.draggable = false;
     const animePath = state.superresResults.get(superresResultKey(file, "anime"));
     const generalPath = state.superresResults.get(superresResultKey(file, "general"));
-    const preview = superresLocalSrc(generalPath || animePath || file);
+    const resultPath = state.activeMode === "superres-anime" ? animePath : generalPath;
+    const preview = superresLocalSrc(resultPath || file);
+    img.title = resultPath ? `${superresScale()}x ${superresLabels[state.activeMode === "superres-anime" ? "anime" : "general"]}结果` : "原图 · 当前模型和倍率尚无结果";
     if (preview) {
       img.src = preview;
     } else {
@@ -1544,9 +1550,7 @@ function renderSuperresGrid(files) {
 
 function removeSuperresFile(file) {
   state.superresFiles = state.superresFiles.filter((item) => item !== file);
-  for (const modelId of ["anime", "general"]) {
-    state.superresResults.delete(superresResultKey(file, modelId));
-  }
+  resetSuperresResults();
   renderSuperresGallery();
   updateStatus();
 }
@@ -1567,6 +1571,7 @@ async function runSuperres(modelId, button) {
   const files = [...state.superresFiles];
   const outputPath = $("superres-output").value;
   const requestKeys = new Map(files.map((file) => [file, superresResultKey(file, modelId, scale)]));
+  const revision = state.superresPreviewRevision || 0;
   state.superresRunning = true;
   renderSuperresModelStatus();
   const result = await withLog(
@@ -1577,7 +1582,7 @@ async function runSuperres(modelId, button) {
   );
   state.superresRunning = false;
   renderSuperresModelStatus();
-  if (result?.outputs?.length) applySuperresOutputs(result.outputs, requestKeys);
+  if (result?.outputs?.length && (state.superresPreviewRevision || 0) === revision && $("superres-output").value === outputPath) applySuperresOutputs(result.outputs, requestKeys);
 }
 
 function addActivity(title, body, tone = "idle") {
@@ -1817,14 +1822,18 @@ function setBusy(button, busy) {
   button.disabled = busy;
 }
 
-function setTaskProgress(completed, total, message) {
+function setTaskProgress(completed, total, message, percent = null) {
   const panel = $("task-progress");
   if (!panel) return;
-  const percent = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  // percent 由后端直传时（含单文件内的图块/阶段细分进度）优先使用
+  const raw = percent ?? (total ? completed / total * 100 : 0);
+  const value = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 0;
+  panel.dataset.percent = String(value);
   panel.classList.remove("hidden");
   setText("task-progress-label", message || "正在处理");
-  setText("task-progress-value", `${percent}%`);
-  $("task-progress-fill")?.style.setProperty("width", `${percent}%`);
+  setText("task-progress-value", `${value < 100 ? Math.min(99, Math.round(value)) : 100}%`);
+  $("task-progress-fill")?.style.setProperty("width", `${value}%`);
+  $("task-progress-track")?.setAttribute("aria-valuenow", String(Math.round(value)));
 }
 
 async function withLog(logId, button, action, title) {
@@ -1834,6 +1843,15 @@ async function withLog(logId, button, action, title) {
   setText("activity-summary", `${title}运行中`);
   setBusy(button, true);
   state.taskProgressActive = true;
+  const panel = $("task-progress");
+  if (panel) panel.dataset.status = "running";
+  const started = Date.now();
+  const updateElapsed = () => {
+    const seconds = Math.floor((Date.now() - started) / 1000);
+    setText("task-progress-detail", `已用时 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`);
+  };
+  updateElapsed();
+  const elapsedTimer = setInterval(updateElapsed, 1000);
   setTaskProgress(0, 1, "正在准备任务");
   try {
     const result = await action();
@@ -1841,16 +1859,22 @@ async function withLog(logId, button, action, title) {
       if (log) log.textContent += `${line}\n`;
     }
     if (log) log.textContent += `完成：${result.completed} / ${result.total}`;
-    setTaskProgress(result.completed, result.total, "任务完成");
-    addActivity(title || "任务完成", `${result.completed} / ${result.total}`, "success");
+    const partial = result.completed < result.total;
+    if (panel) panel.dataset.status = partial ? "partial" : "success";
+    setTaskProgress(result.completed, result.total, partial ? `处理结束 · 成功 ${result.completed}/${result.total}，其余项目请查看日志` : `任务完成 · ${result.completed}/${result.total}`, 100);
+    addActivity(title || "任务完成", `${result.completed} / ${result.total}`, partial ? "idle" : "success");
     state.lastOutputPath = getModeOutputPath();
     $("open-current-output")?.classList.toggle("hidden", !state.lastOutputPath);
     return result;
   } catch (error) {
+    if (panel) panel.dataset.status = "error";
+    setTaskProgress(0, 1, `任务失败 · ${error.message || error}`, Number(panel?.dataset.percent || 0));
     if (log) log.textContent += `失败：${error.message || error}`;
     addActivity(title || "任务失败", error.message || String(error), "error");
     return null;
   } finally {
+    clearInterval(elapsedTimer);
+    updateElapsed();
     state.taskProgressActive = false;
     setBusy(button, false);
     updateStatus();
@@ -1869,6 +1893,7 @@ function collectSettings() {
     mipmapInputPath: $("mipmap-input")?.value || "",
     mipmapOutputPath: $("mipmap-output")?.value || "",
     mipmapAlpha: $("mipmap-alpha")?.value || "keep",
+    mipmapIntermediate: Boolean($("mipmap-intermediate")?.checked),
     mipmapFormat: $("mipmap-format")?.value || "DXT5",
     imageToDdsOutputPath: $("image-output")?.value || "",
     imageToDdsAlpha: $("image-alpha")?.value || "keep",
@@ -1886,6 +1911,7 @@ function collectSettings() {
 
 function applySettingsToForm() {
   const settings = state.settings || {};
+  if ($("mipmap-intermediate")) $("mipmap-intermediate").checked = Boolean(settings.mipmapIntermediate);
   const map = {
     "pbr-input": settings.pbrInputPath,
     "pbr-output": settings.pbrOutputPath,
@@ -2442,6 +2468,7 @@ function bindRunActions() {
           inputPath: $("mipmap-input").value,
           outputPath: $("mipmap-output").value,
           alpha: $("mipmap-alpha").value,
+          intermediate: Boolean($("mipmap-intermediate")?.checked),
           format: $("mipmap-format").value,
           scale: $("scale-target")?.value || "none"
         }),
@@ -2516,7 +2543,11 @@ function bindRunActions() {
     runSuperres("general", event.currentTarget);
   });
 
-  $("superres-scale")?.addEventListener("input", updateSuperresScaleControl);
+  $("superres-scale")?.addEventListener("input", () => {
+    updateSuperresScaleControl();
+    resetSuperresResults();
+    renderSuperresGallery();
+  });
   $("superres-scale")?.addEventListener("change", async () => {
     updateSuperresScaleControl();
     // 倍率变了，旧结果文件名对不上新倍率：清空后按新倍率重新探测。
@@ -2688,7 +2719,7 @@ async function init() {
     await listen("task-progress", (event) => {
       if (!state.taskProgressActive) return;
       const progress = event.payload;
-      setTaskProgress(progress.completed, progress.total, progress.message);
+      setTaskProgress(progress.completed, progress.total, progress.message, progress.percent ?? null);
     });
     await listen("model-progress", (event) => {
       const { modelId, file, completed, total } = event.payload;

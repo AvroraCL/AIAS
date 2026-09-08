@@ -26,7 +26,7 @@ function fixture({ scale = '4' } = {}) {
     renderSuperresGallery() {}
   });
   vm.runInContext(helpers, context);
-  return { context, state, probes, controls };
+  return { context, state, probes, controls, file: state.superresFiles[0] };
 }
 
 test('slider label tracks the selected scale between 2 and 4', () => {
@@ -92,4 +92,73 @@ test('result probes look for the file named after the current scale', () => {
   context.probeSuperresResult('C:/input/hero.png', 'anime');
   assert.equal(probes.length, 1);
   assert.equal(probes[0].src, 'C:/output/hero_2x_anime.png');
+});
+
+test('late superres probes cannot restore old directory results', () => {
+  const { context, state, controls, probes, file } = fixture();
+  context.probeSuperresResult(file, 'anime');
+  controls['superres-output'].value = 'C:/other';
+  context.resetSuperresResults();
+  probes[0].onload();
+  assert.equal(state.superresResults.size, 0);
+});
+test('empty directory does not prevent a later result probe', () => {
+  const { context, controls, probes, file } = fixture();
+  controls['superres-output'].value = '';
+  context.probeSuperresResult(file, 'anime');
+  controls['superres-output'].value = 'C:/output';
+  context.probeSuperresResult(file, 'anime');
+  assert.equal(probes.length, 1);
+});
+test('late probes preserve newer completed outputs', () => {
+  const { context, state, probes, file } = fixture();
+  context.probeSuperresResult(file, 'anime');
+  const key = context.superresResultKey(file, 'anime');
+  state.superresResults.set(key, 'new-result');
+  probes[0].onload();
+  assert.equal(state.superresResults.get(key), 'new-result');
+});
+test('output keys preserve captured scale after changing slider', () => {
+  const { context, state, controls, file } = fixture();
+  const key = context.superresResultKey(file, 'anime');
+  controls['superres-scale'].value = '2';
+  context.applySuperresOutputs(['C:/output/hero_4x_anime.png'], new Map([[file, key]]));
+  assert.equal(state.superresResults.get(key), 'C:/output/hero_4x_anime.png');
+  assert.equal(state.superresResults.has(context.superresResultKey(file, 'anime')), false);
+});
+
+test('directory round trip cannot revive a probe from an earlier revision', () => {
+  const { context, state, controls, probes, file } = fixture();
+  context.probeSuperresResult(file, 'anime');
+  controls['superres-output'].value = 'C:/other';
+  context.resetSuperresResults();
+  controls['superres-output'].value = 'C:/output';
+  context.resetSuperresResults();
+  context.probeSuperresResult(file, 'anime');
+  probes[0].onload();
+  assert.equal(state.superresResults.size, 0);
+  probes[1].onload();
+  assert.equal(state.superresResults.size, 1);
+});
+
+test('old failed probes cannot clear the new in-flight probe marker', () => {
+  const { context, state, probes, file } = fixture();
+  context.probeSuperresResult(file, 'anime');
+  context.resetSuperresResults();
+  context.probeSuperresResult(file, 'anime');
+  probes[0].onerror();
+  assert.equal(state.superresProbed.has(context.superresResultKey(file, 'anime')), true);
+});
+
+test('remove and re-add invalidates previous callbacks and all cached scales', () => {
+  const { context, state, probes, file } = fixture();
+  context.updateStatus = () => {};
+  vm.runInContext(source.slice(source.indexOf('function removeSuperresFile('), source.indexOf('async function runSuperres(')), context);
+  context.probeSuperresResult(file, 'anime');
+  state.superresResults.set(context.superresResultKey(file, 'anime', 2), 'old');
+  context.removeSuperresFile(file);
+  state.superresFiles.push(file);
+  probes[0].onload();
+  assert.equal(state.superresResults.size, 0);
+  assert.equal(state.superresProbed.size, 0);
 });

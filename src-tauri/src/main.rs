@@ -39,6 +39,8 @@ struct Settings {
     mipmap_output_path: String,
     mipmap_format: String,
     mipmap_alpha: String,
+    #[serde(default)]
+    mipmap_intermediate: bool,
     image_to_dds_output_path: String,
     image_to_dds_alpha: String,
     image_to_dds_format: String,
@@ -81,6 +83,7 @@ impl Default for Settings {
             mipmap_output_path: String::new(),
             mipmap_format: "DXT5".into(),
             mipmap_alpha: "keep".into(),
+            mipmap_intermediate: false,
             image_to_dds_output_path: String::new(),
             image_to_dds_alpha: "keep".into(),
             image_to_dds_format: "DXT5".into(),
@@ -150,6 +153,8 @@ struct MipmapOptions {
     alpha: Option<String>,
     format: Option<String>,
     scale: Option<String>,
+    #[serde(default)]
+    intermediate: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +356,9 @@ struct TaskProgress {
     completed: usize,
     total: usize,
     message: String,
+    /// 文件内细分进度（0–100）；缺省时前端按 completed/total 计算。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    percent: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -703,6 +711,25 @@ fn texture_create_mipmap_inner(
     let alpha = options.alpha.as_deref().unwrap_or("keep");
     let format = options.format.as_deref().unwrap_or("DXT5");
     let scale = options.scale.as_deref().unwrap_or("none");
+    if options.intermediate {
+        let input = image_exts().iter().map(|ext| Path::new(&options.input_path).join(format!("p0{ext}")))
+            .find(|path| path.is_file()).ok_or("实验模式需要 p0 原图")?;
+        let base = prepare_image(&input, alpha, scale)?;
+        let mut outputs = Vec::new();
+        for (index, intermediate) in [false, true].into_iter().enumerate() {
+            emit_task_progress_percent(app, index, 2, if intermediate { "生成中间尺寸预滤波链" } else { "生成直接缩小对照链" }.into(), Some(index as f64 * 50.0));
+            let levels = generate_experimental_mips(&base, intermediate);
+            let name = if intermediate { "Mipmap_intermediate.dds" } else { "Mipmap_reference.dds" };
+            let output = Path::new(&options.output_path).join(name);
+            write_dds_with_mipmaps(&levels, &output, format)?;
+            outputs.push(output.display().to_string());
+        }
+        return Ok(TaskResult { completed: 2, total: 2, logs: vec![
+            "实验模式仅使用 p0，自动生成到 1×1；p1 等自定义层不参与。".into(),
+            "Mipmap_reference.dds：直接缩小对照；Mipmap_intermediate.dds：每层先缩至 75% 再缩至 50%。".into(),
+            "两份 DDS 均使用标准减半层级；不改变游戏视距或采样器设置。".into(),
+        ], outputs });
+    }
     let mut files = Vec::new();
 
     for index in 0..1000 {
@@ -1012,13 +1039,30 @@ fn anime_cutout_inner(
             .and_then(|value| value.to_str())
             .unwrap_or(file);
         if let Some(handle) = app {
-            emit_task_progress(
+            emit_task_progress_percent(
                 handle,
                 completed,
                 options.files.len(),
                 format!("推理中 {label}"),
+                Some(completed as f64 / options.files.len() as f64 * 100.0),
             );
         }
+
+        // 单图内部按管线阶段细分：把已完成的文件数 + 当前文件的阶段比例
+        // 折算成整体百分比，进度条在单张图推理期间也能真实移动。
+        let phase_progress = |fraction: f64, phase: &str| {
+            if let Some(handle) = app {
+                let percent =
+                    (completed as f64 + fraction.clamp(0.0, 1.0)) / options.files.len() as f64 * 100.0;
+                emit_task_progress_percent(
+                    handle,
+                    completed,
+                    options.files.len(),
+                    format!("{phase} {label}"),
+                    Some(percent),
+                );
+            }
+        };
 
         match anime::cutout_with_options(
             &base,
@@ -1027,6 +1071,7 @@ fn anime_cutout_inner(
             &target,
             options.refine_hair,
             options.recover_details,
+            &phase_progress,
         ) {
             Ok(outcome) => {
                 completed += 1;
@@ -1166,7 +1211,7 @@ fn superres_run_inner(
     let mut completed = 0usize;
     let scale = options.scale.unwrap_or(4).clamp(2, 8);
 
-    for file in &options.files {
+    for (file_index, file) in options.files.iter().enumerate() {
         let input = Path::new(file);
         if !input.exists() {
             logs.push(format!("跳过（文件不存在）：{file}"));
@@ -1191,14 +1236,38 @@ fn superres_run_inner(
             .and_then(|value| value.to_str())
             .unwrap_or(file);
         if let Some(handle) = app {
-            emit_task_progress(
+            emit_task_progress_percent(
                 handle,
                 completed,
                 options.files.len(),
                 format!("超分中 {label}"),
+                Some(file_index as f64 / options.files.len() as f64 * 100.0),
             );
         }
-        match superres::upscale(&base, &options.model, input, &target, scale) {
+        // 图块级真实进度：每完成一个 256px 图块推理回调一次，把文件内比例
+        // 折算进整体百分比（带 Alpha 的图两遍推理，单位数自动翻倍）。
+        let highest_percent = std::cell::Cell::new(file_index as f64 / options.files.len() as f64 * 100.0);
+        let tile_progress = |done_units: usize, total_units: usize, phase: &str| {
+            if let Some(handle) = app {
+                let fraction = if total_units > 0 {
+                    done_units as f64 / total_units as f64
+                } else {
+                    0.0
+                };
+                let percent =
+                    (file_index as f64 + fraction.clamp(0.0, 1.0)) / options.files.len() as f64 * 100.0;
+                let percent = percent.max(highest_percent.get());
+                highest_percent.set(percent);
+                emit_task_progress_percent(
+                    handle,
+                    completed,
+                    options.files.len(),
+                    format!("第 {}/{} 张 · {label} · {phase}", file_index + 1, options.files.len()),
+                    Some(percent),
+                );
+            }
+        };
+        match superres::upscale_with_progress(&base, &options.model, input, &target, scale, &tile_progress) {
             Ok(()) => {
                 completed += 1;
                 let name = target
@@ -1209,11 +1278,12 @@ fn superres_run_inner(
                 logs.push(format!("完成 {} → {}", stem, name));
                 outputs.push(target.display().to_string());
                 if let Some(handle) = app {
-                    emit_task_progress(
+                    emit_task_progress_percent(
                         handle,
                         completed,
                         options.files.len(),
                         format!("完成 {stem}"),
+                        Some((file_index + 1) as f64 / options.files.len() as f64 * 100.0),
                     );
                 }
             }
@@ -1460,12 +1530,25 @@ fn process_base_color(
 }
 
 fn emit_task_progress(app: &AppHandle, completed: usize, total: usize, message: String) {
+    emit_task_progress_percent(app, completed, total, message, None);
+}
+
+/// percent：0–100 的整体百分比。批量任务把文件内的细分进度折算进总数，
+/// 让单文件长时间推理时进度条也能连续移动。
+fn emit_task_progress_percent(
+    app: &AppHandle,
+    completed: usize,
+    total: usize,
+    message: String,
+    percent: Option<f64>,
+) {
     let _ = app.emit(
         "task-progress",
         TaskProgress {
             completed,
             total,
             message,
+            percent,
         },
     );
 }
@@ -1642,6 +1725,44 @@ fn encode_dds(image: &RgbaImage, format: &str) -> Result<Vec<u8>, String> {
 
 fn write_dds(image: &RgbaImage, output: &Path, format: &str) -> Result<(), String> {
     fs::write(output, encode_dds(image, format)?).map_err(to_string_error)
+}
+
+// Work in linear light with premultiplied alpha, avoiding gamma darkening
+// and color leakage from invisible texels during either comparison path.
+fn resize_mip_color(image: &RgbaImage, w: u32, h: u32) -> RgbaImage {
+    let linear = image::Rgba32FImage::from_fn(image.width(), image.height(), |x, y| {
+        let p = image.get_pixel(x, y); let a = p[3] as f32 / 255.0;
+        image::Rgba(std::array::from_fn(|c| if c == 3 { a } else {
+            let v = p[c] as f32 / 255.0;
+            (if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }) * a
+        }))
+    });
+    let resized = image::imageops::resize(&linear, w, h, image::imageops::FilterType::Triangle);
+    RgbaImage::from_fn(w, h, |x, y| {
+        let p = resized.get_pixel(x, y); let a = p[3].clamp(0.0, 1.0);
+        image::Rgba(std::array::from_fn(|c| {
+            let v = if c == 3 { a } else if a <= 1e-6 { 0.0 } else {
+                let v = (p[c] / a).clamp(0.0, 1.0);
+                if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+            };
+            (v * 255.0).round() as u8
+        }))
+    })
+}
+
+fn generate_experimental_mips(base: &RgbaImage, intermediate: bool) -> Vec<RgbaImage> {
+    let mut levels = vec![base.clone()];
+    while levels.last().unwrap().dimensions() != (1, 1) {
+        let previous = levels.last().unwrap();
+        let (w, h) = previous.dimensions();
+        let target = ((w / 2).max(1), (h / 2).max(1));
+        let next = if intermediate {
+            let bridge = resize_mip_color(previous, (w - w / 4).max(1), (h - h / 4).max(1));
+            resize_mip_color(&bridge, target.0, target.1)
+        } else { resize_mip_color(previous, target.0, target.1) };
+        levels.push(next);
+    }
+    levels
 }
 
 fn validate_mipmap_dimensions(
@@ -1850,6 +1971,81 @@ mod tests {
         let dds = Dds::read(&mut Cursor::new(encode_dds(&image, "DXT5").unwrap())).unwrap();
         let decoded = image_from_dds(&dds, 0).unwrap();
         assert_eq!(decoded.dimensions(), image.dimensions());
+    }
+
+    #[test]
+    #[ignore = "manual intermediate-size experiment in test area"]
+    fn intermediate_mipmap_experiment() {
+        let input = PathBuf::from(std::env::var_os("AIAS_MIP_INPUT").expect("input"));
+        let out = PathBuf::from(std::env::var_os("AIAS_MIP_OUTPUT").expect("output"));
+        fs::create_dir_all(&out).unwrap();
+        let source = image::open(input).unwrap().to_rgba8();
+        let mut images = Vec::new();
+        for width in [1024, 768, 512, 384, 256] {
+            let height = (source.height() as u64 * width as u64 / source.width() as u64).max(1) as u32;
+            let resized = image::imageops::resize(&source, width, height, image::imageops::FilterType::Lanczos3);
+            resized.save(out.join(format!("level-{width}.png"))).unwrap();
+            images.push(resized);
+        }
+        let mut report = String::new();
+        for format in ["8.8.8.8", "DXT5"] {
+            let file = out.join(format!("EXPERIMENT_INVALID_CHAIN-{format}.dds"));
+            write_dds_with_mipmaps(&images, &file, format).unwrap();
+            let dds = Dds::read(&mut BufReader::new(fs::File::open(file).unwrap())).unwrap();
+            for level in 0..images.len() {
+                match image_from_dds(&dds, level as u32) {
+                    Ok(decoded) => {
+                        report.push_str(&format!("{format} level {level}: supplied {:?}, decoded {:?}\n", images[level].dimensions(), decoded.dimensions()));
+                        if level == 1 {
+                            assert_ne!(decoded.dimensions(), images[level].dimensions());
+                            decoded.save(out.join(format!("misread-level1-{format}.png"))).unwrap();
+                        }
+                    }
+                    Err(error) => report.push_str(&format!("{format} level {level}: error {error}\n")),
+                }
+            }
+        }
+        fs::write(out.join("decoder-results.txt"), &report).unwrap();
+        println!("{report}");
+    }
+
+    #[test]
+    fn experimental_mips_keep_standard_dimensions_and_alpha() {
+        let mut base = RgbaImage::from_pixel(17, 9, Rgba([255, 0, 0, 255]));
+        for y in 0..9 { for x in 8..17 { base.put_pixel(x, y, Rgba([0, 0, 255, 0])); } }
+        for intermediate in [false, true] {
+            let levels = generate_experimental_mips(&base, intermediate);
+            assert_eq!(levels.last().unwrap().dimensions(), (1, 1));
+            for (index, level) in levels.iter().enumerate() {
+                validate_mipmap_dimensions(level, Some(&base), index as u32).unwrap();
+                if index > 0 { for p in level.pixels().filter(|p| p[3] > 0) { assert_eq!(p[2], 0, "invisible blue must not bleed"); } }
+            }
+            for format in ["8.8.8.8", "DXT5"] {
+                let encoded = levels.iter().map(|im| MipmapLevel { width: im.width(), height: im.height(), payload: encode_image_payload(im, format) }).collect::<Vec<_>>();
+                let dds = Dds::read(&mut Cursor::new(build_dds(&encoded, format).unwrap())).unwrap();
+                for (index, level) in levels.iter().enumerate() { assert_eq!(image_from_dds(&dds, index as u32).unwrap().dimensions(), level.dimensions()); }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual game-ready pair in test area"]
+    fn export_experimental_mip_pair() {
+        let input = PathBuf::from(std::env::var_os("AIAS_MIP_INPUT").unwrap());
+        let out = PathBuf::from(std::env::var_os("AIAS_MIP_OUTPUT").unwrap());
+        fs::create_dir_all(&out).unwrap();
+        let base = image::open(input).unwrap().to_rgba8();
+        for intermediate in [false, true] {
+            let levels = generate_experimental_mips(&base, intermediate);
+            let file = out.join(if intermediate { "Mipmap_intermediate.dds" } else { "Mipmap_reference.dds" });
+            write_dds_with_mipmaps(&levels, &file, "DXT5").unwrap();
+            let dds = Dds::read(&mut BufReader::new(fs::File::open(file).unwrap())).unwrap();
+            for (i, level) in levels.iter().enumerate() {
+                let decoded = image_from_dds(&dds, i as u32).unwrap();
+                assert_eq!(decoded.dimensions(), level.dimensions());
+            }
+            println!("intermediate={intermediate}, levels={}, base={:?}", levels.len(), base.dimensions());
+        }
     }
 
     #[test]

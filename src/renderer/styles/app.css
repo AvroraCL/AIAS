@@ -922,3 +922,8 @@ button.danger-action:hover:not(:disabled) { border-color: #ef6a6d; background: #
   .settings-section:last-child { border-bottom: none; }
   .activity-content { grid-template-columns: 250px minmax(0, 1fr); }
 }
+.task-progress-detail { margin: 6px 0 0; color: var(--text-dim); font-size: 10px; }
+.task-progress[data-status="error"] .task-progress-track span { background: #e57373; }
+.task-progress[data-status="partial"] .task-progress-track span { background: #d9a441; }
+.task-progress[data-status="success"] .task-progress-track span { background: #67b98b; }
+#task-progress-label { overflow-wrap: anywhere; }

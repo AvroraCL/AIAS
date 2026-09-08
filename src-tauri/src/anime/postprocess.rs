@@ -401,7 +401,7 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
     // 污染（换底后边缘发粉）。a=0.9 时解混修正量只有 ~10%，把近实心像素
     // 也纳入解混收益明显、风险很小；合法粉色主体（发饰）周围背景占比低，
     // 由 BG_PRESENCE_MIN 守卫。
-    const CEIL: f32 = 0.95;
+    const CEIL: f32 = 242.0 / 255.0;
     const FLOOR_A: f32 = 0.15;
     const BG_PRESENCE_MIN: f64 = 0.05;
 
@@ -415,7 +415,9 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
         }
         return out;
     }
-    let weight: Vec<f64> = matte.iter().map(|a| (1.0 - *a) as f64).collect();
+    // Only confident background can estimate the old background color. Soft
+    // foreground pixels otherwise contaminate their own estimate and lose color.
+    let weight: Vec<f64> = matte.iter().map(|a| if *a <= 0.05 { 1.0 } else { 0.0 }).collect();
     let rgb_raw = rgb.as_raw();
     let build_weighted = |ch: usize| -> Vec<f64> {
         weight
@@ -440,7 +442,7 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
         let pixel = rgb.get_pixel((index % w) as u32, (index / w) as u32);
         let a = matte[index];
         let wsum = mean_w[index];
-        if a >= CEIL || wsum < BG_PRESENCE_MIN {
+        if a >= CEIL || a <= 0.0 || wsum < BG_PRESENCE_MIN {
             *slot = [pixel[0], pixel[1], pixel[2]];
             return;
         }
@@ -448,8 +450,14 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
         let mut color = [0u8; 3];
         for ch in 0..3 {
             let bg = mean_c[ch][index] / wsum;
-            let foreground = (pixel[ch] as f64 - (1.0 - a) as f64 * bg) / aa;
-            color[ch] = foreground.round().clamp(0.0, 255.0) as u8;
+            // Use the same regularized alpha on both sides of the equation;
+            // mixing a with max(a, floor) darkens very fine, low-alpha edges.
+            let foreground = (pixel[ch] as f64 - (1.0 - aa) * bg) / aa;
+            // Uncertain alpha must not amplify a small background-estimation
+            // error into a black/white fringe. Keep correction local in color.
+            let original = pixel[ch] as f64;
+            color[ch] = foreground.clamp(original - 24.0, original + 24.0)
+                .round().clamp(0.0, 255.0) as u8;
         }
         *slot = color;
     });
@@ -1367,4 +1375,54 @@ pub(crate) fn finalize_cutout_image_with_alpha_gamma(
         });
     });
     RgbaImage::from_raw(w, h, raw).expect("composite buffer size matches")
+}
+
+#[cfg(test)]
+mod color_regression_tests {
+    use super::*;
+    #[test]
+    fn uncertain_foreground_does_not_desaturate_itself() {
+        let rgb = RgbImage::from_pixel(40, 40, image::Rgb([160, 100, 220]));
+        for alpha in [0.02, 0.1, 0.5, 0.9, 1.0] {
+            let colors = decontaminate_colors(&rgb, &vec![alpha; 1600]);
+            assert!(colors.iter().all(|c| *c == [160, 100, 220]));
+        }
+    }
+    #[test]
+    fn low_alpha_with_matching_background_keeps_original_color() {
+        let rgb = RgbImage::from_pixel(40, 40, image::Rgb([160, 100, 220]));
+        let mut alpha = vec![0.0; 1600];
+        alpha[820] = 0.08;
+        assert_eq!(decontaminate_colors(&rgb, &alpha)[820], [160, 100, 220]);
+    }
+    #[test]
+    fn edge_correction_is_bounded_and_solid_pixels_are_unchanged() {
+        let mut rgb = RgbImage::from_pixel(40, 40, image::Rgb([255, 255, 255]));
+        rgb.put_pixel(20, 20, image::Rgb([80, 120, 160]));
+        let mut alpha = vec![0.0; 1600];
+        alpha[820] = 0.1;
+        let colors = decontaminate_colors(&rgb, &alpha);
+        for channel in 0..3 {
+            assert!((colors[820][channel] as i16 - rgb.get_pixel(20, 20)[channel] as i16).abs() <= 24);
+        }
+        alpha[820] = 242.0 / 255.0;
+        assert_eq!(decontaminate_colors(&rgb, &alpha)[820], [80, 120, 160]);
+    }
+
+    #[test]
+    #[ignore = "requires test-area source and existing matte"]
+    fn color_ab_existing_matte() {
+        let input = std::path::PathBuf::from(std::env::var_os("AIAS_COLOR_INPUT").unwrap());
+        let baseline = std::path::PathBuf::from(std::env::var_os("AIAS_COLOR_BASELINE").unwrap());
+        let output = std::path::PathBuf::from(std::env::var_os("AIAS_COLOR_OUTPUT").unwrap());
+        let rgb = image::open(input).unwrap().to_rgb8();
+        let mut result = image::open(baseline).unwrap().to_rgba8();
+        assert_eq!(rgb.dimensions(), result.dimensions());
+        let mask: Vec<f32> = result.pixels().map(|p| p[3] as f32 / 255.0).collect();
+        let colors = decontaminate_colors(&rgb, &mask);
+        for (pixel, color) in result.pixels_mut().zip(colors) {
+            pixel[0] = color[0]; pixel[1] = color[1]; pixel[2] = color[2];
+        }
+        result.save(output).unwrap();
+    }
 }

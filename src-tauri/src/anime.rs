@@ -318,12 +318,14 @@ pub fn cutout_with_fallback(
     input: &Path,
     output: &Path,
 ) -> Result<CutoutOutcome, String> {
-    cutout_with_options(base, model_id, input, output, false, false)
+    cutout_with_options(base, model_id, input, output, false, false, &|_, _| {})
 }
 
 /// 与默认抠图相同，但可显式启用实验性细节恢复与 ViTMatte 的窄边界发丝精修。
 /// 两个开关仅对用户直接选择的 AnimeSeg 生效，避免改变 ToonOut 回退链及其它
 /// 已验证模型的行为。
+/// `on_phase(fraction, label)`：阶段完成时回调，fraction 为单图 0–1 的粗粒度
+/// 真实进度（各阶段实际执行完毕才上报，不做时间插值）。
 pub fn cutout_with_options(
     base: &Path,
     model_id: &str,
@@ -331,6 +333,7 @@ pub fn cutout_with_options(
     output: &Path,
     refine_hair_edges: bool,
     recover_details: bool,
+    on_phase: &dyn Fn(f64, &str),
 ) -> Result<CutoutOutcome, String> {
     if refine_hair_edges && model_id != "anime-specialist" {
         return Err("精细发丝边缘目前仅支持动漫专精（AnimeSeg）。".into());
@@ -341,15 +344,21 @@ pub fn cutout_with_options(
     if recover_details && model_id != "anime-specialist" {
         return Err("高分辨率细节补全目前仅支持动漫专精（AnimeSeg）。".into());
     }
-    let rgb = timed("1 decode+exif", || {
-        let mut image = image::open(input).map_err(to_string_error)?;
+    on_phase(0.02, "读取图片");
+    let (rgb, icc_profile) = timed("1 decode+exif", || {
+        use image::ImageDecoder as _;
+        let mut decoder = image::ImageReader::open(input).map_err(to_string_error)?
+            .with_guessed_format().map_err(to_string_error)?.into_decoder().map_err(to_string_error)?;
+        let profile = decoder.icc_profile().map_err(to_string_error)?;
+        let mut image = image::DynamicImage::from_decoder(decoder).map_err(to_string_error)?;
         if let Some(orientation) = exif_orientation(input)? {
             image.apply_orientation(orientation);
         }
-        Ok::<_, String>(image.to_rgb8())
+        Ok::<_, String>((image.to_rgb8(), profile))
     })?;
     let (w, h) = rgb.dimensions();
 
+    on_phase(0.08, "模型推理");
     let (mask, fallback_model) = timed("2 inference+fallback", || {
         Ok::<_, String>(match model_spec(model_id)?.kind {
         ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
@@ -422,6 +431,7 @@ pub fn cutout_with_options(
     })?;
 
     let fallback = model_id == "toonout" && fallback_model != "toonout";
+    on_phase(0.70, "推理完成");
 
     // AB 回归可视化：引导滤波前的原始模型掩码，供滤波参数对比。
     if std::env::var_os("AIAS_AB_DEBUG").is_some() {
@@ -441,10 +451,12 @@ pub fn cutout_with_options(
     // 原图，再只在其自动 4px 边界带上使用原始 RGB 求解 alpha，恢复高分辨率
     // 轮廓；其它模型和较小图片保留既有输出，避免改变已验证的行为。
     let mask = if fallback_model == "anime-specialist" {
+        on_phase(0.72, "边界精修");
         timed("3 closed-form", || refine_closed_form_boundary_alpha(&rgb, mask))
     } else {
         mask
     };
+    on_phase(0.82, "合成输出");
     let result = timed("4 finalize", || {
         finalize_cutout_image(&rgb, mask, model_uses_native_edge_alpha(fallback_model))
     });
@@ -453,6 +465,7 @@ pub fn cutout_with_options(
             && model_id == "anime-specialist"
             && fallback_model == "anime-specialist"
         {
+            on_phase(0.85, "细节恢复");
             recover_anime_specialist_details_rgba(base, &rgb, result)
         } else {
             Ok(result)
@@ -463,16 +476,23 @@ pub fn cutout_with_options(
             && model_id == "anime-specialist"
             && fallback_model == "anime-specialist"
         {
+            on_phase(0.90, "发丝精修");
             refine_vitmatte_boundary_rgba(base, &rgb, result)
         } else {
             Ok(result)
         }
     })?;
+    on_phase(0.95, "写入文件");
     timed("7 save-png", || {
-        result
-            .save_with_format(output, image::ImageFormat::Png)
-            .map_err(to_string_error)
+        use image::ImageEncoder as _;
+        let file = fs::File::create(output).map_err(to_string_error)?;
+        let mut encoder = image::codecs::png::PngEncoder::new(std::io::BufWriter::new(file));
+        if let Some(profile) = icc_profile {
+            encoder.set_icc_profile(profile).map_err(to_string_error)?;
+        }
+        encoder.write_image(result.as_raw(), w, h, image::ExtendedColorType::Rgba8).map_err(to_string_error)
     })?;
+    on_phase(1.0, "完成");
 
     // AB 回归可视化：设 AIAS_AB_DEBUG=1 时对单张图导出 matte 灰度图。
     if std::env::var_os("AIAS_AB_DEBUG").is_some() {

@@ -158,10 +158,21 @@ fn release_session(id: &str) {
 /// 当灰度图再过一遍同一网络，保持硬边缘不糊），再按目标倍率 2–8 做 Lanczos
 /// 重采样——低于 4x 是高质量缩小，高于 4x 是插值放大（不新增细节）。
 /// 输出固定为 `{原图名}_{倍率}x_{模型id}.png`。
-pub fn upscale(base: &Path, id: &str, input: &Path, output: &Path, scale: u32) -> Result<(), String> {
+/// `on_progress(done_units, total_units)`：图块级进度回调（带 Alpha 的图
+/// RGB 与 Alpha 两遍推理，总量翻倍）。
+pub fn upscale_with_progress(
+    base: &Path,
+    id: &str,
+    input: &Path,
+    output: &Path,
+    scale: u32,
+    on_progress: &dyn Fn(usize, usize, &str),
+) -> Result<(), String> {
     let scale = scale.clamp(2, 8);
+    on_progress(0, 1, "正在准备推理运行库");
     crate::anime::ensure_ort_runtime(base)?;
     superres_spec(id)?;
+    on_progress(0, 1, "正在读取图片");
     let image = image::open(input)
         .map_err(crate::anime::to_string_error)?
         .to_rgba8();
@@ -176,21 +187,28 @@ pub fn upscale(base: &Path, id: &str, input: &Path, output: &Path, scale: u32) -
         ));
     }
 
-    match try_upscale_with(base, id, &image, output, true, scale) {
-        Ok(()) => Ok(()),
-        Err(error) if is_gpu_oom_error(&error) => {
+    retry_tiles(|use_gpu, tile_size| {
+        let phase = if !use_gpu { "显存不足，切换 CPU 重试（64px 分块）".to_string() }
+            else if tile_size < 256 { format!("显存不足，缩小为 {tile_size}px 分块重试") }
+            else { "正在加载超分模型".to_string() };
+        on_progress(0, 1, &phase);
+        let result = try_upscale_with(base, id, &image, output, use_gpu, scale, tile_size, on_progress);
+        if result.as_ref().err().is_some_and(|error| is_gpu_oom_error(error)) {
             release_session(id);
-            try_upscale_with(base, id, &image, output, false, scale).map_err(|cpu_error| {
-                if is_gpu_oom_error(&cpu_error) {
-                    // CPU 回退仍分配失败：机器可提交内存耗尽（GPU 会话与图块缓冲叠加）。
-                    "内存不足，无法完成超分：请关闭部分程序释放内存后重试，或改用更小的图片。".to_string()
-                } else {
-                    cpu_error
-                }
-            })
         }
-        Err(error) => Err(error),
+        result
+    })
+}
+
+fn retry_tiles(mut attempt: impl FnMut(bool, u32) -> Result<(), String>) -> Result<(), String> {
+    for (use_gpu, tile_size) in [(true, 256), (true, 128), (true, 64), (false, 64)] {
+        match attempt(use_gpu, tile_size) {
+            Ok(()) => return Ok(()),
+            Err(error) if is_gpu_oom_error(&error) => continue,
+            Err(error) => return Err(error),
+        }
     }
+    Err("内存不足，无法完成超分：请关闭部分程序释放内存后重试，或改用更小的图片。".into())
 }
 
 fn try_upscale_with(
@@ -200,6 +218,8 @@ fn try_upscale_with(
     output: &Path,
     use_gpu: bool,
     scale: u32,
+    tile_size: u32,
+    on_progress: &dyn Fn(usize, usize, &str),
 ) -> Result<(), String> {
     let path = model_path(base, id)?;
     if !path.exists() {
@@ -224,8 +244,23 @@ fn try_upscale_with(
         }
     }
 
+    // 图块总数与 run_pass 的分块规则一致（256px + 16px 重叠）；带 Alpha 的图
+    // 两遍推理，进度单位翻倍。
+    let tile_count = w.div_ceil(tile_size) as usize * h.div_ceil(tile_size) as usize;
+    // Reserve one unit each for final resize and PNG save.
+    let total_units = tile_count * (if has_alpha { 2 } else { 1 }) + 2;
+    let report = |done_units: usize| {
+        let phase = if done_units == total_units { "已保存".to_string() }
+            else if done_units + 1 == total_units { "正在保存 PNG".to_string() }
+            else if done_units + 2 == total_units { "正在调整输出尺寸".to_string() }
+            else if done_units >= tile_count && has_alpha { format!("处理透明通道 · 分块 {}/{}", done_units - tile_count, tile_count) }
+            else { format!("处理颜色细节 · 分块 {done_units}/{tile_count}") };
+        on_progress(done_units.min(total_units), total_units, &phase);
+    };
+
+    report(0);
     // RGB 通道
-    run_pass(&cache_key, image, |pixel| {
+    run_pass(&cache_key, image, tile_size, |pixel| {
         [pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0]
     }, |tile_out, tile_w, x0, y0| {
         for (row, pixels) in tile_out.chunks_exact(tile_w * 3).enumerate() {
@@ -244,11 +279,11 @@ fn try_upscale_with(
                 result[slot + 2] = (pixel[2] * 255.0).round().clamp(0.0, 255.0) as u8;
             }
         }
-    })?;
+    }, &report)?;
 
     // Alpha 通道（仅当存在透明像素）
     if has_alpha {
-        run_pass(&cache_key, image, |pixel| {
+        run_pass(&cache_key, image, tile_size, |pixel| {
             let alpha = pixel[3] as f32 / 255.0;
             [alpha, alpha, alpha]
         }, |tile_out, tile_w, x0, y0| {
@@ -266,7 +301,7 @@ fn try_upscale_with(
                         (pixel[0] * 255.0).round().clamp(0.0, 255.0) as u8;
                 }
             }
-        })?;
+        }, &|done| report(tile_count + done))?;
     }
 
     let framed = image::RgbaImage::from_raw(w * 4, h * 4, result)
@@ -277,9 +312,11 @@ fn try_upscale_with(
     } else {
         image::imageops::resize(&framed, w * scale, h * scale, image::imageops::FilterType::Lanczos3)
     };
+    report(total_units - 1);
     final_image
         .save_with_format(output, image::ImageFormat::Png)
         .map_err(crate::anime::to_string_error)?;
+    report(total_units);
     Ok(())
 }
 
@@ -289,10 +326,11 @@ fn try_upscale_with(
 fn run_pass(
     cache_key: &str,
     image: &RgbaImage,
+    tile_size: u32,
     sample: impl Fn(&image::Rgba<u8>) -> [f32; 3],
     mut sink: impl FnMut(&[f32], usize, usize, usize),
+    on_tile: &dyn Fn(usize),
 ) -> Result<(), String> {
-    const TILE: u32 = 256;
     const OVERLAP: u32 = 16;
     let (w, h) = image.dimensions();
     let mut sessions = sessions().lock().map_err(lock_error)?;
@@ -303,15 +341,16 @@ fn run_pass(
         .ok_or("超分模型会话未初始化")?;
     let input_name = session.inputs()[0].name().to_string();
     let output_name = session.outputs()[0].name().to_string();
+    let mut tiles_done = 0_usize;
 
     let mut y = 0;
     while y < h {
         let y0 = y;
-        let y1 = (y0 + TILE).min(h);
+        let y1 = (y0 + tile_size).min(h);
         let mut x = 0;
         while x < w {
             let x0 = x;
-            let x1 = (x0 + TILE).min(w);
+            let x1 = (x0 + tile_size).min(w);
             let pad_x0 = x0.saturating_sub(OVERLAP);
             let pad_y0 = y0.saturating_sub(OVERLAP);
             let pad_x1 = (x1 + OVERLAP).min(w);
@@ -362,9 +401,48 @@ fn run_pass(
                 }
             }
             sink(&core, core_w, x0 as usize * 4, y0 as usize * 4);
+            tiles_done += 1;
+            on_tile(tiles_done);
             x = x1;
         }
         y = y1;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn superres_retries_smaller_gpu_tiles_before_cpu() {
+        let mut seen = Vec::new();
+        retry_tiles(|gpu, tile| {
+            seen.push((gpu, tile));
+            if gpu { Err("out of memory".into()) } else { Ok(()) }
+        }).unwrap();
+        assert_eq!(seen, [(true, 256), (true, 128), (true, 64), (false, 64)]);
+    }
+
+    #[test]
+    fn superres_stops_after_success_or_unrelated_error() {
+        let mut seen = Vec::new();
+        retry_tiles(|gpu, tile| {
+            seen.push((gpu, tile));
+            if tile == 256 { Err("out of memory".into()) } else { Ok(()) }
+        }).unwrap();
+        assert_eq!(seen, [(true, 256), (true, 128)]);
+        let mut calls = 0;
+        let error = retry_tiles(|_, _| { calls += 1; Err("invalid tensor".into()) }).unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error, "invalid tensor");
+    }
+
+    #[test]
+    fn superres_reports_exhausted_memory_retries() {
+        let mut calls = 0;
+        let error = retry_tiles(|_, _| { calls += 1; Err("out of memory".into()) }).unwrap_err();
+        assert_eq!(calls, 4);
+        assert!(error.contains("内存不足"));
+    }
 }
