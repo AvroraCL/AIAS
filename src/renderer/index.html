@@ -49,6 +49,11 @@
             </button>
           </div>
 
+          <div class="nav-section-label">材质生成</div>
+          <div class="tabs-track">
+            <button class="mode-tab" data-view="normal-map" type="button"><i data-lucide="layers-3" aria-hidden="true"></i><span>生成法线图</span></button>
+            <button class="mode-tab" data-view="height-map" type="button"><i data-lucide="gallery-vertical-end" aria-hidden="true"></i><span>生成高度图</span></button>
+          </div>
           <div class="nav-section-label">资源与系统</div>
           <div class="tabs-track secondary-track">
             <button class="mode-tab" data-view="skins" type="button">
@@ -173,6 +178,8 @@
                 <div class="file-chip-grid" id="image-file-list"></div>
               </div>
             </section>
+
+            <section class="mode-view" id="view-material-maps"></section>
 
             <section class="mode-view anime-view" id="view-anime-cutout">
               <div class="stage-heading">
@@ -509,6 +516,7 @@
               <pre id="mipmap-log" class="task-log"></pre>
               <pre id="image-log" class="task-log"></pre>
               <pre id="anime-log" class="task-log"></pre>
+              <pre id="material-maps-log" class="task-log"></pre>
               <pre id="superres-log" class="task-log"></pre>
             </div>
           </div>

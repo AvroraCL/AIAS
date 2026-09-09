@@ -122,7 +122,7 @@ cd src-tauri && cargo test --release   # Rust 回归测试（无需模型与 GPU
 
 `npm run dev` 的预期行为：
 
-1. 启动 Vite（`http://127.0.0.1:5173/`）并增量编译 Rust 侧。
+1. 启动 Vite（`http://127.0.0.1:5183/`）并增量编译 Rust 侧。
 2. 打开 Tauri 桌面窗口，加载渲染层。
 3. 渲染层的图片操作经 Tauri IPC 进入 Rust 命令，结果写回用户指定目录并回传预览。
 4. 修改 `src/renderer` 下的文件即时热更新；修改 Rust 代码保存后自动重编译并重启窗口。

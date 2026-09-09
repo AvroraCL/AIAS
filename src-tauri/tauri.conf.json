@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AIAS",
-  "version": "5.4.6",
+  "version": "5.4.7",
   "identifier": "studio.avroracl.aias",
   "build": {
     "beforeDevCommand": "npm run dev:renderer",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:5183",
     "beforeBuildCommand": "vite build",
     "frontendDist": "../dist/renderer"
   },

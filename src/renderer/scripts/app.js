@@ -1,3 +1,5 @@
+import { createMaterialMaps } from "./material-maps.js";
+let materialMapsUI;
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -83,6 +85,8 @@ const animeModelCatalog = {
 };
 
 const modeMeta = {
+  "normal-map": { title: "生成法线图", description: "从素材高度变化生成法线贴图，支持可移动光照预览" },
+  "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
   merge: { title: "PBR 多通道合成", description: "生成游戏可用的 _c 与 _n 通道贴图" },
   split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },
   mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
@@ -196,6 +200,8 @@ function getModeOutputPath(mode = state.activeMode) {
     "anime-cutout": "anime-output",
     "superres-anime": "superres-output",
     "superres-general": "superres-output",
+    "normal-map": "map-output",
+    "height-map": "map-output",
     skins: "skin-path"
   };
   return $(fieldByMode[mode])?.value || "";
@@ -1643,6 +1649,8 @@ function syncActiveLog(mode = state.activeMode) {
     mipmap: "mipmap-log",
     "image-dds": "image-log",
     "anime-cutout": "anime-log",
+    "normal-map": "material-maps-log",
+    "height-map": "material-maps-log",
     "superres-anime": "superres-log",
     "superres-general": "superres-log"
   };
@@ -1837,6 +1845,10 @@ function setTaskProgress(completed, total, message, percent = null) {
 }
 
 async function withLog(logId, button, action, title) {
+  if (state.taskProgressActive) {
+    reportRunBlocker("另一个任务正在运行，请等待完成后重试。");
+    return null;
+  }
   const log = $(logId);
   if (log) log.textContent = "";
   setActivityPanel(true);
@@ -1965,6 +1977,8 @@ function updateRunButtons(mode) {
     "image-dds": "run-image-dds",
     "anime-cutout": "run-anime-cutout",
     "superres-anime": "run-superres-anime",
+    "normal-map": "map-run",
+    "height-map": "map-run",
     "superres-general": "run-superres-general"
   };
 
@@ -2011,7 +2025,7 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general"];
+  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general", "normal-map", "height-map"];
   const blocker = getRunBlocker(mode);
   const ready = runnableModes.includes(mode) && !blocker;
 
@@ -2035,6 +2049,8 @@ function updateStatus() {
     "image-dds": "run-image-dds",
     "anime-cutout": "run-anime-cutout",
     "superres-anime": "run-superres-anime",
+    "normal-map": "map-run",
+    "height-map": "map-run",
     "superres-general": "run-superres-general"
   };
   const activeRunButton = $(runButtonByMode[mode]);
@@ -2049,7 +2065,20 @@ function updateStatus() {
 }
 
 function getRunBlocker(mode) {
+  if (state.taskProgressActive) return "另一个任务正在运行，请等待完成后重试。";
+  const batchFiles = mode === "anime-cutout" ? state.animeFiles
+    : mode.startsWith("superres") ? state.superresFiles
+    : mode === "image-dds" ? state.imageFiles : mode === "split" ? state.splitFiles : [];
+  const stems = new Set();
+  for (const file of batchFiles || []) {
+    const stem = basename(file).replace(/\.[^.]+$/, "").toLowerCase();
+    if (stems.has(stem)) return `存在重名图片「${stem}」，请先重命名或分批导出，避免覆盖结果。`;
+    stems.add(stem);
+  }
   switch (mode) {
+    case "normal-map":
+    case "height-map":
+      return materialMapsUI?.blocker() || null;
     case "merge":
       if (!$("pbr-input")?.value) return "请选择输入文件夹。";
       if (!$("pbr-output")?.value) return "请选择输出文件夹。";
@@ -2107,7 +2136,7 @@ function applyMode(mode) {
   });
   $("footer-settings")?.classList.toggle("active", mode === "settings");
   // 超分两个入口共用同一个视图
-  const viewId = mode.startsWith("superres") ? "view-superres" : `view-${mode}`;
+  const viewId = mode === "normal-map" || mode === "height-map" ? "view-material-maps" : mode.startsWith("superres") ? "view-superres" : `view-${mode}`;
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === viewId);
   });
@@ -2127,6 +2156,7 @@ function applyMode(mode) {
     refreshSuperresModelStatus();
     renderSuperresGallery();
   }
+  materialMapsUI?.activate(mode);
   syncActiveLog(mode);
   updateRunButtons(mode);
   updateInspector();
@@ -2686,6 +2716,10 @@ function bindDragDrop() {
         renderAnimeGallery();
         updateStatus();
         break;
+      case "normal-map":
+      case "height-map":
+        materialMapsUI?.addFiles(paths);
+        break;
       case "superres-anime":
       case "superres-general":
         state.superresFiles = [...new Set([...state.superresFiles, ...paths])];
@@ -2705,6 +2739,15 @@ async function init() {
   refreshIcons();
   enhanceSelectMenus();
   applySettingsToForm();
+  materialMapsUI = createMaterialMaps({
+    root: $("view-material-maps"), desktop: isTauriRuntime, invoke, open, openPath,
+    inspector: document.querySelector('.inspector-scroll'), runArea: document.querySelector('.run-area'), syncSelect: syncCustomSelect,
+    settings: state.settings.materialMaps, busy: () => state.taskProgressActive,
+    save: async materialMaps => { state.settings = await api.settings.set({ materialMaps }); },
+    withLog, notify: error => addActivity("材质生成", error, "error"),
+  });
+  enhanceSelectMenus();
+  refreshIcons();
   bindTabs();
   bindInspectorGroups();
   bindWorkspaceActions();
@@ -2776,3 +2819,5 @@ async function init() {
 }
 
 init();
+
+if (import.meta.hot) import.meta.hot.dispose(() => materialMapsUI?.dispose());

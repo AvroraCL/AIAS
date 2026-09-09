@@ -6,7 +6,7 @@ module.exports = defineConfig({
   root: path.resolve(__dirname, "src/renderer"),
   server: {
     host: "127.0.0.1",
-    port: 5173,
+    port: 5183,
     strictPort: true
   },
   preview: {

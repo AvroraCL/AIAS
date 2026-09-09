@@ -172,6 +172,8 @@ pub fn upscale_with_progress(
     on_progress(0, 1, "正在准备推理运行库");
     crate::anime::ensure_ort_runtime(base)?;
     superres_spec(id)?;
+    let (input_w, input_h) = image::image_dimensions(input).map_err(crate::anime::to_string_error)?;
+    crate::safety::memory_budget(input_w, input_h, 128 + u64::from(scale * scale) * 4)?;
     on_progress(0, 1, "正在读取图片");
     let image = image::open(input)
         .map_err(crate::anime::to_string_error)?
@@ -235,7 +237,9 @@ fn try_upscale_with(
     let (w, h) = image.dimensions();
     let out_w = w as usize * 4;
     let out_h = h as usize * 4;
-    let mut result = vec![0_u8; out_w * out_h * 4];
+    let mut result = Vec::new();
+    result.try_reserve_exact(out_w * out_h * 4).map_err(|_| "超分输出缓冲内存不足".to_string())?;
+    result.resize(out_w * out_h * 4, 0_u8);
     // 不透明的图直接按不透明输出；带透明的图由后面的 Alpha 推理填充。
     let has_alpha = image.pixels().any(|pixel| pixel[3] != 255);
     if !has_alpha {
@@ -313,9 +317,10 @@ fn try_upscale_with(
         image::imageops::resize(&framed, w * scale, h * scale, image::imageops::FilterType::Lanczos3)
     };
     report(total_units - 1);
-    final_image
-        .save_with_format(output, image::ImageFormat::Png)
-        .map_err(crate::anime::to_string_error)?;
+    crate::safety::atomic_write(output, |writer| {
+        use image::ImageEncoder;
+        image::codecs::png::PngEncoder::new(writer).write_image(final_image.as_raw(), final_image.width(), final_image.height(), image::ExtendedColorType::Rgba8).map_err(crate::anime::to_string_error)
+    })?;
     report(total_units);
     Ok(())
 }

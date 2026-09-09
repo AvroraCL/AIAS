@@ -1,6 +1,6 @@
 [package]
 name = "aias"
-version = "5.4.6"
+version = "5.4.7"
 description = "AIAS texture processing toolbox"
 authors = ["AvroraCL"]
 edition = "2021"
@@ -28,6 +28,8 @@ texpresso = "2.0.2"
 # 后处理逐像素阶段（box_mean/solidify/去污染/闭式分块）的 CPU 并行；
 # 各实现保证逐元素结果与串行一致。
 rayon = "1"
+tempfile = "3"
+base64 = "0.22"
 
 [profile.release]
 panic = "abort"

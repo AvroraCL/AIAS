@@ -11,7 +11,7 @@ function fixture() {
   };
   let cleared = false;
   const context = vm.createContext({ $, state: {}, Date, setText: (id, text) => $(id).textContent = text,
-    setInterval: () => 1, clearInterval: () => { cleared = true; }, setBusy() {}, setActivityPanel() {}, addActivity() {}, getModeOutputPath: () => '', updateStatus() {} });
+    setInterval: () => 1, clearInterval: () => { cleared = true; }, setBusy() {}, setActivityPanel() {}, addActivity() {}, reportRunBlocker() {}, getModeOutputPath: () => '', updateStatus() {} });
   vm.runInContext(source.slice(source.indexOf('function setTaskProgress('), source.indexOf('function collectSettings(')), context);
   return { context, $, cleared: () => cleared };
 }
@@ -38,4 +38,27 @@ test('failure preserves reached progress and exposes the error', async () => {
   assert.match($('task-progress-label').textContent, /disk full/);
   assert.equal(context.state.taskProgressActive, false);
   assert.ok(cleared());
+});
+
+
+test('concurrent task is rejected without disabling the active progress', async () => {
+  const { context } = fixture();
+  let finish;
+  const first = context.withLog('first', null, () => new Promise(resolve => { finish = resolve; }), 'first');
+  let invoked = false;
+  const second = await context.withLog('second', null, async () => { invoked = true; return { completed: 1, total: 1 }; }, 'second');
+  assert.equal(second, null);
+  assert.equal(invoked, false);
+  assert.equal(context.state.taskProgressActive, true);
+  finish({ completed: 1, total: 1 });
+  await first;
+  assert.equal(context.state.taskProgressActive, false);
+});
+
+test('batch blocker catches same stems across directories and extensions', () => {
+  const { context } = fixture();
+  context.basename = path => path.split(/[\\/]/).pop();
+  context.state.superresFiles = ['C:/one/Hero.png', 'C:/two/hero.jpg'];
+  vm.runInContext(source.slice(source.indexOf('function getRunBlocker('), source.indexOf('function reportRunBlocker(')), context);
+  assert.match(context.getRunBlocker('superres-anime'), /重名/);
 });

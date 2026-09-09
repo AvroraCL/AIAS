@@ -13,9 +13,9 @@ if not exist "%NODE_DIR%\node.exe" (
   pause & exit /b 1
 )
 
-netstat -ano | findstr ":5173" | findstr "LISTENING" >nul && echo [提示] 端口 5173 已被占用，若已有 dev 在跑请先关掉旧窗口。
+netstat -ano | findstr ":5183" | findstr "LISTENING" >nul && echo [提示] 端口 5183 已被占用，若已有 dev 在跑请先关掉旧窗口。
 
-echo [1/2] 启动前端 vite (127.0.0.1:5173)，窗口标题 AIAS-vite...
+echo [1/2] 启动前端 vite (127.0.0.1:5183)，窗口标题 AIAS-vite...
 start "AIAS-vite" cmd /k ""%NODE_DIR%\node.exe" node_modules\vite\bin\vite.js --host 127.0.0.1"
 
 echo [2/2] 启动 tauri dev（首次 debug 编译需几分钟，之后增量很快）...

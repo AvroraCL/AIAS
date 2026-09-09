@@ -1,6 +1,8 @@
 #![windows_subsystem = "windows"]
 
 mod anime;
+mod safety;
+mod material_maps;
 mod superres;
 mod updater;
 use updater::updater_check_mirror;
@@ -28,6 +30,8 @@ struct AppState {
 #[serde(rename_all = "camelCase")]
 struct Settings {
     auto_update: bool,
+    #[serde(default)]
+    material_maps: serde_json::Value,
     pbr_input_path: String,
     pbr_output_path: String,
     pbr_alpha: String,
@@ -72,6 +76,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             auto_update: false,
+            material_maps: serde_json::Value::Null,
             pbr_input_path: String::new(),
             pbr_output_path: String::new(),
             pbr_alpha: "black".into(),
@@ -403,6 +408,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             updater_check_mirror,
             settings_get,
+            material_maps::material_maps_preview,
+            material_maps::material_maps_generate,
             settings_set,
             texture_find_groups,
             texture_merge_pbr,
@@ -534,9 +541,12 @@ fn texture_find_groups(input_path: String) -> Result<Vec<TextureGroup>, String> 
 
 #[tauri::command]
 async fn texture_merge_pbr(app: AppHandle, options: MergePbrOptions) -> Result<TaskResult, String> {
-    tauri::async_runtime::spawn_blocking(move || texture_merge_pbr_inner(&app, options))
-        .await
-        .map_err(to_string_error)?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = safety::task_guard()?;
+        texture_merge_pbr_inner(&app, options)
+    })
+    .await
+    .map_err(to_string_error)?
 }
 
 fn texture_merge_pbr_inner(
@@ -590,15 +600,19 @@ fn texture_merge_pbr_inner(
 
 #[tauri::command]
 async fn texture_split_pbr(app: AppHandle, options: SplitPbrOptions) -> Result<TaskResult, String> {
-    tauri::async_runtime::spawn_blocking(move || texture_split_pbr_inner(&app, options))
-        .await
-        .map_err(to_string_error)?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = safety::task_guard()?;
+        texture_split_pbr_inner(&app, options)
+    })
+    .await
+    .map_err(to_string_error)?
 }
 
 fn texture_split_pbr_inner(
     app: &AppHandle,
     options: SplitPbrOptions,
 ) -> Result<TaskResult, String> {
+    safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let export_format = options.export_format.as_deref().unwrap_or("png");
     let export_alpha = options.export_alpha.unwrap_or(true);
@@ -697,9 +711,12 @@ async fn texture_create_mipmap(
     app: AppHandle,
     options: MipmapOptions,
 ) -> Result<TaskResult, String> {
-    tauri::async_runtime::spawn_blocking(move || texture_create_mipmap_inner(&app, options))
-        .await
-        .map_err(to_string_error)?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = safety::task_guard()?;
+        texture_create_mipmap_inner(&app, options)
+    })
+    .await
+    .map_err(to_string_error)?
 }
 
 fn texture_create_mipmap_inner(
@@ -714,6 +731,8 @@ fn texture_create_mipmap_inner(
     if options.intermediate {
         let input = image_exts().iter().map(|ext| Path::new(&options.input_path).join(format!("p0{ext}")))
             .find(|path| path.is_file()).ok_or("实验模式需要 p0 原图")?;
+        let (w, h) = image::image_dimensions(&input).map_err(to_string_error)?;
+        safety::memory_budget(w, h, 64)?;
         let base = prepare_image(&input, alpha, scale)?;
         let mut outputs = Vec::new();
         for (index, intermediate) in [false, true].into_iter().enumerate() {
@@ -779,15 +798,19 @@ async fn texture_convert_images_to_dds(
     app: AppHandle,
     options: ConvertImagesOptions,
 ) -> Result<TaskResult, String> {
-    tauri::async_runtime::spawn_blocking(move || texture_convert_images_to_dds_inner(&app, options))
-        .await
-        .map_err(to_string_error)?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = safety::task_guard()?;
+        texture_convert_images_to_dds_inner(&app, options)
+    })
+    .await
+    .map_err(to_string_error)?
 }
 
 fn texture_convert_images_to_dds_inner(
     app: &AppHandle,
     options: ConvertImagesOptions,
 ) -> Result<TaskResult, String> {
+    safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let alpha = options.alpha.as_deref().unwrap_or("keep");
     let format = options.format.as_deref().unwrap_or("DXT5");
@@ -965,6 +988,7 @@ fn anime_cutout_inner(
     app: Option<&AppHandle>,
     options: AnimeCutoutOptions,
 ) -> Result<TaskResult, String> {
+    safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let base = match app {
         Some(handle) => anime_base_dir(handle)?,
@@ -1082,10 +1106,13 @@ fn anime_cutout_inner(
                     let path = Path::new(&options.output_path).join(&actual);
                     // 同一输入重复运行时允许以最新结果覆盖旧的实际模型文件；若改名
                     // 失败必须返回错误，不能悄悄把旧文件当成本次的回退结果展示给前端。
-                    if path.exists() {
-                        std::fs::remove_file(&path).map_err(to_string_error)?;
-                    }
-                    std::fs::rename(&target, &path).map_err(to_string_error)?;
+                    safety::atomic_write(&path, |writer| {
+                        let mut source = fs::File::open(&target).map_err(to_string_error)?;
+                        std::io::copy(&mut source, writer).map_err(to_string_error)?;
+                        Ok(())
+                    })?;
+                    // The committed fallback result is valid even if cleanup fails.
+                    let _ = fs::remove_file(&target);
                     let fallback_label = anime::model_label(&outcome.model_used);
                     logs.push(format!(
                         "完成 {} → {}（ToonOut 在此复杂背景上失效，已自动改用 {}）",
@@ -1138,9 +1165,12 @@ fn anime_cutout_inner(
 
 #[tauri::command]
 async fn anime_cutout(app: AppHandle, options: AnimeCutoutOptions) -> Result<TaskResult, String> {
-    tauri::async_runtime::spawn_blocking(move || anime_cutout_inner(Some(&app), options))
-        .await
-        .map_err(to_string_error)?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = safety::task_guard()?;
+        anime_cutout_inner(Some(&app), options)
+    })
+    .await
+    .map_err(to_string_error)?
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,6 +1219,7 @@ fn superres_run_inner(
     app: Option<&AppHandle>,
     options: SuperResRunOptions,
 ) -> Result<TaskResult, String> {
+    safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let base = match app {
         Some(handle) => superres_base_dir(handle)?,
@@ -1312,7 +1343,10 @@ fn superres_run_inner(
 
 #[tauri::command]
 async fn superres_run(app: AppHandle, options: SuperResRunOptions) -> Result<TaskResult, String> {
-    tauri::async_runtime::spawn_blocking(move || superres_run_inner(Some(&app), options))
+    tauri::async_runtime::spawn_blocking(move || {
+        let _task = safety::task_guard()?;
+        superres_run_inner(Some(&app), options)
+    })
         .await
         .map_err(to_string_error)?
 }
@@ -1628,6 +1662,8 @@ fn apply_scale(image: RgbaImage, scale: &str) -> RgbaImage {
 }
 
 fn prepare_image(input: &Path, alpha: &str, scale: &str) -> Result<RgbaImage, String> {
+    let (w, h) = image::image_dimensions(input).map_err(to_string_error)?;
+    safety::memory_budget(w, h, 64)?;
     let mut image = apply_scale(
         image::open(input).map_err(to_string_error)?.to_rgba8(),
         scale,
@@ -1724,7 +1760,8 @@ fn encode_dds(image: &RgbaImage, format: &str) -> Result<Vec<u8>, String> {
 }
 
 fn write_dds(image: &RgbaImage, output: &Path, format: &str) -> Result<(), String> {
-    fs::write(output, encode_dds(image, format)?).map_err(to_string_error)
+    let bytes = encode_dds(image, format)?;
+    safety::atomic_write(output, |writer| { use std::io::Write; writer.write_all(&bytes).map_err(to_string_error) })
 }
 
 // Work in linear light with premultiplied alpha, avoiding gamma darkening
@@ -1794,7 +1831,8 @@ fn write_dds_with_mipmaps(images: &[RgbaImage], output: &Path, format: &str) -> 
             payload: encode_image_payload(image, format),
         })
         .collect::<Vec<_>>();
-    fs::write(output, build_dds(&levels, format)?).map_err(to_string_error)
+    let bytes = build_dds(&levels, format)?;
+    safety::atomic_write(output, |writer| { use std::io::Write; writer.write_all(&bytes).map_err(to_string_error) })
 }
 
 fn dds_to_image(dds_path: &Path) -> Result<DynamicImage, String> {
@@ -1831,15 +1869,8 @@ fn save_luma_image(
 }
 
 fn save_dynamic_image(image: &DynamicImage, output: PathBuf, format: &str) -> Result<(), String> {
-    if format.eq_ignore_ascii_case("tga") {
-        image
-            .save_with_format(output, image::ImageFormat::Tga)
-            .map_err(to_string_error)
-    } else {
-        image
-            .save_with_format(output, image::ImageFormat::Png)
-            .map_err(to_string_error)
-    }
+    let format = if format.eq_ignore_ascii_case("tga") { image::ImageFormat::Tga } else { image::ImageFormat::Png };
+    safety::atomic_write(&output, |writer| image.write_to(writer, format).map_err(to_string_error))
 }
 
 fn find_steam_path() -> Result<Option<PathBuf>, String> {

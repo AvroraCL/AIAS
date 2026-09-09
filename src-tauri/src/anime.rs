@@ -344,6 +344,8 @@ pub fn cutout_with_options(
     if recover_details && model_id != "anime-specialist" {
         return Err("高分辨率细节补全目前仅支持动漫专精（AnimeSeg）。".into());
     }
+    let (input_w, input_h) = image::image_dimensions(input).map_err(to_string_error)?;
+    crate::safety::memory_budget(input_w, input_h, 128)?;
     on_phase(0.02, "读取图片");
     let (rgb, icc_profile) = timed("1 decode+exif", || {
         use image::ImageDecoder as _;
@@ -485,12 +487,13 @@ pub fn cutout_with_options(
     on_phase(0.95, "写入文件");
     timed("7 save-png", || {
         use image::ImageEncoder as _;
-        let file = fs::File::create(output).map_err(to_string_error)?;
-        let mut encoder = image::codecs::png::PngEncoder::new(std::io::BufWriter::new(file));
+        crate::safety::atomic_write(output, |writer| {
+        let mut encoder = image::codecs::png::PngEncoder::new(writer);
         if let Some(profile) = icc_profile {
             encoder.set_icc_profile(profile).map_err(to_string_error)?;
         }
         encoder.write_image(result.as_raw(), w, h, image::ExtendedColorType::Rgba8).map_err(to_string_error)
+        })
     })?;
     on_phase(1.0, "完成");
 
