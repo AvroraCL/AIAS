@@ -3,6 +3,9 @@
 mod anime;
 mod safety;
 mod material_maps;
+mod model_bake;
+#[cfg(feature = "bake-validation")]
+mod bake_validation;
 mod superres;
 mod updater;
 use updater::updater_check_mirror;
@@ -32,6 +35,8 @@ struct Settings {
     auto_update: bool,
     #[serde(default)]
     material_maps: serde_json::Value,
+    #[serde(default)]
+    model_bake: serde_json::Value,
     pbr_input_path: String,
     pbr_output_path: String,
     pbr_alpha: String,
@@ -77,6 +82,7 @@ impl Default for Settings {
         Self {
             auto_update: false,
             material_maps: serde_json::Value::Null,
+            model_bake: serde_json::Value::Null,
             pbr_input_path: String::new(),
             pbr_output_path: String::new(),
             pbr_alpha: "black".into(),
@@ -386,6 +392,8 @@ fn main() {
                 .map_err(|error| format!("Cannot resolve app data directory: {error}"))?;
             let settings_path = app_data.join("settings.json");
             app.manage(AppState { settings_path });
+            #[cfg(feature = "bake-validation")]
+            if bake_validation::start(app.handle()) {return Ok(());}
 
             // Apply dark title bar on Windows 10/11
             #[cfg(target_os = "windows")]
@@ -410,6 +418,12 @@ fn main() {
             settings_get,
             material_maps::material_maps_preview,
             material_maps::material_maps_generate,
+            model_bake::bake_capabilities,
+            model_bake::bake_import,
+            model_bake::bake_inspect,
+            model_bake::bake_start,
+            model_bake::bake_cancel,
+            model_bake::bake_release,
             settings_set,
             texture_find_groups,
             texture_merge_pbr,

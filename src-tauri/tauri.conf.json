@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AIAS",
-  "version": "5.4.8",
+  "version": "5.4.9",
   "identifier": "studio.avroracl.aias",
   "build": {
     "beforeDevCommand": "npm run dev:renderer",
     "devUrl": "http://127.0.0.1:5183",
-    "beforeBuildCommand": "vite build",
+    "beforeBuildCommand": "node scripts/build-bake-worker.cjs && vite build",
     "frontendDist": "../dist/renderer"
   },
   "app": {
@@ -50,6 +50,8 @@
       "icons/icon.ico"
     ],
     "resources": {
+      "../build/bake/aias-bake-worker.exe": "bake/aias-bake-worker.exe",
+      "../build/bake/ao.dxil": "bake/ao.dxil",
       "target/release/WebView2Loader.dll": "."
     },
     "windows": {

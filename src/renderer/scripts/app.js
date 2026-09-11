@@ -1,5 +1,7 @@
 import { createMaterialMaps } from "./material-maps.js";
 let materialMapsUI;
+import { createModelBake } from "./model-bake.js";
+let modelBakeUI;
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -86,6 +88,7 @@ const animeModelCatalog = {
 
 const modeMeta = {
   "normal-map": { title: "生成法线图", description: "从素材高度变化生成法线贴图，支持可移动光照预览" },
+  "model-bake": { title: "模型烘焙", description: "检查模型 UV，使用 GPU 按材质烘焙 AO、UV 布局与材质 ID" },
   "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
   merge: { title: "PBR 多通道合成", description: "生成游戏可用的 _c 与 _n 通道贴图" },
   split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },
@@ -201,6 +204,7 @@ function getModeOutputPath(mode = state.activeMode) {
     "superres-anime": "superres-output",
     "superres-general": "superres-output",
     "normal-map": "map-output",
+    "model-bake": "bake-output",
     "height-map": "map-output",
     skins: "skin-path"
   };
@@ -790,7 +794,7 @@ function formatBytes(bytes) {
 
 const MONITOR_VALUE_ANIM_MS = 700;
 
-function setMonitorDonut(donutId, valueId, percent, labelOverride) {
+function setMonitorMeter(donutId, valueId, percent, labelOverride) {
   const donut = $(donutId);
   if (!donut) return;
   const clamped = Math.min(100, Math.max(0, Math.round(percent)));
@@ -801,7 +805,7 @@ function setMonitorDonut(donutId, valueId, percent, labelOverride) {
     label.textContent = labelOverride;
     return;
   }
-  // 数字与 CSS 弧线过渡同步缓动。
+  // 数字与 横条过渡同步缓动。
   const from = Number(label.dataset.usage || "0");
   label.dataset.usage = String(clamped);
   const startedAt = performance.now();
@@ -823,26 +827,26 @@ function updateMonitorTitle() {
 
 function renderSystemStats(stats) {
   if (!stats) return;
-  setMonitorDonut("monitor-cpu", "monitor-cpu-value", Number(stats.cpuUsage) || 0);
+  setMonitorMeter("monitor-cpu", "monitor-cpu-value", Number(stats.cpuUsage) || 0);
   const total = Number(stats.memoryTotal) || 0;
   const used = Number(stats.memoryUsed) || 0;
-  setMonitorDonut("monitor-memory", "monitor-memory-value", total > 0 ? (used / total) * 100 : 0);
+  setMonitorMeter("monitor-memory", "monitor-memory-value", total > 0 ? (used / total) * 100 : 0);
   monitorDetails.memory = total > 0 ? `内存：已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : "内存：读取中…";
   updateMonitorTitle();
 }
 
 function renderGpuStats(stats) {
   if (!stats?.available) {
-    setMonitorDonut("monitor-gpu", "monitor-gpu-value", 0, "--");
-    setMonitorDonut("monitor-vram", "monitor-vram-value", 0, "--");
+    setMonitorMeter("monitor-gpu", "monitor-gpu-value", 0, "--");
+    setMonitorMeter("monitor-vram", "monitor-vram-value", 0, "--");
     monitorDetails.gpu = "未检测到 GPU（需要 NVIDIA 驱动）";
     updateMonitorTitle();
     return;
   }
-  setMonitorDonut("monitor-gpu", "monitor-gpu-value", Number(stats.utilization) || 0);
+  setMonitorMeter("monitor-gpu", "monitor-gpu-value", Number(stats.utilization) || 0);
   const total = Number(stats.memoryTotal) || 0;
   const used = Number(stats.memoryUsed) || 0;
-  setMonitorDonut("monitor-vram", "monitor-vram-value", total > 0 ? (used / total) * 100 : 0);
+  setMonitorMeter("monitor-vram", "monitor-vram-value", total > 0 ? (used / total) * 100 : 0);
   monitorDetails.gpu =
     total > 0 ? `${stats.name} · 显存已用 ${formatBytes(used)} / 共 ${formatBytes(total)}` : stats.name;
   updateMonitorTitle();
@@ -1639,6 +1643,7 @@ function setActivityPanel(open) {
   const panel = $("activity-panel");
   if (!panel) return;
   panel.classList.toggle("collapsed", !open);
+  panel.querySelector(".activity-content").hidden = !open;
   $("activity-toggle")?.setAttribute("aria-expanded", String(open));
 }
 
@@ -1650,6 +1655,7 @@ function syncActiveLog(mode = state.activeMode) {
     "image-dds": "image-log",
     "anime-cutout": "anime-log",
     "normal-map": "material-maps-log",
+    "model-bake": "model-bake-log",
     "height-map": "material-maps-log",
     "superres-anime": "superres-log",
     "superres-general": "superres-log"
@@ -1978,6 +1984,7 @@ function updateRunButtons(mode) {
     "anime-cutout": "run-anime-cutout",
     "superres-anime": "run-superres-anime",
     "normal-map": "map-run",
+    "model-bake": "bake-run",
     "height-map": "map-run",
     "superres-general": "run-superres-general"
   };
@@ -2025,7 +2032,7 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general", "normal-map", "height-map"];
+  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general", "normal-map", "height-map", "model-bake"];
   const blocker = getRunBlocker(mode);
   const ready = runnableModes.includes(mode) && !blocker;
 
@@ -2050,6 +2057,7 @@ function updateStatus() {
     "anime-cutout": "run-anime-cutout",
     "superres-anime": "run-superres-anime",
     "normal-map": "map-run",
+    "model-bake": "bake-run",
     "height-map": "map-run",
     "superres-general": "run-superres-general"
   };
@@ -2076,6 +2084,8 @@ function getRunBlocker(mode) {
     stems.add(stem);
   }
   switch (mode) {
+    case "model-bake":
+      return modelBakeUI?.blocker() || null;
     case "normal-map":
     case "height-map":
       return materialMapsUI?.blocker() || null;
@@ -2157,6 +2167,7 @@ function applyMode(mode) {
     renderSuperresGallery();
   }
   materialMapsUI?.activate(mode);
+  modelBakeUI?.activate(mode);
   syncActiveLog(mode);
   updateRunButtons(mode);
   updateInspector();
@@ -2166,7 +2177,6 @@ function applyMode(mode) {
 
 function bindSidebar() {
   const shell = document.querySelector(".app-shell");
-  const edge = $("sidebar-edge");
   const toggle = $("sidebar-toggle");
   const compact = window.matchMedia("(max-width: 1120px)");
   let preference = localStorage.getItem("aias-sidebar");
@@ -2175,7 +2185,7 @@ function bindSidebar() {
     shell.classList.toggle("sidebar-collapsed", collapsed);
     toggle.setAttribute("aria-expanded", String(!collapsed));
     toggle.setAttribute("aria-label", collapsed ? "展开侧栏" : "收起侧栏");
-    edge.title = collapsed ? "点击展开侧栏" : "点击收起侧栏";
+    toggle.title = collapsed ? "展开侧栏" : "收起侧栏";
   };
   const change = (next) => {
     collapsed = next;
@@ -2184,8 +2194,8 @@ function bindSidebar() {
     closeCustomSelect();
     render();
   };
-  edge.addEventListener("click", () => change(!collapsed));
-  edge.addEventListener("keydown", (event) => {
+  toggle.addEventListener("click", () => change(!collapsed));
+  toggle.addEventListener("keydown", (event) => {
     if (!["Enter", " ", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     event.preventDefault();
     change(event.key === "ArrowLeft" ? true : event.key === "ArrowRight" ? false : !collapsed);
@@ -2720,6 +2730,10 @@ function bindDragDrop() {
       case "height-map":
         materialMapsUI?.addFiles(paths);
         break;
+      case "model-bake":
+        if (paths.length === 1) modelBakeUI?.importModel(paths[0]);
+        else addActivity("模型烘焙", "一次只能导入一个模型文件。", "error");
+        break;
       case "superres-anime":
       case "superres-general":
         state.superresFiles = [...new Set([...state.superresFiles, ...paths])];
@@ -2745,6 +2759,13 @@ async function init() {
     settings: state.settings.materialMaps, busy: () => state.taskProgressActive,
     save: async materialMaps => { state.settings = await api.settings.set({ materialMaps }); },
     withLog, notify: error => addActivity("材质生成", error, "error"),
+  });
+  modelBakeUI = createModelBake({
+    root: $("view-model-bake"), inspector: document.querySelector('.inspector-scroll'), runArea: document.querySelector('.run-area'),
+    desktop: isTauriRuntime, invoke, open, openPath, convertFileSrc, listen, syncSelect: syncCustomSelect,
+    settings: state.settings.modelBake, save: async modelBake => { state.settings = await api.settings.set({ modelBake }); },
+    busy: () => state.taskProgressActive, withLog, notify: error => addActivity("模型烘焙", String(error), "error"),
+    progress: (fraction, phase) => { if (state.taskProgressActive) setTaskProgress(0, 1, phase, Math.round(fraction * 100)); },
   });
   enhanceSelectMenus();
   refreshIcons();
@@ -2821,3 +2842,4 @@ async function init() {
 init();
 
 if (import.meta.hot) import.meta.hot.dispose(() => materialMapsUI?.dispose());
+if (import.meta.hot) import.meta.hot.dispose(() => modelBakeUI?.dispose());

@@ -10,6 +10,8 @@ venv/
 
 # Rust / Tauri
 src-tauri/target/
+bake-worker/target/
+tools/dxc/
 src-tauri/gen/
 
 # Node

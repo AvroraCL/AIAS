@@ -1,9 +1,12 @@
 [package]
 name = "aias"
-version = "5.4.8"
+version = "5.4.9"
 description = "AIAS texture processing toolbox"
 authors = ["AvroraCL"]
 edition = "2021"
+
+[features]
+bake-validation = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
