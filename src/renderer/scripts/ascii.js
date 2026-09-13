@@ -1,9 +1,9 @@
-import { DEFAULTS, restoreAsciiSettings, characterRamp, gridSize } from './ascii-state.mjs';
+import { DEFAULTS, restoreAsciiSettings, characterRamp, gridSize, detectTransparency } from './ascii-state.mjs';
 import './ascii.css';
 
 export function createAscii({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, syncSelect, busy, changed, notify }) {
   let config = restoreAsciiSettings(settings), source = null, sourceName = '', result = null;
-  let active = false, exporting = false, importing = false, computing = false, revision = 0, importRevision = 0;
+  let active = false, exporting = false, importing = false, computing = false, revision = 0, importRevision = 0, alphaAutoSwitch = false;
   let worker, timer, saveTimer, disposed = false, view = 'ascii', zoom = 1, saveChain = Promise.resolve();
   const font = '16px Consolas, "Courier New", monospace', lineHeight = 18;
   const measure = document.createElement('canvas').getContext('2d'); measure.font = font;
@@ -14,6 +14,9 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     <div class="ascii-toolbar ascii-bottom"><button id="ascii-copy" class="secondary-action" type="button" disabled>复制字符</button><span id="ascii-size"></span></div><p id="ascii-status" role="status"></p>`;
   const controls = document.createElement('div'); controls.className = 'ascii-controls'; controls.hidden = true;
   controls.innerHTML = `<section class="inspector-group" data-modes="ascii"><button class="group-toggle" type="button" aria-expanded="true"><span>字符效果</span><i data-lucide="chevron-down"></i></button><div class="group-content">
+    <label>风格<select id="ascii-style"><option value="ascii">字符画</option><option value="block">方块</option><option value="dot">波点</option></select></label>
+    <label id="ascii-shape-label" hidden>图形大小 <output id="ascii-shapeSize-value"></output><input id="ascii-shapeSize" type="range" min="20" max="100" step="1"></label>
+    <label id="ascii-ratio-label" hidden>长宽比 <output id="ascii-shapeRatio-value"></output><input id="ascii-shapeRatio" type="range" min="50" max="200" step="5"></label>
     <label>颜色模式<select id="ascii-color"><option value="false">黑白字符</option><option value="true">保留原图颜色</option></select></label>
     <label>字符密度 <output id="ascii-columns-value"></output><input id="ascii-columns" type="range" min="40" max="240" step="1"></label>
     <label>字符集<select id="ascii-charset"><option value="standard">标准</option><option value="detailed">详细</option><option value="custom">自定义</option></select></label>
@@ -32,20 +35,27 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   const exportActions = document.createElement('div');
   exportActions.className = 'ascii-export-actions'; exportActions.hidden = true;
   exportActions.append($('copy'), run); runArea.append(exportActions);
-  for (const key of ['columns', 'brightness', 'contrast']) $(key).closest('label').classList.add('ascii-range');
+  for (const key of ['columns', 'brightness', 'contrast', 'shapeSize', 'shapeRatio']) $(key).closest('label').classList.add('ascii-range');
   const status = text => { $('status').textContent = text; };
   function blocker() { return exporting ? '正在导出…' : importing ? '正在读取图片…' : computing ? '正在生成字符画…' : !result ? '请导入图片并生成有效预览。' : null; }
   function refresh() {
     const locked = exporting || importing;
+    const graphic = config.style !== 'ascii';
     for (const el of controls.querySelectorAll('input,select,button')) el.disabled = locked;
+    $('format').disabled = locked || graphic;
+    $('charset').disabled = locked || graphic;
+    $('custom').disabled = locked || graphic;
     controls.querySelectorAll('select').forEach(syncSelect);
     $('import').disabled = locked; $('empty-import').disabled = locked;
     $('clear').disabled = !source || locked;
-    $('copy').disabled = !result || computing || locked;
+    $('copy').disabled = !result || computing || locked || graphic;
     run.disabled = Boolean(blocker()) || busy();
     if (!exporting) run.querySelector('span').textContent = `导出 ${config.format.toUpperCase()}`;
-    $('custom-label').hidden = config.charset !== 'custom';
-    $('color-note').textContent = config.color ? '复制或导出 TXT 只保留字符，不包含颜色；请用 PNG 保存彩色效果。' : 'TXT 保留字符、空格与换行。';
+    $('custom-label').hidden = config.charset !== 'custom' || graphic;
+    $('shape-label').hidden = !graphic;
+    $('ratio-label').hidden = !graphic;
+    if (graphic) $('color-note').textContent = '方块与波点为图形风格，仅支持导出 PNG；字符复制不可用。';
+    else $('color-note').textContent = config.color ? '复制或导出 TXT 只保留字符，不包含颜色；请用 PNG 保存彩色效果。' : 'TXT 保留字符、空格与换行。';
     if (config.background === 'transparent') $('color-note').textContent += ' 透明背景仅保存在 PNG 中；棋盘格不会导出。';
     changed();
   }
@@ -72,6 +82,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     sizeCanvas(canvas, data);
     const ctx = canvas.getContext('2d');
     if (data.settings.background !== 'transparent') { ctx.fillStyle = data.settings.background; ctx.fillRect(0,0,canvas.width,canvas.height); }
+    if (data.settings.style === 'block' || data.settings.style === 'dot') { paintShapes(ctx, data); return; }
     ctx.font = font; ctx.textBaseline = 'top';
     if (!data.settings.color && data.settings.background !== 'transparent') {
       ctx.fillStyle = data.settings.background === 'black' ? '#ffffff' : '#000000';
@@ -86,6 +97,27 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
       }
     }
   }
+  // 方块/波点：每格按亮度映射图形尺寸（方块边长/圆点直径），颜色模式沿用原图 RGB。
+  // 长宽比按 sqrt 保面积拉伸：改变形状时视觉权重不跳变。
+  function paintShapes(ctx, data) {
+    const ink = data.settings.background === 'white' ? '#000000' : '#ffffff';
+    const transparent = data.settings.background === 'transparent';
+    const cell = Math.min(cellWidth, lineHeight) * (data.settings.shapeSize ?? 92) / 100;
+    const stretch = Math.sqrt((data.settings.shapeRatio ?? 100) / 100);
+    for (let i = 0; i < data.columns * data.rows; i++) {
+      const alpha = data.alphas[i] / 255;
+      if (transparent && alpha === 0) continue;
+      const size = (data.lights[i] / 255) * cell;
+      if (size <= 0) continue;
+      const w = size * stretch, h = size / stretch;
+      const x = (i % data.columns) * cellWidth, y = Math.floor(i / data.columns) * lineHeight;
+      ctx.fillStyle = data.settings.color ? `rgb(${data.colors[i*3]},${data.colors[i*3+1]},${data.colors[i*3+2]})` : ink;
+      ctx.globalAlpha = transparent ? alpha : 1;
+      if (data.settings.style === 'block') ctx.fillRect(x + (cellWidth - w) / 2, y + (lineHeight - h) / 2, w, h);
+      else { ctx.beginPath(); ctx.ellipse(x + cellWidth / 2, y + lineHeight / 2, w / 2, h / 2, 0, 0, Math.PI * 2); ctx.fill(); }
+    }
+    ctx.globalAlpha = 1;
+  }
   function fit() {
     const canvas = $('canvas'); if (canvas.hidden) return;
     const stage = $('stage');
@@ -94,6 +126,8 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   }
   function draw() {
     root.querySelectorAll('[data-ascii-view]').forEach(el => { const selected = el.dataset.asciiView === view; el.classList.toggle('selected', selected); el.setAttribute('aria-pressed', String(selected)); });
+    const viewButton = root.querySelector('[data-ascii-view="ascii"]');
+    if (viewButton) viewButton.textContent = { ascii: 'ASCII', block: '方块', dot: '波点' }[config.style] || 'ASCII';
     const canvas = $('canvas'); canvas.hidden = view === 'source' ? !source : !result;
     $('empty').hidden = Boolean(source);
     canvas.classList.toggle('ascii-transparent', view === 'source' || result?.settings.background === 'transparent');
@@ -105,7 +139,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   function request() {
     cancelCompute(); result = null; $('size').textContent = ''; draw();
     if (!source || !active) { refresh(); return; }
-    try { characterRamp(config); } catch (e) { status(e.message); refresh(); return; }
+    try { if (config.style === 'ascii') characterRamp(config); } catch (e) { status(e.message); refresh(); return; }
     computing = true; status('正在生成字符画…'); refresh();
     const current = revision, snapshot = { ...config };
     timer = setTimeout(() => {
@@ -129,7 +163,9 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
           worker.terminate(); worker = null; computing = false;
           result = { ...data.result, settings: snapshot };
           $('size').textContent = `${columns} 列 × ${rows} 行 · PNG ${Math.ceil(columns * cellWidth)} × ${rows * lineHeight}${columns !== snapshot.columns ? ' · 已按长图比例限制行数' : ''}`;
-          status('预览已更新'); draw(); refresh();
+          status(alphaAutoSwitch ? '已检测到透明通道，背景自动切换为透明底。' : '预览已更新');
+          alphaAutoSwitch = false;
+          draw(); refresh();
         };
         worker.postMessage({ revision: current, columns, rows, pixels, settings: snapshot }, [pixels.buffer]);
       } catch (e) { computing = false; status(`生成失败：${e.message || e}`); refresh(); }
@@ -148,6 +184,11 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
       const decoded = document.createElement('canvas'); decoded.width = Math.max(1, Math.round(bitmap.width * scale)); decoded.height = Math.max(1, Math.round(bitmap.height * scale));
       decoded.getContext('2d').drawImage(bitmap,0,0,decoded.width,decoded.height); bitmap.close();
       source = decoded; sourceName = typeof file === 'string' ? file.split(/[\\/]/).pop() : file.name;
+      // 带透明通道的素材（立绘/贴纸）不应被填充黑/白底：自动落到透明底，用户仍可手动改回。
+      alphaAutoSwitch = false;
+      if (detectTransparency(decoded.getContext('2d').getImageData(0, 0, decoded.width, decoded.height).data) && config.background !== 'transparent') {
+        config.background = 'transparent'; $('background').value = 'transparent'; persist(); alphaAutoSwitch = true;
+      }
       $('name').textContent = sourceName; $('import').textContent = '替换图片'; zoom = 1; $('zoom').value = 1;
       request();
     } catch (e) { status(`读取失败：${e.message || e}`); }
@@ -168,8 +209,12 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     const el = $(key);
     el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', () => {
       config[key] = el.type === 'checkbox' ? el.checked : key === 'color' ? el.value === 'true' : ['columns','brightness','contrast'].includes(key) ? Number(el.value) : el.value;
+      if (key === 'style' && config.style !== 'ascii' && config.format === 'txt') { config.format = 'png'; $('format').value = 'png'; }
       if ($(`${key}-value`)) $(`${key}-value`).textContent = config[key];
-      persist(); if (key !== 'format') request(); refresh();
+      persist();
+      // 图形大小/长宽比只影响绘制，直接重绘无需重新计算字符网格。
+      if (key === 'shapeSize' || key === 'shapeRatio') { if (result) result.settings = { ...config }; draw(); refresh(); return; }
+      if (key !== 'format') request(); refresh();
     });
   }
   $('reset').onclick = () => { config = { ...DEFAULTS }; sync(); persist(); request(); };
