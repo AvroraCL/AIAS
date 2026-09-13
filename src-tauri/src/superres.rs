@@ -146,17 +146,40 @@ fn sessions() -> &'static Mutex<Vec<(String, Session)>> {
     SLOT.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// 按 `"{model_id}:{use_gpu}"` 缓存键前缀过滤会话槽位：`keep` 为 `Some(prefix)`
+/// 时只保留该前缀的槽位，`None` 时清空。泛型仅为让过滤逻辑可脱离 ONNX 会话做
+/// 纯函数单测。
+fn retain_session_slots<V>(slots: &mut Vec<(String, V)>, keep: Option<&str>) {
+    slots.retain(|(model_id, _)| keep.is_some_and(|prefix| model_id.starts_with(prefix)));
+}
+
+/// 只保留指定超分模型的会话（GPU 与 CPU 两个槽位），释放其余——由
+/// `prune_sessions(SessionKeep::Superres(id))` 在超分入口调用，与抠图家族互斥。
+pub(crate) fn retain_session(id: &str) {
+    let prefix = format!("{id}:");
+    if let Ok(mut slots) = sessions().lock() {
+        retain_session_slots(&mut slots, Some(&prefix));
+    }
+}
+
+/// 释放全部超分会话——动漫家族任一推理入口经 `prune_sessions` 调用。
+pub(crate) fn release_all_sessions() {
+    if let Ok(mut slots) = sessions().lock() {
+        retain_session_slots(&mut slots, None);
+    }
+}
+
 fn release_session(id: &str) {
     // 缓存键为 "{id}:{use_gpu}"，按前缀同时释放 GPU 与 CPU 两个槽位。
     let prefix = format!("{id}:");
-    if let Ok(mut sessions) = sessions().lock() {
-        sessions.retain(|(model_id, _)| !model_id.starts_with(&prefix));
+    if let Ok(mut slots) = sessions().lock() {
+        slots.retain(|(model_id, _)| !model_id.starts_with(&prefix));
     }
 }
 
 /// 立绘/素材超分：模型固定 4x 推理（RGB 走分块推理；带 Alpha 的图把 Alpha
-/// 当灰度图再过一遍同一网络，保持硬边缘不糊），再按目标倍率 2–8 做 Lanczos
-/// 重采样——低于 4x 是高质量缩小，高于 4x 是插值放大（不新增细节）。
+/// 当灰度图再过一遍同一网络，保持硬边缘不糊），再按目标倍率 2–4 做 Lanczos
+/// 重采样——低于 4x 是高质量缩小。
 /// 输出固定为 `{原图名}_{倍率}x_{模型id}.png`。
 /// `on_progress(done_units, total_units)`：图块级进度回调（带 Alpha 的图
 /// RGB 与 Alpha 两遍推理，总量翻倍）。
@@ -168,19 +191,23 @@ pub fn upscale_with_progress(
     scale: u32,
     on_progress: &dyn Fn(usize, usize, &str),
 ) -> Result<(), String> {
-    let scale = scale.clamp(2, 8);
+    let scale = scale.clamp(2, 4);
     on_progress(0, 1, "正在准备推理运行库");
     crate::anime::ensure_ort_runtime(base)?;
     superres_spec(id)?;
+    // 与抠图家族跨功能互斥：清掉全部动漫会话，只保留当前超分模型的槽位
+    // （GPU/CPU 两个）；切换功能后首次推理重建会话，与动漫家族取舍一致。
+    crate::anime::prune_sessions(crate::anime::SessionKeep::Superres(id));
     let (input_w, input_h) = image::image_dimensions(input).map_err(crate::anime::to_string_error)?;
-    crate::safety::memory_budget(input_w, input_h, 128 + u64::from(scale * scale) * 4)?;
+    // 4x 中间缓冲（每像素 4 字节）+ 终图 + PNG 编码并存，按 8 字节/像素预留。
+    crate::safety::memory_budget(input_w, input_h, 128 + u64::from(scale * scale) * 8)?;
     on_progress(0, 1, "正在读取图片");
     let image = image::open(input)
         .map_err(crate::anime::to_string_error)?
         .to_rgba8();
     let (w, h) = image.dimensions();
-    // 中间产物是 4x，最终尺寸由 scale 决定，两者都不得超出安全上限。
-    let peak = w.max(h) as u64 * u64::from(scale.max(4));
+    // 中间产物固定 4x（不低于目标倍率），以 4x 尺寸作为峰值检查依据。
+    let peak = w.max(h) as u64 * 4;
     if peak > 16384 {
         return Err(format!(
             "图片过大（{scale}x 后约 {}x{}），请先缩小图片或降低倍率。",
@@ -449,5 +476,30 @@ mod tests {
         let error = retry_tiles(|_, _| { calls += 1; Err("out of memory".into()) }).unwrap_err();
         assert_eq!(calls, 4);
         assert!(error.contains("内存不足"));
+    }
+
+    #[test]
+    fn superres_slot_filter_keeps_only_requested_prefix_or_clears_all() {
+        fn make_slots(keys: &[&str]) -> Vec<(String, u8)> {
+            keys.iter().map(|key| (key.to_string(), 0_u8)).collect()
+        }
+        fn keys_of(slots: &[(String, u8)]) -> Vec<&str> {
+            slots.iter().map(|(key, _)| key.as_str()).collect()
+        }
+
+        // retain_session(id)：同模型的 GPU/CPU 两个槽位都保留，其它模型释放。
+        let mut slots = make_slots(&["anime:true", "general:false", "anime:false"]);
+        retain_session_slots(&mut slots, Some("anime:"));
+        assert_eq!(keys_of(&slots), ["anime:true", "anime:false"]);
+
+        // 换一个模型保留：旧前缀的槽位全部让位。
+        let mut slots = make_slots(&["anime:true", "general:false"]);
+        retain_session_slots(&mut slots, Some("general:"));
+        assert_eq!(keys_of(&slots), ["general:false"]);
+
+        // release_all_sessions()：跨功能切换时清空全部。
+        let mut slots = make_slots(&["anime:true", "general:false"]);
+        retain_session_slots(&mut slots, None);
+        assert!(slots.is_empty());
     }
 }

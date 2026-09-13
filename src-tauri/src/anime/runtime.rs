@@ -398,16 +398,18 @@ pub(crate) fn release_vitmatte_session() {
     }
 }
 
-/// 推理会话全局只保留当前在用的一套。这几组模型各自常驻 1-3GB 显存
-/// （BiRefNet 系 0.5-1GB 权重 + 大激活张量，RTMDet+精修是两个模型），
-/// 同时缓存多套会在切换模型时把显存挤爆：GPU OOM 转内存重试还可能
-/// 进一步耗尽主机内存，直接把进程带崩。每次推理前调用，保留 keep，
-/// 释放其余；切换模型后首次推理多花一次几秒的会话重建。
+/// 推理会话全局只保留当前在用的一套，且抠图与超分两族跨功能互斥。这几组模型
+/// 各自常驻 1-3GB 显存（BiRefNet 系 0.5-1GB 权重 + 大激活张量，RTMDet+精修是
+/// 两个模型，RealESRGAN 超分同样独立常驻一族），同时缓存多套会在切换模型或
+/// 功能时把显存挤爆：GPU OOM 转内存重试还可能进一步耗尽主机内存，直接把进程
+/// 带崩。每次推理前调用，保留 keep，释放其余；切换模型或功能后首次推理多花
+/// 一次几秒的会话重建。
 pub(crate) enum SessionKeep<'a> {
     Birefnet(&'a str),
     Simple,
     Advanced,
     VitMatte,
+    Superres(&'a str),
 }
 
 pub(crate) fn prune_sessions(keep: SessionKeep<'_>) {
@@ -432,6 +434,12 @@ pub(crate) fn prune_sessions(keep: SessionKeep<'_>) {
         if let Ok(mut slot) = vitmatte_slot().lock() {
             *slot = None;
         }
+    }
+    // 跨功能互斥的另一半：保留超分时按模型前缀只留当前槽位，其余情况全部清空。
+    // 此时本函数持有的动漫家族锁均已释放，与超分会话锁无嵌套，不会死锁。
+    match &keep {
+        SessionKeep::Superres(id) => crate::superres::retain_session(id),
+        _ => crate::superres::release_all_sessions(),
     }
 }
 

@@ -345,7 +345,10 @@ pub fn cutout_with_options(
         return Err("高分辨率细节补全目前仅支持动漫专精（AnimeSeg）。".into());
     }
     let (input_w, input_h) = image::image_dimensions(input).map_err(to_string_error)?;
-    crate::safety::memory_budget(input_w, input_h, 128)?;
+    // 128 B/px 只覆盖输入/输出张量；后处理 guided filter（f64 行和表 + 十余组
+    // f32 通道数组）+ 闭式求解 + PNG 编码叠加后，4K 实测峰值 2-3GB，按 256 B/px
+    // 预留，避免 16GB 机器误报内存不足或触发 swap。
+    crate::safety::memory_budget(input_w, input_h, 256)?;
     on_phase(0.02, "读取图片");
     let (rgb, icc_profile) = timed("1 decode+exif", || {
         use image::ImageDecoder as _;

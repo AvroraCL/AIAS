@@ -882,6 +882,8 @@ function createTauriApi() {
     system: {
       stats: () => invoke("system_stats")
     },
+    galleryThumbnail: (path) => invoke("gallery_thumbnail", { path }),
+    filesExist: (paths) => invoke("files_exist", { paths }),
     gpu: {
       stats: () => invoke("gpu_stats")
     },
@@ -1227,6 +1229,30 @@ function animeLocalSrc(path) {
   return isTauriRuntime && path ? convertFileSrc(path) : "";
 }
 
+// 后端用全局锁串行化解码全图；这里也逐个排队 invoke，批量渲染时不会一次性
+// 提交全部请求。生成失败时回退全图 src，由 WebView 自行解码（不比现状差）。
+let galleryThumbQueue = Promise.resolve();
+
+function requestGalleryThumbnail(img, container, path, fallbackSrc) {
+  if (!isTauriRuntime || !path) return;
+  container.classList.add("placeholder");
+  galleryThumbQueue = galleryThumbQueue
+    .then(() => api.galleryThumbnail(path))
+    .then((thumb) => {
+      const src = thumb ? convertFileSrc(thumb) : "";
+      if (!src && fallbackSrc) {
+        img.src = fallbackSrc;
+      } else if (src) {
+        img.src = src;
+      }
+      if (img.isConnected) container.classList.remove("placeholder");
+    })
+    .catch(() => {
+      if (img.isConnected && fallbackSrc) img.src = fallbackSrc;
+      container.classList.remove("placeholder");
+    });
+}
+
 function applyAnimeOutputs(paths, requestKeys = null) {
   // 输出文件路径固定不变，重跑后内容已更新；换时间戳强制 <img> 重新加载
   state.animeResultEpoch = Date.now();
@@ -1273,19 +1299,18 @@ function probeAnimeResult(file) {
       `${stem}_simple.png`
     );
   }
-  const probeNext = (index) => {
-    if (index >= candidates.length) return;
-    const candidate = `${dirTrimmed}/${candidates[index]}`;
-    const probe = new window.Image();
-    probe.onload = () => {
-      if ($("anime-output")?.value?.trim() !== dir || !state.animeFiles.includes(file) || state.animeResults.has(key)) return;
-      state.animeResults.set(key, candidate);
-      renderAnimeGallery();
-    };
-    probe.onerror = () => probeNext(index + 1);
-    probe.src = animeLocalSrc(candidate);
-  };
-  probeNext(0);
+  // 一次 invoke 批量探测全部候选，命中第一个存在的文件即可，不再逐个解码图片验证。
+  const paths = candidates.map((name) => `${dirTrimmed}/${name}`);
+  api.filesExist(paths).then((flags) => {
+    if ($("anime-output")?.value?.trim() !== dir || !state.animeFiles.includes(file) || state.animeResults.has(key)) return;
+    const index = flags.findIndex(Boolean);
+    if (index < 0) return;
+    state.animeResults.set(key, paths[index]);
+    renderAnimeGallery();
+  }).catch(() => {
+    // 探测调用本身失败（而非文件不存在）时允许下次渲染重试。
+    state.animeProbed.delete(key);
+  });
 }
 
 function renderAnimeGallery() {
@@ -1316,9 +1341,9 @@ function renderAnimeThumbs(files) {
     const img = document.createElement("img");
     img.alt = basename(file);
     img.draggable = false;
-    const src = animeLocalSrc(file);
-    if (src) {
-      img.src = src;
+    const fallbackSrc = animeLocalSrc(file);
+    if (fallbackSrc) {
+      requestGalleryThumbnail(img, thumb, file, fallbackSrc);
     } else {
       thumb.classList.add("placeholder");
     }
@@ -1616,16 +1641,18 @@ function probeSuperresResult(file, modelId) {
   state.superresProbed.add(key);
   const revision = state.superresPreviewRevision || 0;
   const candidate = `${dir.replace(/[\\/]+$/, "")}/${animeStem(file)}_${superresScale()}x_${modelId}.png`;
-  const probe = new window.Image();
-  probe.onload = () => {
+  api.filesExist([candidate]).then((flags) => {
     if ((state.superresPreviewRevision || 0) !== revision || $("superres-output")?.value?.trim() !== dir || !state.superresFiles.includes(file) || state.superresResults.has(key)) return;
-    state.superresResults.set(key, candidate);
-    renderSuperresGallery();
-  };
-  probe.onerror = () => {
+    if (flags[0]) {
+      state.superresResults.set(key, candidate);
+      renderSuperresGallery();
+    } else {
+      // 结果文件还没出现（任务可能正在运行），允许之后的渲染重新探测。
+      state.superresProbed.delete(key);
+    }
+  }).catch(() => {
     if ((state.superresPreviewRevision || 0) === revision) state.superresProbed.delete(key);
-  };
-  probe.src = superresLocalSrc(candidate);
+  });
 }
 
 function renderSuperresGallery() {
@@ -1658,10 +1685,11 @@ function renderSuperresGrid(files) {
     const animePath = state.superresResults.get(superresResultKey(file, "anime"));
     const generalPath = state.superresResults.get(superresResultKey(file, "general"));
     const resultPath = state.activeMode === "superres-anime" ? animePath : generalPath;
-    const preview = superresLocalSrc(resultPath || file);
+    const thumbPath = resultPath || file;
+    const fallback = superresLocalSrc(thumbPath);
     img.title = resultPath ? `${superresScale()}x ${superresLabels[state.activeMode === "superres-anime" ? "anime" : "general"]}结果` : "原图 · 当前模型和倍率尚无结果";
-    if (preview) {
-      img.src = preview;
+    if (fallback) {
+      requestGalleryThumbnail(img, card, thumbPath, fallback);
     } else {
       card.classList.add("placeholder");
     }

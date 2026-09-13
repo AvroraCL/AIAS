@@ -8,6 +8,7 @@ mod model_bake;
 #[cfg(feature = "bake-validation")]
 mod bake_validation;
 mod superres;
+mod thumbnail;
 mod updater;
 use updater::updater_check_mirror;
 
@@ -453,6 +454,8 @@ fn main() {
             skin_toggle,
             skin_delete,
             system_stats,
+            thumbnail::gallery_thumbnail,
+            thumbnail::files_exist,
             gpu_stats
         ])
         .run(tauri::generate_context!())
