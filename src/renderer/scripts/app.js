@@ -1,9 +1,11 @@
+import { createAscii } from "./ascii.js";
+let asciiUI;
 import { createMaterialMaps } from "./material-maps.js";
 let materialMapsUI;
 import { createModelBake } from "./model-bake.js";
 let modelBakeUI;
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
@@ -13,6 +15,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
   createIcons,
+  Box,
+  ListTree,
+  SlidersHorizontal,
+  Scan,
+  Eye,
   Layers3,
   Split,
   GalleryVerticalEnd,
@@ -87,6 +94,7 @@ const animeModelCatalog = {
 };
 
 const modeMeta = {
+  ascii: { title: "图片转 ASCII", description: "将图片转换为黑白或彩色字符画，实时预览并导出 TXT / PNG" },
   "normal-map": { title: "生成法线图", description: "从素材高度变化生成法线贴图，支持可移动光照预览" },
   "model-bake": { title: "模型烘焙", description: "检查模型 UV，使用 GPU 按材质烘焙 AO、UV 布局与材质 ID" },
   "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
@@ -132,6 +140,11 @@ const state = {
 };
 
 const iconSet = {
+  Box,
+  ListTree,
+  SlidersHorizontal,
+  Scan,
+  Eye,
   Layers3,
   Split,
   GalleryVerticalEnd,
@@ -1653,6 +1666,7 @@ function syncActiveLog(mode = state.activeMode) {
     split: "split-log",
     mipmap: "mipmap-log",
     "image-dds": "image-log",
+    ascii: "ascii-log",
     "anime-cutout": "anime-log",
     "normal-map": "material-maps-log",
     "model-bake": "model-bake-log",
@@ -1829,8 +1843,9 @@ function renderSkinList(items) {
 function setBusy(button, busy) {
   if (!button) return;
   const label = button.querySelector("span") || button;
+  if (busy && button.dataset.busy !== "true") button.dataset.originalText = label.textContent;
   button.dataset.busy = String(busy);
-  button.dataset.originalText ||= label.textContent;
+  button.setAttribute("aria-busy", String(busy));
   label.textContent = busy ? "处理中..." : button.dataset.originalText;
   button.classList.toggle("busy", busy);
   button.disabled = busy;
@@ -1859,7 +1874,8 @@ async function withLog(logId, button, action, title) {
   if (log) log.textContent = "";
   setActivityPanel(true);
   setText("activity-summary", `${title}运行中`);
-  setBusy(button, true);
+  const ownsButtonState = button?.dataset.busy !== "true";
+  if (ownsButtonState) setBusy(button, true);
   state.taskProgressActive = true;
   const panel = $("task-progress");
   if (panel) panel.dataset.status = "running";
@@ -1894,7 +1910,7 @@ async function withLog(logId, button, action, title) {
     clearInterval(elapsedTimer);
     updateElapsed();
     state.taskProgressActive = false;
-    setBusy(button, false);
+    if (ownsButtonState) setBusy(button, false);
     updateStatus();
   }
 }
@@ -1981,6 +1997,7 @@ function updateRunButtons(mode) {
     split: "run-split",
     mipmap: "run-mipmap",
     "image-dds": "run-image-dds",
+    ascii: "ascii-run",
     "anime-cutout": "run-anime-cutout",
     "superres-anime": "run-superres-anime",
     "normal-map": "map-run",
@@ -2032,7 +2049,7 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const runnableModes = ["merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general", "normal-map", "height-map", "model-bake"];
+  const runnableModes = ["ascii", "merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general", "normal-map", "height-map", "model-bake"];
   const blocker = getRunBlocker(mode);
   const ready = runnableModes.includes(mode) && !blocker;
 
@@ -2054,6 +2071,7 @@ function updateStatus() {
     split: "run-split",
     mipmap: "run-mipmap",
     "image-dds": "run-image-dds",
+    ascii: "ascii-run",
     "anime-cutout": "run-anime-cutout",
     "superres-anime": "run-superres-anime",
     "normal-map": "map-run",
@@ -2084,6 +2102,7 @@ function getRunBlocker(mode) {
     stems.add(stem);
   }
   switch (mode) {
+    case "ascii": return asciiUI?.blocker() || null;
     case "model-bake":
       return modelBakeUI?.blocker() || null;
     case "normal-map":
@@ -2150,10 +2169,13 @@ function applyMode(mode) {
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === viewId);
   });
-  // Settings & skins mode: hide inspector; expand to full width
-  const isFull = mode === "settings" || mode === "skins";
+  // Settings, skins and the model-bake viewport own their whole workspace.
+  const isFull = mode === "settings" || mode === "skins" || mode === "model-bake";
   const workspace = document.querySelector(".workspace");
-  if (workspace) workspace.classList.toggle("full-width", isFull);
+  if (workspace) {
+    workspace.classList.toggle("full-width", isFull);
+    workspace.classList.toggle("model-bake-workspace", mode === "model-bake");
+  }
   const inspector = document.querySelector(".inspector");
   if (inspector) inspector.classList.toggle("hidden", isFull);
   if (mode === "settings") syncSettingsView();
@@ -2166,6 +2188,7 @@ function applyMode(mode) {
     refreshSuperresModelStatus();
     renderSuperresGallery();
   }
+  asciiUI?.activate(mode);
   materialMapsUI?.activate(mode);
   modelBakeUI?.activate(mode);
   syncActiveLog(mode);
@@ -2445,8 +2468,27 @@ function bindFileControls() {
   });
 }
 
+function bindRunAction(id, action) {
+  const button = $(id);
+  let pending = false;
+  button?.addEventListener("click", async () => {
+    if (pending || button.disabled || state.taskProgressActive) return;
+    pending = true;
+    setBusy(button, true);
+    try {
+      await action(button);
+    } catch (error) {
+      addActivity("任务失败", error.message || String(error), "error");
+    } finally {
+      pending = false;
+      setBusy(button, false);
+      updateStatus();
+    }
+  });
+}
+
 function bindRunActions() {
-  $("run-merge")?.addEventListener("click", async (event) => {
+  bindRunAction("run-merge", async (button) => {
     await saveSettings();
     const blocker = getRunBlocker("merge");
     if (blocker) {
@@ -2456,7 +2498,7 @@ function bindRunActions() {
     addActivity("开始合成", $("pbr-input")?.value || "未选择输入目录");
     await withLog(
       "merge-log",
-      event.currentTarget,
+      button,
       () =>
         api.texture.mergePbr({
           inputPath: $("pbr-input").value,
@@ -2469,7 +2511,7 @@ function bindRunActions() {
     );
   });
 
-  $("run-split")?.addEventListener("click", async (event) => {
+  bindRunAction("run-split", async (button) => {
     await saveSettings();
     const blocker = getRunBlocker("split");
     if (blocker) {
@@ -2479,7 +2521,7 @@ function bindRunActions() {
     addActivity("开始拆分", `${state.splitFiles.length} 个 DDS 文件`);
     await withLog(
       "split-log",
-      event.currentTarget,
+      button,
       () =>
         api.texture.splitPbr({
           files: state.splitFiles,
@@ -2492,7 +2534,7 @@ function bindRunActions() {
     );
   });
 
-  $("run-mipmap")?.addEventListener("click", async (event) => {
+  bindRunAction("run-mipmap", async (button) => {
     await saveSettings();
     const blocker = getRunBlocker("mipmap");
     if (blocker) {
@@ -2502,7 +2544,7 @@ function bindRunActions() {
     addActivity("开始生成", $("mipmap-input")?.value || "未选择输入目录");
     await withLog(
       "mipmap-log",
-      event.currentTarget,
+      button,
       () =>
         api.texture.createMipmap({
           inputPath: $("mipmap-input").value,
@@ -2516,7 +2558,7 @@ function bindRunActions() {
     );
   });
 
-  $("run-image-dds")?.addEventListener("click", async (event) => {
+  bindRunAction("run-image-dds", async (button) => {
     await saveSettings();
     const blocker = getRunBlocker("image-dds");
     if (blocker) {
@@ -2526,7 +2568,7 @@ function bindRunActions() {
     addActivity("开始转换", `${state.imageFiles.length} 张图片`);
     await withLog(
       "image-log",
-      event.currentTarget,
+      button,
       () =>
         api.texture.convertImagesToDds({
           files: state.imageFiles,
@@ -2539,7 +2581,7 @@ function bindRunActions() {
     );
   });
 
-  $("run-anime-cutout")?.addEventListener("click", async (event) => {
+  bindRunAction("run-anime-cutout", async (button) => {
     await saveSettings();
     const blocker = getRunBlocker("anime-cutout");
     if (blocker) {
@@ -2558,7 +2600,7 @@ function bindRunActions() {
     renderAnimeModelStatus();
     const result = await withLog(
       "anime-log",
-      event.currentTarget,
+      button,
       () =>
         api.anime.cutout({
           files,
@@ -2575,12 +2617,12 @@ function bindRunActions() {
     refreshGpuRuntime();
   });
 
-  $("run-superres-anime")?.addEventListener("click", (event) => {
-    runSuperres("anime", event.currentTarget);
+  bindRunAction("run-superres-anime", (button) => {
+    return runSuperres("anime", button);
   });
 
-  $("run-superres-general")?.addEventListener("click", (event) => {
-    runSuperres("general", event.currentTarget);
+  bindRunAction("run-superres-general", (button) => {
+    return runSuperres("general", button);
   });
 
   $("superres-scale")?.addEventListener("input", () => {
@@ -2730,6 +2772,9 @@ function bindDragDrop() {
       case "height-map":
         materialMapsUI?.addFiles(paths);
         break;
+      case "ascii":
+        asciiUI?.addFiles(paths);
+        break;
       case "model-bake":
         if (paths.length === 1) modelBakeUI?.importModel(paths[0]);
         else addActivity("模型烘焙", "一次只能导入一个模型文件。", "error");
@@ -2753,6 +2798,13 @@ async function init() {
   refreshIcons();
   enhanceSelectMenus();
   applySettingsToForm();
+  asciiUI = createAscii({
+    root: $("view-ascii"), inspector: document.querySelector(".inspector-scroll"), runArea: document.querySelector(".run-area"),
+    desktop: isTauriRuntime, open, saveDialog, convertFileSrc, invoke, settings: state.settings.ascii,
+    save: async ascii => { state.settings = await api.settings.set({ ascii }); },
+    setBusy, syncSelect: syncCustomSelect, busy: () => state.taskProgressActive, changed: updateStatus,
+    notify: (message, tone) => addActivity("图片转 ASCII", message, tone),
+  });
   materialMapsUI = createMaterialMaps({
     root: $("view-material-maps"), desktop: isTauriRuntime, invoke, open, openPath,
     inspector: document.querySelector('.inspector-scroll'), runArea: document.querySelector('.run-area'), syncSelect: syncCustomSelect,

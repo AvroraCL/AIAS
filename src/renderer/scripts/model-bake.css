@@ -1,4 +1,152 @@
-.bake-toolbar,.bake-tabs{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.bake-toolbar{margin-bottom:16px}.bake-toolbar>span{font-size:12px;color:var(--text-dim)}.bake-layout{display:grid;grid-template-columns:170px minmax(0,1fr);gap:16px;min-height:480px}.bake-selection{border-right:1px solid var(--border);padding-right:12px;overflow:auto;max-height:580px}.bake-selection h3{font-size:12px;color:var(--text-dim);margin:16px 0 8px}.bake-select-row{display:flex;align-items:center;gap:6px;margin:4px 0}.bake-item{border:0;background:transparent;color:var(--text-dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;padding:7px 4px;flex:1;min-width:0}.bake-item.active{color:var(--text);background:var(--surface-hover);border-radius:6px}.bake-work{min-width:0}.bake-tabs{margin-bottom:10px}.bake-tabs .active{background:var(--surface-hover);color:var(--text)}#bake-stage{position:relative;height:430px;background:rgba(0,0,0,.14);border:1px solid var(--border);border-radius:10px;overflow:auto}#bake-three{height:100%;width:100%}#bake-three canvas{display:block;width:100%;height:100%}#bake-empty{position:absolute;top:45%;left:10%;right:10%;text-align:center;color:var(--text-dim);font-size:13px;pointer-events:none}#bake-uv-canvas{max-height:100%;max-width:100%;margin:auto;display:block}#bake-uv-canvas[hidden],#bake-three[hidden],#bake-results[hidden]{display:none}#bake-status,#bake-issues{font-size:12px;color:var(--text-dim);line-height:1.6;overflow-wrap:anywhere}#bake-issues{max-height:130px;overflow:auto}.bake-issue{display:block;border:0;background:none;color:#f58d9c;text-align:left;padding:3px 0;font-size:12px}.bake-controls small{color:var(--text-dim);font-size:11px;line-height:1.5}.bake-controls label:not(.toggle-label){display:grid;gap:7px;margin-bottom:12px;font-size:12px}.bake-controls input[type=number]{width:100%;box-sizing:border-box}.bake-controls .toggle-label{margin-bottom:12px}#bake-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:12px}.bake-result img{width:100%;aspect-ratio:1;object-fit:contain;background:repeating-conic-gradient(#222832 0 25%,#303642 0 50%) 0/16px 16px}.bake-result p{font-size:12px}.bake-result button{font-size:12px}#bake-cancel{width:100%;margin-top:8px}@media(max-width:1100px){.bake-layout{grid-template-columns:130px minmax(0,1fr);gap:10px}#bake-stage{height:390px}}
+.workspace.model-bake-workspace.full-width .canvas-area { overflow: hidden; padding: 0; }
+.model-bake-workspace #view-model-bake.active { display: block; width: 100%; height: 100%; max-width: none; margin: 0; }
 
-.bake-controls[hidden],#bake-cancel[hidden]{display:none!important}.bake-controls .toggle-label{display:flex;width:100%;box-sizing:border-box;gap:9px}
-.bake-select-row>input[type=checkbox]{width:15px;height:15px;min-height:0;padding:0;margin:0;flex:0 0 15px;accent-color:var(--accent)}
+.bake-workspace { position: relative; width: 100%; height: 100%; min-height: 0; overflow: hidden; color: var(--text); background: var(--bg); }
+.bake-viewport { position: absolute; inset: 0; overflow: hidden; background: var(--bg); }
+#bake-three { position: absolute; inset: 66px var(--bake-right) 92px var(--bake-left); }
+#bake-three canvas { display: block; width: 100%; height: 100%; outline: none; }
+
+.bake-overlay { position: absolute; z-index: 3; }
+.bake-viewport-header { top: 0; left: 0; right: 0; min-height: 52px; padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--surface); display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; pointer-events: auto; }
+.bake-header-actions, .bake-display-tools, .bake-view-tabs, .bake-run-actions { display: flex; align-items: center; gap: 7px; pointer-events: auto; }
+
+.bake-header-actions { min-width: 0; }
+.bake-model-info { overflow: hidden; color: var(--text-dim); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+
+.bake-floating-button { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-soft); background: var(--surface); font-size: 11px; line-height: 1; }
+.bake-floating-button:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
+.bake-floating-button.active { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
+.bake-floating-button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.bake-import-button { min-width: auto; padding-inline: 13px; border-color: var(--accent); color: #0d0d0f; background: var(--accent); }
+.bake-import-button:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
+
+.bake-view-tabs { justify-self: center; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.bake-view-tabs button { min-width: 54px; min-height: 28px; padding: 0 10px; border: 0; border-radius: calc(var(--radius) - 3px); color: var(--text-dim); background: transparent; font-size: 11px; }
+.bake-view-tabs button:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.bake-view-tabs button.active { color: var(--text); background: var(--surface-hover); }
+
+.bake-float-panel { position: absolute; z-index: 4; top: 68px; bottom: 90px; display: flex; flex-direction: column; width: 226px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: none; }
+.bake-outliner-panel { left: 16px; bottom: auto; max-height: calc(100% - 158px); }
+.bake-settings-panel { right: 16px; width: 292px; }
+.bake-float-panel[hidden] { display: none; }
+.bake-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 42px; padding: 0 9px 0 14px; border-bottom: 1px solid var(--border); }
+.bake-panel-heading h2 { margin: 0; font-size: 12px; font-weight: 650; }
+.bake-panel-close { width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; }
+.bake-panel-scroll { min-height: 0; overflow: auto; padding: 7px 10px 13px; scrollbar-gutter: stable; }
+.bake-outliner-section + .bake-outliner-section { margin-top: 16px; padding-top: 15px; border-top: 1px solid var(--border); }
+.bake-outliner-section h3, .bake-control-section h3 { margin: 0 0 8px; color: var(--text-dim); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+.bake-select-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.bake-select-row > input[type=checkbox] { width: 15px; height: 15px; min-height: 0; padding: 0; margin: 0; flex: 0 0 15px; accent-color: var(--accent); }
+.bake-item { flex: 1; min-width: 0; overflow: hidden; padding: 7px 6px; border: 0; border-radius: 5px; color: var(--text-soft); background: transparent; font-size: 12px; text-align: left; white-space: nowrap; text-overflow: ellipsis; }
+.bake-item:hover:not(:disabled), .bake-item.active { color: var(--text); background: var(--surface-hover); }
+
+.bake-control-section { padding: 12px 3px 16px; border-bottom: 1px solid var(--border); }
+.bake-control-section:last-child { border-bottom: 0; padding-bottom: 3px; }
+.bake-control-section small { display: block; color: var(--text-dim); font-size: 10px; line-height: 1.55; }
+.bake-control-section > p { margin: 0 0 10px; color: var(--text-soft); font-size: 11px; line-height: 1.45; }
+.bake-control-section label:not(.toggle-label) { display: grid; gap: 6px; margin-bottom: 10px; color: var(--text-dim); font-size: 11px; }
+.bake-control-section input[type=number] { width: 100%; box-sizing: border-box; }
+.bake-control-section .toggle-label { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; margin: 0 0 9px; font-size: 11px; }
+.bake-control-section .field-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.bake-control-section .field-row input { min-width: 0; }
+.bake-control-section .output-action { width: 100%; margin-top: 7px; }
+
+.bake-status-panel { display: grid; gap: 3px; min-width: 0; color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+#bake-status:empty { display: none; }
+#bake-issues { max-height: 104px; margin-top: 5px; overflow: auto; }
+#bake-issues[hidden] { display: none; }
+#bake-issues p { margin: 0 0 3px; color: #e57373; }
+.bake-issue { display: block; width: 100%; padding: 3px 0; border: 0; color: #e57373; background: transparent; font-size: 10px; text-align: left; }
+.bake-issue:hover { color: var(--text); text-decoration: underline; }
+
+.bake-run-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.bake-run-actions .run-button { width: auto; min-height: 36px; padding: 0 15px; border-radius: var(--radius); }
+.bake-run-actions #bake-cancel { min-height: 36px; padding-inline: 13px; }
+.bake-run-actions #bake-cancel[hidden] { display: none; }
+
+#bake-empty { position: absolute; inset: 52px 0 78px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; color: var(--text-dim); text-align: center; }
+#bake-empty[hidden] { display: none; }
+#bake-empty h2 { margin: 12px 0 8px; color: var(--text); font-size: 25px; font-weight: 600; }
+#bake-empty p { margin: 0 0 24px; font-size: 13px; }
+#bake-empty small { margin-top: 14px; font-size: 11px; }
+.bake-empty-glyph { display: grid; place-items: center; width: 68px; height: 68px; margin-bottom: 22px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface-raised); color: var(--text-soft); }
+.bake-empty-glyph svg { width: 32px; height: 32px; }
+.bake-eyebrow { font-size: 10px; letter-spacing: .18em; }
+.bake-entry-steps { display: flex; gap: 30px; margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--border); font-size: 11px; }
+#bake-uv-canvas { position: absolute; z-index: 2; left: var(--bake-left); right: var(--bake-right); top: 112px; bottom: 100px; margin: auto; max-width: calc(100% - var(--bake-left) - var(--bake-right) - 24px); max-height: calc(100% - 212px); object-fit: contain; border: 1px solid var(--border); background: var(--bg-deep); }
+#bake-uv-canvas[hidden], #bake-three[hidden], #bake-results[hidden] { display: none; }
+#bake-results { position: absolute; z-index: 2; inset: 68px 16px 92px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 220px)); align-content: start; justify-content: center; gap: 13px; overflow: auto; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: none; }
+.bake-result { padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.bake-result img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: repeating-conic-gradient(#232428 0 25%, #1a1b1e 0 50%) 0/16px 16px; }
+.bake-result p { margin: 8px 0; color: var(--text-soft); font-size: 11px; }
+.bake-result button { width: 100%; font-size: 11px; }
+.bake-results-empty { grid-column: 1 / -1; margin: 28px; color: var(--text-dim); font-size: 12px; text-align: center; }
+
+
+/* The viewport stays full size; only its interactive content avoids open panels. */
+.bake-workspace { --bake-left: 68px; --bake-right: 16px; }
+.bake-workspace.outliner-open { --bake-left: 258px; }
+.bake-workspace.settings-open { --bake-right: 324px; }
+.bake-panel-switches { display: flex; gap: 6px; }
+.bake-floating-button { gap: 6px; border-radius: 6px; }
+.bake-floating-button svg { width: 15px; height: 15px; }
+.bake-import-button { background: var(--surface-raised); color: var(--text-soft); border-color: var(--border-strong); }
+.bake-import-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+.bake-floating-button.active, .bake-view-tabs button.active { background: var(--surface-hover); box-shadow: inset 0 -2px var(--text-soft); }
+.bake-display-tools { position: absolute; z-index: 6; top: 68px; left: var(--bake-left); display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; }
+.bake-display-tools[hidden] { display: none; }
+.bake-display-tools > button { border-color: transparent; }
+.bake-display-menu { position: relative; }
+.bake-display-menu summary { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; cursor: pointer; font-size: 11px; list-style: none; }
+.bake-display-menu svg { width: 15px; height: 15px; }
+.bake-display-menu > div { position: absolute; top: 40px; left: 0; display: grid; min-width: 130px; padding: 6px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 8px; }
+.bake-display-menu button { text-align: left; padding: 8px 12px; border: 0; background: transparent; }
+.bake-display-menu button[aria-pressed=true]::after { content: '✓'; float: right; }
+.bake-display-menu button:hover { background: var(--surface-hover); }
+.bake-viewport-note { position: absolute; bottom: 88px; left: var(--bake-left); right: var(--bake-right); text-align: center; color: var(--text-dim); font-size: 10px; pointer-events: none; }
+.bake-list-actions { display: flex; gap: 8px; margin: 4px 0; }
+.bake-list-actions button { border: 0; padding: 4px 0; color: var(--text-dim); background: transparent; font-size: 10px; }
+.bake-list-actions button:hover { color: var(--text); }
+.bake-list-note { display: block; color: var(--text-dim); font-size: 10px; margin-bottom: 8px; }
+.bake-outliner-section h3 { display: flex; justify-content: space-between; }
+.bake-panel-heading { flex-shrink: 0; }
+.bake-panel-scroll { scrollbar-gutter: auto; padding: 10px 14px; }
+.bake-control-section h3 { color: var(--text-soft); letter-spacing: .04em; font-size: 11px; }
+.bake-control-section { padding: 14px 0; }
+.bake-control-section .toggle-label { min-height: 30px; }
+.bake-control-section label:not(.toggle-label) { font-size: 11px; }
+.bake-presets { display: grid; grid-template-columns: repeat(3,1fr); gap: 4px; margin-bottom: 12px; }
+.bake-presets button { padding: 7px; font-size: 11px; }
+.bake-presets button[aria-pressed=true] { border-color: var(--text-dim); background: var(--surface-hover); color: var(--text); }
+.bake-advanced summary { padding: 16px 0; cursor: pointer; color: var(--text-dim); font-size: 11px; }
+.bake-footer { position: absolute; z-index: 8; bottom: 0; left: 0; right: 0; min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 18px; background: var(--surface); border-top: 1px solid var(--border); }
+#bake-readiness { color: var(--text-soft); font-size: 12px; }
+#bake-status { max-width: 65ch; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+#bake-progress { width: min(360px,100%); height: 5px; accent-color: var(--accent); }
+#bake-issues { margin-top: 12px; max-height: 180px; }
+.bake-result-preview { display: block; padding: 0; overflow: hidden; }
+.bake-result > button { margin-top: 6px; }
+.bake-image-dialog { width: min(900px,90vw); max-height: 90vh; padding: 16px; border: 1px solid var(--border-strong); border-radius: 12px; color: var(--text); background: var(--surface); }
+.bake-image-dialog::backdrop { background: var(--bg-deep); opacity: .85; }
+.bake-image-dialog img { display: block; max-width: 100%; max-height: 75vh; margin: 12px auto 0; object-fit: contain; }
+.bake-image-dialog button { display: block; margin-left: auto; padding: 8px 16px; }
+@container bake (max-width: 900px) {
+  .bake-workspace { --bake-left: 16px; }
+  .bake-workspace.outliner-open { --bake-left: 258px; }
+  .bake-workspace.settings-open { --bake-right: 308px; }
+  .bake-viewport-header { grid-template-columns: auto 1fr auto; gap: 8px; padding-inline: 10px; }
+  .bake-model-info { display: none; }
+  .bake-panel-switches button { font-size: 0; gap: 0; }
+  .bake-panel-switches svg { width: 16px; height: 16px; }
+  .bake-settings-panel { right: 8px; }
+}
+@container bake (max-width: 600px) {
+  .bake-workspace.settings-open, .bake-workspace.outliner-open { --bake-left: 16px; --bake-right: 16px; }
+  .bake-float-panel { z-index: 7; width: min(292px,calc(100% - 32px)); top: 118px; bottom: 92px; max-height: calc(100% - 210px); }
+  .bake-entry-steps { gap: 12px; flex-wrap: wrap; }
+  .bake-view-tabs button { min-width: 38px; padding: 0 6px; }
+  .bake-footer { gap: 10px; }
+  .bake-status-panel { max-width: calc(100% - 120px); }
+  .bake-run-actions { flex-wrap: wrap; justify-content: end; }
+}
+#view-model-bake { container: bake / inline-size; }

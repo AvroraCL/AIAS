@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod anime;
+mod ascii;
 mod safety;
 mod material_maps;
 mod model_bake;
@@ -35,6 +36,8 @@ struct Settings {
     auto_update: bool,
     #[serde(default)]
     material_maps: serde_json::Value,
+    #[serde(default)]
+    ascii: serde_json::Value,
     #[serde(default)]
     model_bake: serde_json::Value,
     pbr_input_path: String,
@@ -82,6 +85,7 @@ impl Default for Settings {
         Self {
             auto_update: false,
             material_maps: serde_json::Value::Null,
+            ascii: serde_json::Value::Null,
             model_bake: serde_json::Value::Null,
             pbr_input_path: String::new(),
             pbr_output_path: String::new(),
@@ -416,6 +420,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             updater_check_mirror,
             settings_get,
+            ascii::ascii_export,
             material_maps::material_maps_preview,
             material_maps::material_maps_generate,
             model_bake::bake_capabilities,

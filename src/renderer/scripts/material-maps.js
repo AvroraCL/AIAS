@@ -184,7 +184,7 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
     $('map-output').value = stored[kind].outputPath;
     $('map-title').textContent = '材质贴图';
     $('map-also-label').hidden = kind !== 'normal';
-    $('map-run').innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg><span>${kind === 'normal' ? '生成法线图' : '生成高度图'}</span>`; updateRun();
+    if ($('map-run').dataset.busy !== 'true') $('map-run').innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg><span>${kind === 'normal' ? '生成法线图' : '生成高度图'}</span>`; updateRun();
   }
   for (const key of Object.keys(parameters())) {
     const control = $(`map-${key}`);
@@ -221,8 +221,10 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
     const options = { files: [...files], kind, outputPath: stored[kind].outputPath, parameters: structuredClone(parameters()) };
     exporting = true; updateRun();
     try {
-      await queue.settle();
-      const result = await withLog('material-maps-log', $('map-run'), () => invoke('material_maps_generate', { options }), kind === 'normal' ? '生成法线图' : '生成高度图');
+      const result = await withLog('material-maps-log', $('map-run'), async () => {
+        await queue.settle();
+        return invoke('material_maps_generate', { options });
+      }, kind === 'normal' ? '生成法线图' : '生成高度图');
       $('map-export-status').textContent = result ? `成功 ${result.completed}/${result.total} 张素材 · 输出 ${result.outputs?.length || 0} 个文件` : '生成失败或任务忙，请查看活动日志。';
     } catch (error) { $('map-export-status').textContent = message(error); notify(message(error)); }
     finally { exporting = false; syncControls(); requestPreview(); }
