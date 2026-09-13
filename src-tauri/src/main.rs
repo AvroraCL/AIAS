@@ -1261,7 +1261,7 @@ fn superres_run_inner(
     });
     let mut outputs = Vec::new();
     let mut completed = 0usize;
-    let scale = options.scale.unwrap_or(4).clamp(2, 8);
+    let scale = options.scale.unwrap_or(4).clamp(2, 4);
 
     for (file_index, file) in options.files.iter().enumerate() {
         let input = Path::new(file);
@@ -2334,25 +2334,26 @@ mod tests {
             .to_rgba8();
         assert_eq!(opaque.pixels().filter(|p| p[3] == 255).count(), (1200 * 384) as usize, "opaque input must stay fully opaque");
 
-        // 非原生倍率：2x 在 4x 结果上缩小，8x 插值放大；输出名与尺寸都带倍率。
-        for scale in [2_u32, 6, 8] {
+        // 非原生倍率：2x 在 4x 结果上缩小；超范围倍率（旧配置可能存过 6/8）在
+        // 命令层 clamp 到 4，输出名与内容都用实际倍率。
+        for (requested, effective) in [(2_u32, 2_u32), (6, 4), (8, 4)] {
             let result = superres_run_inner(
                 None,
                 SuperResRunOptions {
                     files: vec![path_to_string(&input)],
                     output_path: path_to_string(&output_dir),
                     model: "anime".into(),
-                    scale: Some(scale),
+                    scale: Some(requested),
                 },
             )
-            .unwrap_or_else(|error| panic!("scale {scale}: {error}"));
+            .unwrap_or_else(|error| panic!("scale {requested}: {error}"));
             assert_eq!(result.completed, 1);
-            let saved = output_dir.join(superres_output_name("aias_superres_input", "anime", scale));
-            let image = image::open(&saved).unwrap_or_else(|error| panic!("scale {scale}: {error}"));
+            let saved = output_dir.join(superres_output_name("aias_superres_input", "anime", effective));
+            let image = image::open(&saved).unwrap_or_else(|error| panic!("scale {requested}: {error}"));
             assert_eq!(
                 (image.width(), image.height()),
-                (300 * scale, 96 * scale),
-                "{scale}x output size"
+                (300 * effective, 96 * effective),
+                "{requested}x requested → {effective}x output size"
             );
         }
     }

@@ -454,6 +454,10 @@ pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, Strin
         .map_err(to_string_error)?
         .with_intra_threads(threads)
         .map_err(to_string_error)?;
+    // CPU 中间张量默认驻留 BFC arena：涨到该会话的峰值后永不归还系统，表现为
+    // 推理结束后内存不回落。关掉后每次推理结束即归还 OS，代价是少量 malloc/free
+    // 开销（会话输入形状固定，中间张量少而大，开销可忽略）。
+    let cpu = ort::ep::CPU::default().with_arena_allocator(false).build();
     // 仅当 ONNX Runtime 确实编译了 CUDA EP 时才注册；CPU 版运行库注册只会静默回退并掩盖真实状态。
     if use_gpu && cuda_ep_compiled() {
         // Arena 按需扩展、cuDNN 改启发式搜索并限制 workspace：BiRefNet 官方 fp32
@@ -466,7 +470,11 @@ pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, Strin
             .build();
         // CUDA EP 注册失败时 ONNX Runtime 仍会静默回退 CPU（error_on_failure 默认 false）。
         builder = builder
-            .with_execution_providers([cuda])
+            .with_execution_providers([cuda, cpu])
+            .map_err(to_string_error)?;
+    } else {
+        builder = builder
+            .with_execution_providers([cpu])
             .map_err(to_string_error)?;
     }
     builder
