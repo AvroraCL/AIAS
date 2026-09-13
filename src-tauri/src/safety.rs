@@ -34,6 +34,19 @@ pub(crate) fn atomic_write(path: &Path, write: impl FnOnce(&mut BufWriter<&mut s
     Ok(())
 }
 
+/// spawn 子进程时不弹出控制台窗口：GUI 应用里 curl、tar、reg、nvidia-smi
+/// 这类命令行工具每次调用都会闪一个黑色控制台框。
+pub(crate) fn quiet_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
+
 pub(crate) fn memory_budget(w: u32, h: u32, bytes_per_pixel: u64) -> Result<(), String> {
     let system = sysinfo::System::new_with_specifics(sysinfo::RefreshKind::nothing().with_memory(sysinfo::MemoryRefreshKind::everything()));
     check_memory_budget(w, h, bytes_per_pixel, system.available_memory())

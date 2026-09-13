@@ -13,8 +13,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     <div id="ascii-stage" class="ascii-stage" aria-label="ASCII 图片预览及拖放区域"><div id="ascii-empty"><strong>让图片变成字符画</strong><p>选择或拖入一张图片，实时调整字符与色彩。</p><button id="ascii-empty-import" class="secondary-action" type="button">选择图片</button></div><canvas id="ascii-canvas" hidden aria-label="ASCII 预览"></canvas></div>
     <div class="ascii-toolbar ascii-bottom"><button id="ascii-copy" class="secondary-action" type="button" disabled>复制字符</button><span id="ascii-size"></span></div><p id="ascii-status" role="status"></p>`;
   const controls = document.createElement('div'); controls.className = 'ascii-controls'; controls.hidden = true;
-  controls.innerHTML = `<section class="inspector-group" data-modes="ascii"><button class="group-toggle" type="button" aria-expanded="true"><span>字符效果</span><i data-lucide="chevron-down"></i></button><div class="group-content">
-    <label>风格<select id="ascii-style"><option value="ascii">字符画</option><option value="block">方块</option><option value="dot">波点</option></select></label>
+  controls.innerHTML = `<section class="inspector-group" data-modes="ascii ascii-block ascii-dot"><button class="group-toggle" type="button" aria-expanded="true"><span>字符效果</span><i data-lucide="chevron-down"></i></button><div class="group-content">
     <label id="ascii-shape-label" hidden>图形大小 <output id="ascii-shapeSize-value"></output><input id="ascii-shapeSize" type="range" min="20" max="100" step="1"></label>
     <label id="ascii-ratio-label" hidden>长宽比 <output id="ascii-shapeRatio-value"></output><input id="ascii-shapeRatio" type="range" min="50" max="200" step="5"></label>
     <label>颜色模式<select id="ascii-color"><option value="false">黑白字符</option><option value="true">保留原图颜色</option></select></label>
@@ -26,7 +25,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     <label class="ascii-check"><input id="ascii-invert" type="checkbox">反相</label>
     <label>背景<select id="ascii-background"><option value="black">黑底</option><option value="white">白底</option><option value="transparent">透明底（PNG）</option></select></label>
     <button id="ascii-reset" class="secondary-action" type="button">恢复默认</button></div></section>
-    <section class="inspector-group" data-modes="ascii"><button class="group-toggle" type="button" aria-expanded="true"><span>导出设置</span><i data-lucide="chevron-down"></i></button><div class="group-content"><label>文件格式<select id="ascii-format"><option value="txt">TXT · 纯文本</option><option value="png">PNG · 字符图片</option></select></label><small id="ascii-color-note">TXT 保留字符、空格与换行。</small><small>导出使用完整字符网格，不受预览缩放影响。</small></div></section>`;
+    <section class="inspector-group" data-modes="ascii ascii-block ascii-dot"><button class="group-toggle" type="button" aria-expanded="true"><span>导出设置</span><i data-lucide="chevron-down"></i></button><div class="group-content"><label>文件格式<select id="ascii-format"><option value="txt">TXT · 纯文本</option><option value="png">PNG · 字符图片</option></select></label><small id="ascii-color-note">TXT 保留字符、空格与换行。</small><small>导出使用完整字符网格，不受预览缩放影响。</small></div></section>`;
   inspector.append(controls);
   for (const el of controls.querySelectorAll('select,input')) el.setAttribute('aria-label', el.type === 'checkbox' ? '反相' : el.closest('label').firstChild.textContent.trim());
   const run = document.createElement('button'); run.id = 'ascii-run'; run.type = 'button'; run.className = 'run-button hidden'; run.innerHTML = '<span>导出 TXT</span>'; runArea.append(run);
@@ -162,6 +161,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
           if (data.error) { fail(data.error); return; }
           worker.terminate(); worker = null; computing = false;
           result = { ...data.result, settings: snapshot };
+          result.charSource = snapshot.style === 'ascii' ? 'ascii' : 'graphic';
           $('size').textContent = `${columns} 列 × ${rows} 行 · PNG ${Math.ceil(columns * cellWidth)} × ${rows * lineHeight}${columns !== snapshot.columns ? ' · 已按长图比例限制行数' : ''}`;
           status(alphaAutoSwitch ? '已检测到透明通道，背景自动切换为透明底。' : '预览已更新');
           alphaAutoSwitch = false;
@@ -207,9 +207,9 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   $('clear').onclick = () => { if (exporting || importing) return; cancelCompute(); source = result = null; sourceName = ''; $('name').textContent = 'PNG · JPG · WebP'; $('size').textContent = ''; $('import').textContent = '选择图片'; status(''); draw(); refresh(); };
   for (const key of Object.keys(config)) {
     const el = $(key);
+    if (!el) continue; // style 由所在功能模式决定，不在检查器中
     el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', () => {
       config[key] = el.type === 'checkbox' ? el.checked : key === 'color' ? el.value === 'true' : ['columns','brightness','contrast'].includes(key) ? Number(el.value) : el.value;
-      if (key === 'style' && config.style !== 'ascii' && config.format === 'txt') { config.format = 'png'; $('format').value = 'png'; }
       if ($(`${key}-value`)) $(`${key}-value`).textContent = config[key];
       persist();
       // 图形大小/长宽比只影响绘制，直接重绘无需重新计算字符网格。
@@ -251,7 +251,24 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   sync();
   return {
     blocker,
-    activate(mode) { active = mode === 'ascii'; controls.hidden = !active; exportActions.hidden = !active; if (active) request(); else { ++importRevision; cancelCompute(); } },
+    // 风格化三个入口（ascii/ascii-block/ascii-dot）共用本模块与素材，切换只改风格。
+    activate(mode) {
+      active = mode === 'ascii' || mode === 'ascii-block' || mode === 'ascii-dot';
+      controls.hidden = !active; exportActions.hidden = !active;
+      if (!active) { ++importRevision; cancelCompute(); return; }
+      const style = mode === 'ascii-block' ? 'block' : mode === 'ascii-dot' ? 'dot' : 'ascii';
+      if (config.style !== style) {
+        config.style = style;
+        persist();
+        // 图形风格锁定 PNG 导出；切回字符画时 TXT 选项恢复可用但保持当前选择。
+        if (style !== 'ascii' && config.format === 'txt') config.format = 'png';
+        if (result) result.settings = { ...config };
+      }
+      if (!source || !result) { request(); return; }
+      // 图形↔图形切换无需重算（lights 与颜色与字符无关）；回到字符画需要真实字符。
+      if (style === 'ascii' && result.charSource !== 'ascii') request();
+      else { draw(); refresh(); }
+    },
     addFiles(paths) { if (paths.length === 1) loadFile(paths[0]); else status('请一次拖入一张图片。'); },
     dispose() { disposed = true; ++importRevision; cancelCompute(); clearTimeout(saveTimer); resize.disconnect(); controls.remove(); exportActions.remove(); },
   };

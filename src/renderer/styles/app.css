@@ -833,8 +833,14 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .about-list dt { color: var(--text-dim); font-size: 11px; }
 .about-list dd { margin: 0; color: var(--text-soft); font-size: 11px; }
 .settings-section .text-action { margin-top: 12px; }
-.project-link { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); text-decoration: none; }
-.project-link:hover { color: var(--text); }
+/* 关于卡片：仓库/镜像/许可证行，与 about-list 行风格对齐 */
+.about-links { margin-top: 6px; }
+.about-link { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; padding: 8px 0; border: 0; border-bottom: 1px solid var(--border); background: none; color: var(--text-soft); font: inherit; text-align: left; text-decoration: none; cursor: pointer; }
+.about-link-label { color: var(--text-dim); font-size: 11px; }
+.about-link-value { overflow: hidden; font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.about-link svg { width: 12px; height: 12px; color: var(--text-dim); transition: color 160ms var(--motion-ease, ease); }
+.about-link:hover { color: var(--text); }
+.about-link:hover svg { color: var(--text); }
 
 .activity-panel {
   grid-column: 1;
@@ -937,3 +943,25 @@ button.danger-action:hover:not(:disabled) { border-color: #ef6a6d; background: #
 .task-progress[data-status="partial"] .task-progress-track span { background: #d9a441; }
 .task-progress[data-status="success"] .task-progress-track span { background: #67b98b; }
 #task-progress-label { overflow-wrap: anywhere; }
+
+.fatal-error {
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  min-height: 100vh;
+  padding: 24px;
+  text-align: center;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.fatal-error p {
+  max-width: 560px;
+  color: var(--text-dim);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.fatal-error button {
+  justify-self: center;
+}

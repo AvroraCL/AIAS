@@ -6,7 +6,6 @@ use ort::session::{builder::GraphOptimizationLevel, Session};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -88,7 +87,7 @@ pub(crate) fn acquire_ort_dll(base: &Path) -> Result<(), String> {
     for url in archive_urls {
         match curl_download(&url, &archive, None, &|_, _| {}) {
             Ok(()) => {
-                let status = Command::new("tar")
+                let status = crate::safety::quiet_command("tar")
                     .args(["-xf"])
                     .arg(&archive)
                     .arg("-C")
@@ -152,8 +151,25 @@ pub(crate) fn curl_download(
     if dest.exists() {
         fs::remove_file(dest).map_err(to_string_error)?;
     }
-    let mut child = Command::new("curl")
-        .args(["-sSL", "--fail", "--retry", "3", "--retry-delay", "2", "-o"])
+    // speed-time 是卡死解药：60 秒无进展即失败，外层循环换下一镜像；max-time 只做兜底。
+    let mut child = crate::safety::quiet_command("curl")
+        .args([
+            "-sSL",
+            "--fail",
+            "--retry",
+            "3",
+            "--retry-delay",
+            "2",
+            "--connect-timeout",
+            "30",
+            "--speed-limit",
+            "1024",
+            "--speed-time",
+            "60",
+            "--max-time",
+            "3600",
+            "-o",
+        ])
         .arg(dest)
         .arg(url)
         .spawn()
@@ -192,7 +208,7 @@ pub(crate) fn curl_download(
                 on_progress(size, if total > 0 { total } else { size });
             }
             Err(error) => {
-                let _ = Command::new("taskkill")
+                let _ = crate::safety::quiet_command("taskkill")
                     .args(["/PID", &pid.to_string(), "/F"])
                     .status();
                 return Err(format!("下载过程出错：{error}"));
@@ -202,7 +218,7 @@ pub(crate) fn curl_download(
 }
 
 pub(crate) fn head_content_length(url: &str) -> Option<u64> {
-    let output = Command::new("curl")
+    let output = crate::safety::quiet_command("curl")
         .args(["-sI", "-L", "--max-time", "20"])
         .arg(url)
         .output()
@@ -544,14 +560,12 @@ pub fn install_gpu_ort(app: Option<&AppHandle>, base: &Path) -> Result<(), Strin
 }
 
 pub(crate) fn extract_gpu_ort_dlls(archive: &Path, dest: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     // 必须用 Windows 自带的 bsdtar（支持 zip）；GNU tar 无法读取 wheel。
     let tar = std::env::var_os("WINDIR")
         .map(|windir| PathBuf::from(windir).join(r"System32\tar.exe"))
         .filter(|path| path.exists())
         .unwrap_or_else(|| PathBuf::from("tar"));
-    let output = Command::new(tar)
+    let output = crate::safety::quiet_command(tar)
         .arg("-xf")
         .arg(archive)
         .arg("-C")
@@ -561,7 +575,6 @@ pub(crate) fn extract_gpu_ort_dlls(archive: &Path, dest: &Path) -> Result<(), St
             "onnxruntime/capi/onnxruntime_providers_cuda.dll",
             "onnxruntime/capi/onnxruntime_providers_shared.dll",
         ])
-        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|error| format!("无法启动 tar 解压：{error}"))?;
     if !output.status.success() {

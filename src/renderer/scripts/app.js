@@ -52,7 +52,9 @@ import {
   AlertTriangle,
   Download,
   Maximize2,
-  Wand2
+  Wand2,
+  LayoutGrid,
+  CircleDot
 } from "lucide";
 
 const defaults = {
@@ -78,7 +80,7 @@ const defaults = {
   animeDetailRecovery: false,
   animeCutoutOutputPath: "",
   superresOutputPath: "",
-  superresScale: "4"
+  superresScale: "2"
 };
 
 const animeModelCatalog = {
@@ -95,6 +97,8 @@ const animeModelCatalog = {
 
 const modeMeta = {
   ascii: { title: "图片转 ASCII", description: "将图片转换为黑白或彩色字符画，实时预览并导出 TXT / PNG" },
+  "ascii-block": { title: "方块", description: "将图片按亮度映射为实心方块马赛克，支持原图颜色与透明底，导出 PNG" },
+  "ascii-dot": { title: "波点", description: "将图片按亮度映射为半调圆点，支持原图颜色与透明底，导出 PNG" },
   "normal-map": { title: "生成法线图", description: "从素材高度变化生成法线贴图，支持可移动光照预览" },
   "model-bake": { title: "模型烘焙", description: "检查模型 UV，使用 GPU 按材质烘焙 AO、UV 布局与材质 ID" },
   "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
@@ -108,6 +112,141 @@ const modeMeta = {
   skins: { title: "涂装管理", description: "管理 War Thunder UserSkins 资源" },
   settings: { title: "应用设置", description: "更新、数据路径与版本信息" }
 };
+
+// 模式接线表：运行按钮、任务日志、输出字段、就绪检查、拖放处理都从这张表读取。
+// 新增模式时在 index.html 加侧栏按钮/视图后，这里加一行即可，无需再散改
+// updateRunButtons / updateStatus / getRunBlocker / bindDragDrop 四处。
+const modeRegistry = {
+  merge: {
+    run: "run-merge", log: "merge-log", output: "pbr-output",
+    blocker() {
+      if (!$("pbr-input")?.value) return "请选择输入文件夹。";
+      if (!$("pbr-output")?.value) return "请选择输出文件夹。";
+      return null;
+    },
+    drop(paths) {
+      $("pbr-input").value = paths[0];
+      saveSettings().then(() => { syncPathChips(); updateStatus(); }).catch(reportSaveError);
+    }
+  },
+  split: {
+    run: "run-split", log: "split-log", output: "split-output",
+    blocker() {
+      if (!state.splitFiles.length) return "请添加 DDS 文件。";
+      if (!$("split-output")?.value) return "请选择输出文件夹。";
+      return null;
+    },
+    drop(paths) {
+      state.splitFiles = [...new Set([...state.splitFiles, ...paths])];
+      renderChips("split-file-list", state.splitFiles);
+      updateStatus();
+    }
+  },
+  mipmap: {
+    run: "run-mipmap", log: "mipmap-log", output: "mipmap-output",
+    blocker() {
+      if (!$("mipmap-input")?.value) return "请选择输入文件夹。";
+      if (!$("mipmap-output")?.value) return "请选择输出文件夹。";
+      return null;
+    },
+    drop(paths) {
+      $("mipmap-input").value = paths[0];
+      saveSettings().then(() => { syncPathChips(); updateStatus(); }).catch(reportSaveError);
+    }
+  },
+  "image-dds": {
+    run: "run-image-dds", log: "image-log", output: "image-output",
+    blocker() {
+      if (!state.imageFiles.length) return "请添加图片文件。";
+      if (!$("image-output")?.value) return "请选择输出文件夹。";
+      return null;
+    },
+    drop(paths) {
+      state.imageFiles = [...new Set([...state.imageFiles, ...paths])];
+      renderChips("image-file-list", state.imageFiles);
+      updateStatus();
+    }
+  },
+  ascii: asciiRegistryEntry(),
+  "ascii-block": asciiRegistryEntry(),
+  "ascii-dot": asciiRegistryEntry(),
+  "anime-cutout": {
+    run: "run-anime-cutout", log: "anime-log", output: "anime-output",
+    blocker() {
+      if (state.animeRunning) return "抠图正在运行，请稍候。";
+      if (!state.animeFiles.length) return "请添加图片。";
+      if (!$("anime-output")?.value) return "请选择输出文件夹。";
+      if (state.animeDownloading || state.animeHairDownloading) return "模型正在下载中，请稍候。";
+      if (wantsHairRefiner() && !state.animeHairStatus?.installed) return "请先在右侧栏下载精细发丝边缘模型，或关闭实验选项。";
+      if (!isAnimeModelReady($("anime-model")?.value || "anime-specialist")) return "当前模型未安装，请先在「抠图模型」中下载。";
+      return null;
+    },
+    drop(paths) {
+      state.animeFiles = [...new Set([...state.animeFiles, ...paths])];
+      renderAnimeGallery();
+      updateStatus();
+    }
+  },
+  "superres-anime": superresRegistryEntry("anime"),
+  "superres-general": superresRegistryEntry("general"),
+  "normal-map": materialMapsRegistryEntry(),
+  "height-map": materialMapsRegistryEntry(),
+  "model-bake": {
+    run: "bake-run", log: "model-bake-log", output: "bake-output",
+    blocker: () => modelBakeUI?.blocker() || null,
+    drop(paths) {
+      if (paths.length === 1) modelBakeUI?.importModel(paths[0]);
+      else addActivity("模型烘焙", "一次只能导入一个模型文件。", "error");
+    }
+  },
+  skins: {
+    output: "skin-path",
+    drop(paths) {
+      $("skin-path").value = paths[0];
+      saveSettings().then(() => refreshSkins()).catch(reportSaveError);
+    }
+  }
+};
+
+function asciiRegistryEntry() {
+  return {
+    run: "ascii-run", log: "ascii-log",
+    blocker: () => asciiUI?.blocker() || null,
+    drop: paths => asciiUI?.addFiles(paths)
+  };
+}
+
+function materialMapsRegistryEntry() {
+  return {
+    run: "map-run", log: "material-maps-log", output: "map-output",
+    blocker: () => materialMapsUI?.blocker() || null,
+    drop: paths => materialMapsUI?.addFiles(paths)
+  };
+}
+
+function superresRegistryEntry(model) {
+  return {
+    run: model === "anime" ? "run-superres-anime" : "run-superres-general",
+    log: "superres-log", output: "superres-output",
+    blocker() {
+      if (state.superresRunning) return "超分正在运行，请稍候。";
+      if (!state.superresFiles.length) return "请添加图片。";
+      if (!$("superres-output")?.value) return "请选择输出文件夹。";
+      if (state.superresDownloadingId) return "模型正在下载中，请稍候。";
+      if (!isSuperresModelReady(model)) return `${superresLabels[model]}模型未安装，请先在右侧栏下载。`;
+      return null;
+    },
+    drop(paths) {
+      state.superresFiles = [...new Set([...state.superresFiles, ...paths])];
+      renderSuperresGallery();
+      updateStatus();
+    }
+  };
+}
+
+function reportSaveError(error) {
+  addActivity("保存设置失败", error?.message || String(error), "error");
+}
 
 const state = {
   settings: {},
@@ -177,7 +316,9 @@ const iconSet = {
   AlertTriangle,
   Download,
   Maximize2,
-  Wand2
+  Wand2,
+  LayoutGrid,
+  CircleDot
 };
 
 const TOAST_LIMIT = 4;
@@ -208,20 +349,7 @@ function compactPath(value, fallback) {
 }
 
 function getModeOutputPath(mode = state.activeMode) {
-  const fieldByMode = {
-    merge: "pbr-output",
-    split: "split-output",
-    mipmap: "mipmap-output",
-    "image-dds": "image-output",
-    "anime-cutout": "anime-output",
-    "superres-anime": "superres-output",
-    "superres-general": "superres-output",
-    "normal-map": "map-output",
-    "model-bake": "bake-output",
-    "height-map": "map-output",
-    skins: "skin-path"
-  };
-  return $(fieldByMode[mode])?.value || "";
+  return $(modeRegistry[mode]?.output)?.value || "";
 }
 
 function formatSize(bytes) {
@@ -1661,21 +1789,9 @@ function setActivityPanel(open) {
 }
 
 function syncActiveLog(mode = state.activeMode) {
-  const logByMode = {
-    merge: "merge-log",
-    split: "split-log",
-    mipmap: "mipmap-log",
-    "image-dds": "image-log",
-    ascii: "ascii-log",
-    "anime-cutout": "anime-log",
-    "normal-map": "material-maps-log",
-    "model-bake": "model-bake-log",
-    "height-map": "material-maps-log",
-    "superres-anime": "superres-log",
-    "superres-general": "superres-log"
-  };
+  const activeLog = modeRegistry[mode]?.log;
   document.querySelectorAll(".task-log").forEach((log) => {
-    log.classList.toggle("active", log.id === logByMode[mode]);
+    log.classList.toggle("active", log.id === activeLog);
   });
 }
 
@@ -1804,7 +1920,13 @@ function renderSkinList(items) {
     cb.checked = !entry.disabled;
     cb.setAttribute("aria-label", `${cb.checked ? "禁用" : "启用"} ${name.textContent}`);
     cb.addEventListener("change", async () => {
-      await api.skin.toggle(entry.path);
+      try {
+        await api.skin.toggle(entry.path);
+      } catch (e) {
+        cb.checked = !cb.checked;
+        addActivity("切换失败", e.message || String(e), "error");
+        return;
+      }
       addActivity(cb.checked ? "已启用" : "已禁用", entry.name.replace(/\.disabled$/, ""), "success");
       await refreshSkins();
     });
@@ -1992,22 +2114,8 @@ async function saveSettings({ notify = false } = {}) {
 }
 
 function updateRunButtons(mode) {
-  const mapping = {
-    merge: "run-merge",
-    split: "run-split",
-    mipmap: "run-mipmap",
-    "image-dds": "run-image-dds",
-    ascii: "ascii-run",
-    "anime-cutout": "run-anime-cutout",
-    "superres-anime": "run-superres-anime",
-    "normal-map": "map-run",
-    "model-bake": "bake-run",
-    "height-map": "map-run",
-    "superres-general": "run-superres-general"
-  };
-
   document.querySelectorAll(".run-button").forEach((button) => button.classList.add("hidden"));
-  const active = $(mapping[mode]);
+  const active = $(modeRegistry[mode]?.run);
   if (active) active.classList.remove("hidden");
 
   $("clear-split-files")?.classList.toggle("hidden", mode !== "split");
@@ -2049,9 +2157,9 @@ function updateInspector() {
 
 function updateStatus() {
   const mode = state.activeMode;
-  const runnableModes = ["ascii", "merge", "split", "mipmap", "image-dds", "anime-cutout", "superres-anime", "superres-general", "normal-map", "height-map", "model-bake"];
+  const runnable = Boolean(modeRegistry[mode]?.run);
   const blocker = getRunBlocker(mode);
-  const ready = runnableModes.includes(mode) && !blocker;
+  const ready = runnable && !blocker;
 
   const outputPath = getModeOutputPath(mode);
   const meta = modeMeta[mode] || modeMeta.merge;
@@ -2066,20 +2174,7 @@ function updateStatus() {
   $("run-readiness")?.classList.toggle("ready", ready);
   $("run-hint")?.classList.toggle("ready", ready);
 
-  const runButtonByMode = {
-    merge: "run-merge",
-    split: "run-split",
-    mipmap: "run-mipmap",
-    "image-dds": "run-image-dds",
-    ascii: "ascii-run",
-    "anime-cutout": "run-anime-cutout",
-    "superres-anime": "run-superres-anime",
-    "normal-map": "map-run",
-    "model-bake": "bake-run",
-    "height-map": "map-run",
-    "superres-general": "run-superres-general"
-  };
-  const activeRunButton = $(runButtonByMode[mode]);
+  const activeRunButton = $(modeRegistry[mode]?.run);
   if (activeRunButton && activeRunButton.dataset.busy !== "true") {
     // 超分各模式还要求对应模型已安装
     activeRunButton.disabled = !ready
@@ -2087,7 +2182,7 @@ function updateStatus() {
       || (mode === "superres-general" && !isSuperresModelReady("general"));
   }
 
-  $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnableModes.includes(mode));
+  $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnable);
 }
 
 function getRunBlocker(mode) {
@@ -2101,50 +2196,7 @@ function getRunBlocker(mode) {
     if (stems.has(stem)) return `存在重名图片「${stem}」，请先重命名或分批导出，避免覆盖结果。`;
     stems.add(stem);
   }
-  switch (mode) {
-    case "ascii": return asciiUI?.blocker() || null;
-    case "model-bake":
-      return modelBakeUI?.blocker() || null;
-    case "normal-map":
-    case "height-map":
-      return materialMapsUI?.blocker() || null;
-    case "merge":
-      if (!$("pbr-input")?.value) return "请选择输入文件夹。";
-      if (!$("pbr-output")?.value) return "请选择输出文件夹。";
-      return null;
-    case "split":
-      if (!state.splitFiles.length) return "请添加 DDS 文件。";
-      if (!$("split-output")?.value) return "请选择输出文件夹。";
-      return null;
-    case "mipmap":
-      if (!$("mipmap-input")?.value) return "请选择输入文件夹。";
-      if (!$("mipmap-output")?.value) return "请选择输出文件夹。";
-      return null;
-    case "image-dds":
-      if (!state.imageFiles.length) return "请添加图片文件。";
-      if (!$("image-output")?.value) return "请选择输出文件夹。";
-      return null;
-    case "anime-cutout":
-      if (state.animeRunning) return "抠图正在运行，请稍候。";
-      if (!state.animeFiles.length) return "请添加图片。";
-      if (!$("anime-output")?.value) return "请选择输出文件夹。";
-      if (state.animeDownloading || state.animeHairDownloading) return "模型正在下载中，请稍候。";
-      if (wantsHairRefiner() && !state.animeHairStatus?.installed) return "请先在右侧栏下载精细发丝边缘模型，或关闭实验选项。";
-      if (!isAnimeModelReady($("anime-model")?.value || "anime-specialist")) return "当前模型未安装，请先在「抠图模型」中下载。";
-      return null;
-    case "superres-anime":
-    case "superres-general":
-      if (state.superresRunning) return "超分正在运行，请稍候。";
-      if (!state.superresFiles.length) return "请添加图片。";
-      if (!$("superres-output")?.value) return "请选择输出文件夹。";
-      if (state.superresDownloadingId) return "模型正在下载中，请稍候。";
-      if (!isSuperresModelReady(mode === "superres-anime" ? "anime" : "general")) {
-        return `${superresLabels[mode === "superres-anime" ? "anime" : "general"]}模型未安装，请先在右侧栏下载。`;
-      }
-      return null;
-    default:
-      return null;
-  }
+  return modeRegistry[mode]?.blocker?.() || null;
 }
 
 function reportRunBlocker(message) {
@@ -2164,8 +2216,8 @@ function applyMode(mode) {
     button.setAttribute("aria-current", button.dataset.view === mode ? "page" : "false");
   });
   $("footer-settings")?.classList.toggle("active", mode === "settings");
-  // 超分两个入口共用同一个视图
-  const viewId = mode === "normal-map" || mode === "height-map" ? "view-material-maps" : mode.startsWith("superres") ? "view-superres" : `view-${mode}`;
+  // 超分两个入口共用同一个视图；风格化三个入口共用 view-ascii
+  const viewId = mode === "normal-map" || mode === "height-map" ? "view-material-maps" : mode.startsWith("superres") ? "view-superres" : mode.startsWith("ascii") ? "view-ascii" : `view-${mode}`;
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === viewId);
   });
@@ -2338,7 +2390,12 @@ function syncSettingsView() {
 function bindSettingsActions() {
   $("set-auto-update")?.addEventListener("change", async () => {
     state.settings.autoUpdate = $("set-auto-update")?.checked ?? true;
-    await api.settings.set({ autoUpdate: state.settings.autoUpdate });
+    try {
+      await api.settings.set({ autoUpdate: state.settings.autoUpdate });
+    } catch (e) {
+      addActivity("保存失败", e.message || String(e), "error");
+      return;
+    }
     addActivity("已更新", state.settings.autoUpdate ? "自动检查更新已开启" : "自动检查更新已关闭", "success");
   });
 
@@ -2358,7 +2415,12 @@ function bindSettingsActions() {
   $("set-reset")?.addEventListener("click", async () => {
     const confirmed = await openPreviewConfirm("重置设置", "所有路径和选项将恢复默认值，确定继续？");
     if (!confirmed) return;
-    await api.settings.set(defaults);
+    try {
+      await api.settings.set(defaults);
+    } catch (e) {
+      addActivity("重置失败", e.message || String(e), "error");
+      return;
+    }
     state.settings = { ...defaults };
     applySettingsToForm();
     updateStatus();
@@ -2366,30 +2428,34 @@ function bindSettingsActions() {
   });
 
   $("set-license")?.addEventListener("click", () => {
-    openPreviewMessage("MIT License", "Copyright (c) 2025 Avrora.CL\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files, to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software.");
+    openPreviewMessage("GNU LGPL-3.0", "Copyright (C) 2025 Avrora.CL\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License as published by the Free Software Foundation, version 3 of the License.\n\nThis program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.\n\nYou should have received a copy of the GNU Lesser General Public License along with this program. If not, see https://www.gnu.org/licenses/lgpl-3.0.html");
   });
 }
 
 function bindDropZones() {
   document.querySelectorAll("[data-pick-dir]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const target = $(button.dataset.pickDir);
-      const directory = await api.dialog.selectDirectory();
-      if (!directory || !target) return;
-      target.value = directory;
-      await saveSettings();
-      syncPathChips();
-      updateStatus();
-      if (button.dataset.pickDir === "skin-path") {
-        await refreshSkins();
-      }
-      if (button.dataset.pickDir === "anime-output") {
-        resetAnimeResults();
-        renderAnimeGallery();
-      }
-      if (button.dataset.pickDir === "superres-output") {
-        resetSuperresResults();
-        renderSuperresGallery();
+      try {
+        const target = $(button.dataset.pickDir);
+        const directory = await api.dialog.selectDirectory();
+        if (!directory || !target) return;
+        target.value = directory;
+        await saveSettings();
+        syncPathChips();
+        updateStatus();
+        if (button.dataset.pickDir === "skin-path") {
+          await refreshSkins();
+        }
+        if (button.dataset.pickDir === "anime-output") {
+          resetAnimeResults();
+          renderAnimeGallery();
+        }
+        if (button.dataset.pickDir === "superres-output") {
+          resetSuperresResults();
+          renderSuperresGallery();
+        }
+      } catch (e) {
+        addActivity("选择失败", e.message || String(e), "error");
       }
     });
     if (button.tagName === "BUTTON") return;
@@ -2401,37 +2467,53 @@ function bindDropZones() {
   });
 
   $("pick-split-files")?.addEventListener("click", async () => {
-    const files = await api.dialog.selectFiles({ filters: [{ name: "DDS", extensions: ["dds"] }] });
-    state.splitFiles = [...new Set([...state.splitFiles, ...files])];
-    renderChips("split-file-list", state.splitFiles);
-    updateStatus();
+    try {
+      const files = await api.dialog.selectFiles({ filters: [{ name: "DDS", extensions: ["dds"] }] });
+      state.splitFiles = [...new Set([...state.splitFiles, ...files])];
+      renderChips("split-file-list", state.splitFiles);
+      updateStatus();
+    } catch (e) {
+      addActivity("选择失败", e.message || String(e), "error");
+    }
   });
 
   $("pick-image-files")?.addEventListener("click", async () => {
-    const files = await api.dialog.selectFiles({
-      filters: [{ name: "Images", extensions: ["png", "tga", "jpg", "jpeg"] }]
-    });
-    state.imageFiles = [...new Set([...state.imageFiles, ...files])];
-    renderChips("image-file-list", state.imageFiles);
-    updateStatus();
+    try {
+      const files = await api.dialog.selectFiles({
+        filters: [{ name: "Images", extensions: ["png", "tga", "jpg", "jpeg"] }]
+      });
+      state.imageFiles = [...new Set([...state.imageFiles, ...files])];
+      renderChips("image-file-list", state.imageFiles);
+      updateStatus();
+    } catch (e) {
+      addActivity("选择失败", e.message || String(e), "error");
+    }
   });
 
   $("pick-anime-files")?.addEventListener("click", async () => {
-    const files = await api.dialog.selectFiles({
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }]
-    });
-    state.animeFiles = [...new Set([...state.animeFiles, ...files])];
-    renderAnimeGallery();
-    updateStatus();
+    try {
+      const files = await api.dialog.selectFiles({
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }]
+      });
+      state.animeFiles = [...new Set([...state.animeFiles, ...files])];
+      renderAnimeGallery();
+      updateStatus();
+    } catch (e) {
+      addActivity("选择失败", e.message || String(e), "error");
+    }
   });
 
   $("pick-superres-files")?.addEventListener("click", async () => {
-    const files = await api.dialog.selectFiles({
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "tga"] }]
-    });
-    state.superresFiles = [...new Set([...state.superresFiles, ...files])];
-    renderSuperresGallery();
-    updateStatus();
+    try {
+      const files = await api.dialog.selectFiles({
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "tga"] }]
+      });
+      state.superresFiles = [...new Set([...state.superresFiles, ...files])];
+      renderSuperresGallery();
+      updateStatus();
+    } catch (e) {
+      addActivity("选择失败", e.message || String(e), "error");
+    }
   });
 }
 
@@ -2641,30 +2723,42 @@ function bindRunActions() {
 
 function bindSkinActions() {
   $("skin-auto-detect")?.addEventListener("click", async () => {
-    const found = await api.skin.autoDetect();
-    if (found) {
-      $("skin-path").value = found;
-      await saveSettings();
-      await refreshSkins();
-    } else {
-      addActivity("未检测到目录", "未检测到 War Thunder UserSkins 目录。", "error");
+    try {
+      const found = await api.skin.autoDetect();
+      if (found) {
+        $("skin-path").value = found;
+        await saveSettings();
+        await refreshSkins();
+      } else {
+        addActivity("未检测到目录", "未检测到 War Thunder UserSkins 目录。", "error");
+      }
+    } catch (e) {
+      addActivity("检测失败", e.message || String(e), "error");
     }
   });
 
   $("skin-dir-pick")?.addEventListener("click", async () => {
-    const dir = await api.dialog.selectDirectory();
-    if (!dir) return;
-    $("skin-path").value = dir;
-    await saveSettings();
-    await refreshSkins();
+    try {
+      const dir = await api.dialog.selectDirectory();
+      if (!dir) return;
+      $("skin-path").value = dir;
+      await saveSettings();
+      await refreshSkins();
+    } catch (e) {
+      addActivity("选择失败", e.message || String(e), "error");
+    }
   });
 
   $("skin-import-btn")?.addEventListener("click", async () => {
-    const sources = await api.dialog.selectDirectories();
-    if (!sources.length) return;
-    const result = await api.skin.import({ sources, targetDirectory: $("skin-path").value });
-    addActivity("导入完成", `已导入 ${result.imported} 个涂装`, "success");
-    await refreshSkins();
+    try {
+      const sources = await api.dialog.selectDirectories();
+      if (!sources.length) return;
+      const result = await api.skin.import({ sources, targetDirectory: $("skin-path").value });
+      addActivity("导入完成", `已导入 ${result.imported} 个涂装`, "success");
+      await refreshSkins();
+    } catch (e) {
+      addActivity("导入失败", e.message || String(e), "error");
+    }
   });
 
   $("skin-sort")?.addEventListener("change", () => {
@@ -2733,63 +2827,11 @@ function bindDragDrop() {
     const paths = event.payload.paths;
     if (!paths.length) return;
 
-    const mode = state.activeMode;
-    switch (mode) {
-      case "merge":
-        $("pbr-input").value = paths[0];
-        saveSettings().then(() => {
-          syncPathChips();
-          updateStatus();
-        });
-        break;
-      case "mipmap":
-        $("mipmap-input").value = paths[0];
-        saveSettings().then(() => {
-          syncPathChips();
-          updateStatus();
-        });
-        break;
-      case "skins":
-        $("skin-path").value = paths[0];
-        saveSettings().then(() => refreshSkins());
-        break;
-      case "split":
-        state.splitFiles = [...new Set([...state.splitFiles, ...paths])];
-        renderChips("split-file-list", state.splitFiles);
-        updateStatus();
-        break;
-      case "image-dds":
-        state.imageFiles = [...new Set([...state.imageFiles, ...paths])];
-        renderChips("image-file-list", state.imageFiles);
-        updateStatus();
-        break;
-      case "anime-cutout":
-        state.animeFiles = [...new Set([...state.animeFiles, ...paths])];
-        renderAnimeGallery();
-        updateStatus();
-        break;
-      case "normal-map":
-      case "height-map":
-        materialMapsUI?.addFiles(paths);
-        break;
-      case "ascii":
-        asciiUI?.addFiles(paths);
-        break;
-      case "model-bake":
-        if (paths.length === 1) modelBakeUI?.importModel(paths[0]);
-        else addActivity("模型烘焙", "一次只能导入一个模型文件。", "error");
-        break;
-      case "superres-anime":
-      case "superres-general":
-        state.superresFiles = [...new Set([...state.superresFiles, ...paths])];
-        renderSuperresGallery();
-        updateStatus();
-        break;
-    }
+    modeRegistry[state.activeMode]?.drop?.(paths);
   });
 }
 
-async function init() {
+async function boot() {
   bindSidebar();
   const appVersion = isTauriRuntime ? await getVersion().catch(() => __APP_VERSION__) : __APP_VERSION__;
   setText("set-version", "当前版本 " + appVersion);
@@ -2891,7 +2933,36 @@ async function init() {
   scheduleUpdateCheck(isTauriRuntime, state.settings, setTimeout, checkForUpdates);
 }
 
-init();
+function showFatalError(error) {
+  const panel = document.createElement("div");
+  panel.className = "fatal-error";
+  panel.setAttribute("role", "alert");
+  const title = document.createElement("h2");
+  title.textContent = "应用启动失败";
+  const detail = document.createElement("p");
+  detail.textContent = error?.message || String(error);
+  const retry = document.createElement("button");
+  retry.className = "secondary-action";
+  retry.type = "button";
+  retry.textContent = "重试";
+  retry.addEventListener("click", () => location.reload());
+  panel.append(title, detail, retry);
+  document.body.replaceChildren(panel);
+}
+
+async function init() {
+  try {
+    await boot();
+  } catch (error) {
+    console.error(error);
+    showFatalError(error);
+  }
+}
+
+init().catch(error => {
+  console.error(error);
+  showFatalError(error);
+});
 
 if (import.meta.hot) import.meta.hot.dispose(() => materialMapsUI?.dispose());
 if (import.meta.hot) import.meta.hot.dispose(() => modelBakeUI?.dispose());

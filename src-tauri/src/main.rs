@@ -20,7 +20,6 @@ use std::{
     fs,
     io::BufReader,
     path::{Path, PathBuf},
-    process::Command,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use texpresso::{Algorithm, Format as BcFormat, Params as BcParams};
@@ -1371,21 +1370,25 @@ async fn superres_run(app: AppHandle, options: SuperResRunOptions) -> Result<Tas
 }
 
 #[tauri::command]
-fn skin_auto_detect() -> Result<Option<String>, String> {
-    let Some(steam_path) = find_steam_path()? else {
-        return Ok(None);
-    };
-    for library in find_steam_libraries(&steam_path)? {
-        let candidate = library
-            .join("steamapps")
-            .join("common")
-            .join("War Thunder")
-            .join("UserSkins");
-        if candidate.exists() {
-            return Ok(Some(path_to_string(candidate)));
+async fn skin_auto_detect() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let Some(steam_path) = find_steam_path()? else {
+            return Ok(None);
+        };
+        for library in find_steam_libraries(&steam_path)? {
+            let candidate = library
+                .join("steamapps")
+                .join("common")
+                .join("War Thunder")
+                .join("UserSkins");
+            if candidate.exists() {
+                return Ok(Some(path_to_string(candidate)));
+            }
         }
-    }
-    Ok(None)
+        Ok(None)
+    })
+    .await
+    .map_err(to_string_error)?
 }
 
 fn dir_size(path: &Path) -> u64 {
@@ -1403,8 +1406,15 @@ fn dir_size(path: &Path) -> u64 {
     size
 }
 
+// 涂装目录可能很大（GB 级复制、全树求体积），全部放阻塞线程池跑，避免冻住主线程。
 #[tauri::command]
-fn skin_list(directory: String) -> Result<Vec<SkinEntry>, String> {
+async fn skin_list(directory: String) -> Result<Vec<SkinEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || skin_list_inner(directory))
+        .await
+        .map_err(to_string_error)?
+}
+
+fn skin_list_inner(directory: String) -> Result<Vec<SkinEntry>, String> {
     require_directory(&directory, "涂装目录")?;
     let mut items = Vec::new();
     for entry in fs::read_dir(directory).map_err(to_string_error)? {
@@ -1433,7 +1443,13 @@ fn skin_list(directory: String) -> Result<Vec<SkinEntry>, String> {
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    // 拒绝目标位于源内部（含目标 == 源）：否则递归复制会无限自我展开填满磁盘。
+    let src = std::fs::canonicalize(src).map_err(to_string_error)?;
     fs::create_dir_all(dst).map_err(to_string_error)?;
+    let dst = std::fs::canonicalize(dst).map_err(to_string_error)?;
+    if dst.starts_with(&src) {
+        return Err("目标目录位于源目录内部，无法导入。".into());
+    }
     for entry in fs::read_dir(src).map_err(to_string_error)? {
         let entry = entry.map_err(to_string_error)?;
         let target = dst.join(entry.file_name());
@@ -1447,7 +1463,13 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn skin_import(options: ImportSkinOptions) -> Result<ImportSkinResult, String> {
+async fn skin_import(options: ImportSkinOptions) -> Result<ImportSkinResult, String> {
+    tauri::async_runtime::spawn_blocking(move || skin_import_inner(options))
+        .await
+        .map_err(to_string_error)?
+}
+
+fn skin_import_inner(options: ImportSkinOptions) -> Result<ImportSkinResult, String> {
     require_directory(&options.target_directory, "涂装目录")?;
     let mut imported = 0;
     let mut errors = Vec::new();
@@ -1472,42 +1494,42 @@ fn skin_import(options: ImportSkinOptions) -> Result<ImportSkinResult, String> {
 }
 
 #[tauri::command]
-fn skin_toggle(file_path: String) -> Result<PathResult, String> {
-    let source = Path::new(&file_path);
-    if !source.exists() {
-        return Err("文件不存在。".into());
-    }
-    let target = if file_path.ends_with(".disabled") {
-        PathBuf::from(file_path.trim_end_matches(".disabled"))
-    } else {
-        PathBuf::from(format!("{file_path}.disabled"))
-    };
-    fs::rename(source, &target).map_err(to_string_error)?;
-    Ok(PathResult {
-        path: path_to_string(target),
+async fn skin_toggle(file_path: String) -> Result<PathResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = Path::new(&file_path);
+        if !source.exists() {
+            return Err("文件不存在。".into());
+        }
+        let target = if file_path.ends_with(".disabled") {
+            PathBuf::from(file_path.trim_end_matches(".disabled"))
+        } else {
+            PathBuf::from(format!("{file_path}.disabled"))
+        };
+        fs::rename(source, &target).map_err(to_string_error)?;
+        Ok(PathResult {
+            path: path_to_string(target),
+        })
     })
+    .await
+    .map_err(to_string_error)?
 }
 
 #[tauri::command]
-fn skin_delete(file_path: String) -> Result<DeleteResult, String> {
-    let source = Path::new(&file_path);
-    eprintln!("skin_delete called with: {file_path}");
-    if !source.exists() {
-        eprintln!("skin_delete: path does not exist");
-        return Ok(DeleteResult { deleted: false });
-    }
-    if source.is_dir() {
-        eprintln!("skin_delete: removing directory");
-        fs::remove_dir_all(source).map_err(|e| {
-            let msg = format!("删除目录失败: {e}");
-            eprintln!("{msg}");
-            msg
-        })?;
-    } else {
-        eprintln!("skin_delete: removing file");
-        fs::remove_file(source).map_err(to_string_error)?;
-    }
-    Ok(DeleteResult { deleted: true })
+async fn skin_delete(file_path: String) -> Result<DeleteResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = Path::new(&file_path);
+        if !source.exists() {
+            return Ok(DeleteResult { deleted: false });
+        }
+        if source.is_dir() {
+            fs::remove_dir_all(source).map_err(|e| format!("删除目录失败: {e}"))?;
+        } else {
+            fs::remove_file(source).map_err(to_string_error)?;
+        }
+        Ok(DeleteResult { deleted: true })
+    })
+    .await
+    .map_err(to_string_error)?
 }
 
 fn find_texture_groups(folder: &Path) -> Result<Vec<TextureGroup>, String> {
@@ -1571,14 +1593,7 @@ fn process_base_color(
     format: &str,
     scale: &str,
 ) -> Result<(), String> {
-    let mut image = apply_scale(
-        image::open(base_color).map_err(to_string_error)?.to_rgba8(),
-        scale,
-    );
-    let alpha_value = if alpha == "white" { 255 } else { 0 };
-    for pixel in image.pixels_mut() {
-        pixel[3] = alpha_value;
-    }
+    let image = prepare_image(base_color, alpha, scale)?;
     write_dds(&image, output, format)
 }
 
@@ -1606,6 +1621,13 @@ fn emit_task_progress_percent(
     );
 }
 
+/// 解码前先做内存预算检查，防止超大输入把系统提交内存打满。
+fn load_image_checked(path: &Path) -> Result<image::DynamicImage, String> {
+    let (w, h) = image::image_dimensions(path).map_err(to_string_error)?;
+    safety::memory_budget(w, h, 64)?;
+    image::open(path).map_err(to_string_error)
+}
+
 fn process_roughness_metallic_normal(
     roughness_path: &Path,
     metallic_path: &Path,
@@ -1614,19 +1636,12 @@ fn process_roughness_metallic_normal(
     format: &str,
     scale: &str,
 ) -> Result<(), String> {
-    let normal = apply_scale(
-        image::open(normal_path)
-            .map_err(to_string_error)?
-            .to_rgba8(),
-        scale,
-    );
+    let normal = apply_scale(load_image_checked(normal_path)?.to_rgba8(), scale);
     let (width, height) = normal.dimensions();
-    let roughness = image::open(roughness_path)
-        .map_err(to_string_error)?
+    let roughness = load_image_checked(roughness_path)?
         .resize_exact(width, height, image::imageops::FilterType::Triangle)
         .to_luma8();
-    let metallic = image::open(metallic_path)
-        .map_err(to_string_error)?
+    let metallic = load_image_checked(metallic_path)?
         .resize_exact(width, height, image::imageops::FilterType::Triangle)
         .to_luma8();
     let mut combined = RgbaImage::new(width, height);
@@ -1857,6 +1872,7 @@ fn write_dds_with_mipmaps(images: &[RgbaImage], output: &Path, format: &str) -> 
 fn dds_to_image(dds_path: &Path) -> Result<DynamicImage, String> {
     let file = fs::File::open(dds_path).map_err(to_string_error)?;
     let dds = Dds::read(&mut BufReader::new(file)).map_err(to_string_error)?;
+    safety::memory_budget(dds.header.width, dds.header.height, 64)?;
     image_from_dds(&dds, 0)
         .map(DynamicImage::ImageRgba8)
         .map_err(to_string_error)
@@ -1894,7 +1910,7 @@ fn save_dynamic_image(image: &DynamicImage, output: PathBuf, format: &str) -> Re
 
 fn find_steam_path() -> Result<Option<PathBuf>, String> {
     if cfg!(target_os = "windows") {
-        if let Ok(output) = Command::new("reg")
+        if let Ok(output) = safety::quiet_command("reg")
             .args(["query", "HKCU\\Software\\Valve\\Steam", "/v", "SteamPath"])
             .output()
         {
@@ -2147,6 +2163,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "依赖本机模型与测试图片，全量 ONNX 推理很慢；用 --ignored 运行"]
     fn anime_cutout_runs_locally_without_comfyui() {
         let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
@@ -2244,6 +2261,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "依赖本机超分模型，全量 ONNX 推理很慢；用 --ignored 运行"]
     fn superres_anime_upscale_runs_locally() {
         let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let Some(base) = anime_base_dir_for_tests() else {
@@ -2343,6 +2361,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "依赖本机模型与测试图片，全量 ONNX 推理很慢；用 --ignored 运行"]
     fn anime_advanced_cutout_runs_locally() {
         let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
@@ -2439,6 +2458,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "total_size 断言依赖本机已安装的模型文件，无模型机器上会失败"]
     fn anime_models_status_reports_catalog() {
         let Some(base) = anime_base_dir_for_tests() else {
             eprintln!("skip: app data dir unavailable");

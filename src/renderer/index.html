@@ -33,7 +33,12 @@
             <button class="mode-tab" data-view="image-dds" type="button">
               <i data-lucide="image" aria-hidden="true"></i><span>图片转 DDS</span>
             </button>
+          </div>
+          <div class="nav-section-label">风格化</div>
+          <div class="tabs-track">
             <button class="mode-tab" data-view="ascii" type="button"><i data-lucide="file-stack" aria-hidden="true"></i><span>图片转 ASCII</span></button>
+            <button class="mode-tab" data-view="ascii-block" type="button"><i data-lucide="layout-grid" aria-hidden="true"></i><span>方块</span></button>
+            <button class="mode-tab" data-view="ascii-dot" type="button"><i data-lucide="circle-dot" aria-hidden="true"></i><span>波点</span></button>
           </div>
           <div class="nav-section-label">AI 图像</div>
           <div class="tabs-track">
@@ -301,8 +306,11 @@
                     <div><dt>框架</dt><dd>Tauri 2</dd></div>
                     <div><dt>平台</dt><dd>Windows</dd></div>
                   </dl>
-                  <button id="set-license" class="text-action" type="button">MIT 许可证<i data-lucide="external-link" aria-hidden="true"></i></button>
-                  <a class="text-action project-link" href="https://github.com/AvroraCL/AIAS" target="_blank" rel="noreferrer">github.com/AvroraCL/AIAS<i data-lucide="external-link" aria-hidden="true"></i></a>
+                  <div class="about-links">
+                    <a class="about-link" href="https://github.com/AvroraCL/AIAS" target="_blank" rel="noreferrer"><span class="about-link-label">仓库</span><span class="about-link-value">GitHub · AvroraCL/AIAS</span><i data-lucide="external-link" aria-hidden="true"></i></a>
+                    <a class="about-link" href="https://gitcode.com/HelenaSG/Aias" target="_blank" rel="noreferrer"><span class="about-link-label">镜像</span><span class="about-link-value">GitCode · HelenaSG/Aias</span><i data-lucide="external-link" aria-hidden="true"></i></a>
+                    <button class="about-link" id="set-license" type="button"><span class="about-link-label">许可证</span><span class="about-link-value">LGPL-3</span><i data-lucide="external-link" aria-hidden="true"></i></button>
+                  </div>
                 </section>
               </div>
             </section>

@@ -56,11 +56,18 @@ fn command(app: &AppHandle) -> Result<Command, String> {
     c.creation_flags(0x08000000);
     Ok(c)
 }
+/// 工作进程无输出的兜底上限：正常任务会持续产出 progress/result 行，
+/// 超时即视为挂死。挂死的任务会一直持有全局任务锁，必须由这里终止。
+const STALL_QUICK: Duration = Duration::from_secs(60);
+const STALL_IMPORT: Duration = Duration::from_secs(120);
+const STALL_BAKE: Duration = Duration::from_secs(300);
+
 fn execute(
     app: &AppHandle,
     args: &[&std::ffi::OsStr],
     job: &str,
     cancel: Option<&Path>,
+    stall: Duration,
 ) -> Result<Value, String> {
     let mut child = command(app)?
         .args(args)
@@ -96,9 +103,11 @@ fn execute(
     let mut result = None;
     let mut failure = None;
     let mut cancel_at = None;
+    let mut last_output = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(line) => {
+                last_output = Instant::now();
                 if let Ok(message) = serde_json::from_str::<Value>(&line) {
                     if message
                         .get("jobId")
@@ -139,6 +148,14 @@ fn execute(
                 break;
             }
         }
+        if last_output.elapsed() > stall {
+            let _ = child.kill();
+            failure = Some(format!(
+                "工作进程超过 {} 秒无输出，已终止",
+                stall.as_secs()
+            ));
+            break;
+        }
     }
     let status = child.wait().map_err(|e| e.to_string())?;
     #[cfg(feature = "bake-validation")]
@@ -155,7 +172,7 @@ fn execute(
 }
 #[tauri::command]
 pub async fn bake_capabilities(app: AppHandle) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || execute(&app, &[], "", None))
+    tauri::async_runtime::spawn_blocking(move || execute(&app, &[], "", None, STALL_QUICK))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -185,6 +202,7 @@ pub async fn bake_import(app: AppHandle, path: String) -> Result<Value, String> 
             ],
             &handle,
             None,
+            STALL_IMPORT,
         )?;
         data["handle"] = json!(handle);
         MODELS
@@ -196,6 +214,16 @@ pub async fn bake_import(app: AppHandle, path: String) -> Result<Value, String> 
     .await
     .map_err(|e| e.to_string())?
 }
+fn validate_bake_options(options: &Value) -> Result<(), String> {
+    // IndexMut 写入（options["jobId"] = …）对非对象值会 panic，而 release 是
+    // panic = "abort"，一个畸形请求就能闪退整个应用，必须在入口拒绝。
+    if options.is_object() {
+        Ok(())
+    } else {
+        Err("无效的烘焙参数".into())
+    }
+}
+
 #[tauri::command]
 pub async fn bake_start(
     app: AppHandle,
@@ -205,6 +233,7 @@ pub async fn bake_start(
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = crate::safety::task_guard()?;
+        validate_bake_options(&options)?;
         if job_id.is_empty() || job_id.len() > 100 {
             return Err("任务编号无效".into());
         }
@@ -256,6 +285,7 @@ pub async fn bake_start(
             &["bake".as_ref(), request.as_os_str(), job_id.as_ref()],
             &job_id,
             Some(&cancel),
+            STALL_BAKE,
         );
         JOBS.lock().map_err(|_| "任务状态锁损坏")?.remove(&job_id);
         CANCEL_REQUESTS
@@ -349,11 +379,12 @@ pub async fn bake_inspect(
             &[
                 "inspect".as_ref(),
                 temp.path().as_os_str(),
-                "inspect".as_ref(),
-            ],
-            "inspect",
-            None,
-        )
+            "inspect".as_ref(),
+        ],
+        "inspect",
+        None,
+        STALL_QUICK,
+    )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -383,8 +414,7 @@ pub fn bake_release(handle: String) -> Result<(), String> {
 }
 
 #[cfg(feature = "bake-validation")]
-pub fn validation_fault(job: &str, suspend: bool) -> Result<(), String> {
-    type Handle = *mut std::ffi::c_void;
+pub fn validation_fault(job: &str, suspend: bool) -> Result<(), String> {    type Handle = *mut std::ffi::c_void;
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
@@ -416,4 +446,20 @@ pub fn validation_fault(job: &str, suspend: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bake_options_must_be_an_object() {
+        assert!(validate_bake_options(&json!("x")).is_err());
+        assert!(validate_bake_options(&json!([])).is_err());
+        assert!(validate_bake_options(&json!(null)).is_err());
+        assert!(validate_bake_options(&json!(42)).is_err());
+        assert!(validate_bake_options(&json!(true)).is_err());
+        assert!(validate_bake_options(&json!({})).is_ok());
+        assert!(validate_bake_options(&json!({"output": "C:/tmp", "ao": true})).is_ok());
+    }
 }
