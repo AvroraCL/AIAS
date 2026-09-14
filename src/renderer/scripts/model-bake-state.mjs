@@ -18,7 +18,6 @@ export const bakeDefaults = Object.freeze({
   ao: true,
   uv: true,
   id: true,
-  output: '',
   workspace: bakeWorkspaceDefaults,
 });
 
@@ -30,7 +29,6 @@ export function restoreBakeSettings(value) {
   if (Number.isInteger(source.margin) && source.margin >= 0 && source.margin <= 128) out.margin = source.margin;
   if (Number.isFinite(source.distanceRatio) && source.distanceRatio > 0) out.distanceRatio = source.distanceRatio;
   for (const key of ['selfOnly', 'ao', 'uv', 'id']) if (typeof source[key] === 'boolean') out[key] = source[key];
-  if (typeof source.output === 'string') out.output = source.output;
   const workspace = source.workspace && typeof source.workspace === 'object' ? source.workspace : {};
   for (const key of ['outlinerOpen', 'settingsOpen', 'grid', 'axes', 'wireframe']) {
     if (typeof workspace[key] === 'boolean') out.workspace[key] = workspace[key];

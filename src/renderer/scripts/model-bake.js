@@ -59,7 +59,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
           <button id="bake-axes" data-bake-display="axes" type="button">坐标轴</button>
         </div></details>
       </div>
-      <div id="bake-viewport-note" class="bake-viewport-note">拖动旋转 · 右键平移 · 滚轮缩放 · F 聚焦</div>
+      <div id="bake-viewport-note" class="bake-viewport-note">Alt+左键 旋转 · 中键 平移 · 滚轮 缩放 · F 聚焦 · 1/3/7 前侧顶视图</div>
       <aside id="bake-outliner-panel" class="bake-float-panel bake-outliner-panel" aria-label="对象与材质">
         <header class="bake-panel-heading"><h2>对象与材质</h2><button data-bake-panel-toggle="outliner" class="bake-floating-button bake-panel-close" type="button" aria-label="收起对象与材质面板">×</button></header>
         <div class="bake-panel-scroll">
@@ -74,7 +74,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         <div class="bake-panel-scroll bake-controls">
           ${section('01 / 输出贴图', `${check('ao', '环境遮蔽 AO')}${check('uv', 'UV 线框')}${check('id', '材质 ID')}<small id="bake-output-summary">按所选材质分别导出</small>`)}
           ${section('02 / 烘焙质量', `<div class="bake-presets" aria-label="质量预设"><button data-bake-preset="draft" type="button">快速</button><button data-bake-preset="standard" type="button">标准</button><button data-bake-preset="high" type="button">精细</button></div>${select('resolution', '贴图尺寸', [512, 1024, 2048, 4096].map(value => [value, `${value} × ${value}`]))}<small id="bake-quality-note"></small>`)}
-          ${section('03 / 保存位置', `<div class="field-row"><input id="bake-output" aria-label="烘焙输出目录" readonly placeholder="选择输出文件夹"><button id="bake-pick-output" type="button">浏览</button></div><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开结果目录</button>`)}
+          ${section('03 / 导出', `<button id="bake-export" class="secondary-action output-action" data-bake-export type="button"><i data-lucide="download" aria-hidden="true"></i>导出全部贴图</button><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开缓存目录</button><small>结果先缓存在应用数据目录，导出时选择目标文件夹</small>`)}
           <details class="bake-advanced"><summary>高级设置</summary>
           ${section('计算设备', `${select('device', 'GPU', [[0, '检测设备中…']])}<small id="bake-device-note"></small>`)}
           ${section('AO 与边缘', `${select('samples', 'AO 采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', 'AO 位深', [[8, '8 位线性灰度'], [16, '16 位线性灰度']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>遮蔽距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${select('selfOnly', '遮挡对象', [['false', '所选对象相互遮挡'], ['true', '仅自身遮挡']])}<small>按不透明几何计算，不读取透明贴图。</small>`)}
@@ -112,7 +112,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (!model) return '请导入模型。';
     if (!objects.size || !materials.size) return '请选择对象和输出材质。';
     if (!stored.ao && !stored.uv && !stored.id) return '请选择输出类型。';
-    if (!stored.output) return '请选择输出目录。';
     if (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0) return '遮蔽距离必须大于 0。';
     if (!Number.isInteger(+$('margin').value) || +$('margin').value < 0 || +$('margin').value > 128) return '边缘扩展应为 0–128 的整数。';
     if (stored.ao && !devices.find(device => device.index === +stored.device)?.supported) return '当前设备不支持 DXR 1.1 AO。';
@@ -213,6 +212,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    // Marmoset/Substance 键位：左键留给点选，Alt+左键旋转（keyboard 处理器
+    // 动态切换 LEFT），中键/右键平移，滚轮缩放。
+    controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
     controls.target.copy(target);
     controls.update();
   }
@@ -333,6 +335,17 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   }
 
   function reset() { frameSelection(true); }
+
+  // 标准视图（Blender/主流 DCC 惯例的 1/3/7）：保持距离与目标，只换方位角。
+  function setStandardView(axis) {
+    if (!camera || !controls) return;
+    const directions = { front: [0, 0, 1], side: [1, 0, 0], top: [0, 1, 0] };
+    const direction = directions[axis];
+    if (!direction) return;
+    const distance = camera.position.distanceTo(controls.target) || 1;
+    camera.position.copy(controls.target).add(new THREE.Vector3(...direction).multiplyScalar(distance));
+    controls.update();
+  }
 
   function setProjection(next, shouldPersist = true) {
     if (next !== 'perspective' && next !== 'orthographic') return;
@@ -551,8 +564,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('run').disabled = Boolean(reason);
     $('run').title = reason || '';
     $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : reason || `已就绪 · ${count} 张贴图`;
-    $('open-output').disabled = !desktop || !(outputDirectory || stored.output);
-    $('pick-output').disabled = !desktop || locked;
+    $('open-output').disabled = !desktop || !outputDirectory;
+    root.querySelectorAll('[data-bake-export]').forEach(button => button.disabled = !desktop || !results.length || running);
     $('cancel').hidden = !running || !active;
     root.querySelectorAll('select').forEach(syncSelect);
   }
@@ -633,11 +646,40 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
   }
 
+  async function exportResults() {
+    if (!desktop || !results.length || running) return;
+    try {
+      const directory = await open({ directory: true });
+      if (!directory) return;
+      const data = await invoke('bake_export', { files: results.map(file => file.path), directory });
+      status(`已导出 ${data.exported} 张贴图到 ${data.directory}`);
+      notify(`已导出 ${data.exported} 张贴图`);
+    } catch (error) {
+      status(`导出失败：${error}`);
+      notify(error);
+    }
+  }
+
   function showResults(data) {
     results = data.files || [];
     resultChannels = { ...channels };
     outputDirectory = data.directory;
     $('results').replaceChildren();
+    const toolbar = document.createElement('div');
+    toolbar.className = 'bake-results-toolbar';
+    const exportButton = document.createElement('button');
+    exportButton.className = 'secondary-action'; exportButton.type = 'button';
+    exportButton.dataset.bakeExport = '';
+    exportButton.textContent = '导出全部贴图';
+    exportButton.onclick = () => exportResults();
+    const openCache = document.createElement('button');
+    openCache.className = 'secondary-action'; openCache.type = 'button';
+    openCache.textContent = '打开缓存目录';
+    openCache.onclick = () => openPath(data.directory).catch(notify);
+    const hint = document.createElement('small');
+    hint.textContent = '结果缓存在应用数据目录，导出时选择目标文件夹';
+    toolbar.append(exportButton, openCache, hint);
+    $('results').append(toolbar);
     for (const file of results) {
       const card = document.createElement('div');
       card.className = 'bake-result';
@@ -755,16 +797,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       setPanelOpen(panel, $(`${panel}-panel`).hidden);
     };
   });
-  $('pick-output').onclick = async () => {
-    const path = await open({ directory: true });
-    if (path) {
-      stored.output = path;
-      $('output').value = path;
-      persist();
-      refresh();
-    }
-  };
-  $('open-output').onclick = () => { if (outputDirectory || stored.output) openPath(outputDirectory || stored.output).catch(notify); };
+  $('open-output').onclick = () => { if (outputDirectory) openPath(outputDirectory).catch(notify); };
+  root.querySelectorAll('[data-bake-export]').forEach(button => { button.onclick = () => exportResults(); });
   $('channel').onchange = () => {
     if (focused === null) return;
     channels[focused] = +$('channel').value;
@@ -784,7 +818,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   };
   for (const key of Object.keys(defaults)) {
     const element = $(key);
-    if (!element || key === 'output' || key === 'workspace') continue;
+    if (!element || key === 'workspace') continue;
     element.addEventListener('change', () => {
       stored[key] = element.type === 'checkbox' ? element.checked : key === 'selfOnly' ? element.value === 'true' : +element.value;
       if (key === 'device' && !devices.find(item => item.index === +stored.device)?.supported) {
@@ -823,11 +857,24 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       refreshReports(); refresh();
     };
   });
+  const standardViews = { 1: 'front', 3: 'side', 7: 'top' };
   const keyboard = event => {
-    if (!active || event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input, select, textarea, button, [role="combobox"], dialog')) return;
+    if (!active) return;
+    // Alt：按住时左键临时映射为旋转（Marmoset/Substance 习惯），松开归还点选。
+    if (event.key === 'Alt') {
+      if (controls && view === 'model' && !event.target.closest('input, select, textarea')) {
+        controls.mouseButtons.LEFT = event.type === 'keydown' ? THREE.MOUSE.ROTATE : null;
+        if (event.type === 'keydown') event.preventDefault();
+      }
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input, select, textarea, button, [role="combobox"], dialog')) return;
     if (event.key.toLowerCase() === 'f' && model && view === 'model') { event.preventDefault(); frameSelection(); }
+    const view_ = standardViews[event.key];
+    if (view_ && model && view === 'model') { event.preventDefault(); setStandardView(view_); }
   };
   document.addEventListener('keydown', keyboard);
+  document.addEventListener('keyup', keyboard);
   updatePanelState('outliner');
   updatePanelState('settings');
   syncDisplayControls();
@@ -859,6 +906,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       cancelAnimationFrame(renderFrame);
       resizeObserver?.disconnect();
       document.removeEventListener('keydown', keyboard);
+      document.removeEventListener('keyup', keyboard);
       aoTextures.forEach(texture => texture.dispose()); aoTextures.clear();
       unlisten?.();
       controls?.dispose();

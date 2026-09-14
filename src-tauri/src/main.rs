@@ -428,6 +428,7 @@ fn main() {
             model_bake::bake_inspect,
             model_bake::bake_start,
             model_bake::bake_cancel,
+            model_bake::bake_export,
             model_bake::bake_release,
             settings_set,
             texture_find_groups,
@@ -602,7 +603,7 @@ fn texture_merge_pbr_inner(
             scale,
         )?;
         completed += 1;
-        logs.push(format!("完成 {}", group.prefix));
+        push_log(Some(app), &mut logs, "success", format!("完成 {}", group.prefix));
         emit_task_progress(
             app,
             completed,
@@ -681,7 +682,7 @@ fn texture_split_pbr_inner(
                     export_format,
                 )?;
             }
-            logs.push(format!(
+            push_log(Some(app), &mut logs, "success", format!(
                 "拆分 {stem}: BaseColor{}",
                 if export_alpha { " / Alpha" } else { "" }
             ));
@@ -713,7 +714,7 @@ fn texture_split_pbr_inner(
                 output_dir.join(format!("{prefix}_Normal.{export_format}")),
                 export_format,
             )?;
-            logs.push(format!("拆分 {stem}: Roughness / Metallic / Normal"));
+            push_log(Some(app), &mut logs, "success", format!("拆分 {stem}: Roughness / Metallic / Normal"));
         }
         completed += 1;
         emit_task_progress(app, completed, options.files.len(), format!("完成 {stem}"));
@@ -849,7 +850,7 @@ fn texture_convert_images_to_dds_inner(
             )
             .with_extension("dds");
         image_to_dds(input, &output_file, alpha, format, scale)?;
-        logs.push(format!(
+        push_log(Some(app), &mut logs, "success", format!(
             "转换 {} -> {}",
             input
                 .file_name()
@@ -1038,7 +1039,7 @@ fn anime_cutout_inner(
     anime::ensure_ort_runtime(&base)?;
 
     let mut logs = Vec::new();
-    logs.push(if anime::cuda_ep_compiled() {
+    push_log(app, &mut logs, "info", if anime::cuda_ep_compiled() {
         "推理后端：CUDA（GPU 加速）".to_string()
     } else if anime::gpu_ort_ready(&base) {
         "推理后端：CPU（GPU 运行库未生效，重启应用后再试）".to_string()
@@ -1046,7 +1047,7 @@ fn anime_cutout_inner(
         "推理后端：CPU（检测到 NVIDIA 显卡时可在「GPU 加速」中下载运行库）".to_string()
     });
     if options.recover_details {
-        logs.push("实验功能：已启用高分辨率细节补全（双局部裁切一致时才补回边缘）。".to_string());
+        push_log(app, &mut logs, "info", "实验功能：已启用高分辨率细节补全（双局部裁切一致时才补回边缘）。".to_string());
     }
     let mut outputs = Vec::new();
     let mut completed = 0usize;
@@ -1054,11 +1055,11 @@ fn anime_cutout_inner(
     for file in &options.files {
         let input = Path::new(file);
         if !input.exists() {
-            logs.push(format!("跳过（文件不存在）：{file}"));
+            push_log(app, &mut logs, "warn", format!("跳过（文件不存在）：{file}"));
             continue;
         }
         let Some(stem) = input.file_stem().and_then(|value| value.to_str()) else {
-            logs.push(format!("跳过（文件名无效）：{file}"));
+            push_log(app, &mut logs, "warn", format!("跳过（文件名无效）：{file}"));
             continue;
         };
         let extension = input
@@ -1067,7 +1068,7 @@ fn anime_cutout_inner(
             .map(|value| value.to_lowercase())
             .unwrap_or_default();
         if !anime_supported_extension(&extension) {
-            logs.push(format!("跳过（暂不支持 {extension} 格式）：{stem}"));
+            push_log(app, &mut logs, "warn", format!("跳过（暂不支持 {extension} 格式）：{stem}"));
             continue;
         }
 
@@ -1135,13 +1136,13 @@ fn anime_cutout_inner(
                     // The committed fallback result is valid even if cleanup fails.
                     let _ = fs::remove_file(&target);
                     let fallback_label = anime::model_label(&outcome.model_used);
-                    logs.push(format!(
+                    push_log(app, &mut logs, "success", format!(
                         "完成 {} → {}（ToonOut 在此复杂背景上失效，已自动改用 {}）",
                         stem, actual, fallback_label
                     ));
                     path
                 } else {
-                    logs.push(format!(
+                    push_log(app, &mut logs, "success", format!(
                         "完成 {} → {}",
                         stem,
                         target
@@ -1162,7 +1163,7 @@ fn anime_cutout_inner(
                 }
             }
             Err(error) => {
-                logs.push(format!("失败 {stem}：{error}"));
+                push_log(app, &mut logs, "error", format!("失败 {stem}：{error}"));
             }
         }
     }
@@ -1254,7 +1255,7 @@ fn superres_run_inner(
     anime::ensure_ort_runtime(&base)?;
 
     let mut logs = Vec::new();
-    logs.push(if anime::cuda_ep_compiled() {
+    push_log(app, &mut logs, "info", if anime::cuda_ep_compiled() {
         "推理后端：CUDA（GPU 加速）".to_string()
     } else {
         "推理后端：CPU（通用模型较慢，NVIDIA 显卡可在 AI 抠图页下载 GPU 运行库）".to_string()
@@ -1266,11 +1267,11 @@ fn superres_run_inner(
     for (file_index, file) in options.files.iter().enumerate() {
         let input = Path::new(file);
         if !input.exists() {
-            logs.push(format!("跳过（文件不存在）：{file}"));
+            push_log(app, &mut logs, "warn", format!("跳过（文件不存在）：{file}"));
             continue;
         }
         let Some(stem) = input.file_stem().and_then(|value| value.to_str()) else {
-            logs.push(format!("跳过（文件名无效）：{file}"));
+            push_log(app, &mut logs, "warn", format!("跳过（文件名无效）：{file}"));
             continue;
         };
         let extension = input
@@ -1279,7 +1280,7 @@ fn superres_run_inner(
             .map(|value| value.to_lowercase())
             .unwrap_or_default();
         if !superres_supported_extension(&extension) {
-            logs.push(format!("跳过（暂不支持 {extension} 格式）：{stem}"));
+            push_log(app, &mut logs, "warn", format!("跳过（暂不支持 {extension} 格式）：{stem}"));
             continue;
         }
         let target = Path::new(&options.output_path).join(superres_output_name(stem, &options.model, scale));
@@ -1327,7 +1328,7 @@ fn superres_run_inner(
                     .and_then(|value| value.to_str())
                     .unwrap_or("output.png")
                     .to_string();
-                logs.push(format!("完成 {} → {}", stem, name));
+                push_log(app, &mut logs, "success", format!("完成 {} → {}", stem, name));
                 outputs.push(target.display().to_string());
                 if let Some(handle) = app {
                     emit_task_progress_percent(
@@ -1340,7 +1341,7 @@ fn superres_run_inner(
                 }
             }
             Err(error) => {
-                logs.push(format!("失败 {stem}：{error}"));
+                push_log(app, &mut logs, "error", format!("失败 {stem}：{error}"));
             }
         }
     }
@@ -1598,6 +1599,15 @@ fn process_base_color(
 ) -> Result<(), String> {
     let image = prepare_image(base_color, alpha, scale)?;
     write_dds(&image, output, format)
+}
+
+/// 逐行结果日志：照旧累积进 TaskResult.logs，同时实时推给前端运行记录区
+/// （运行中逐行可见，而不是任务结束后一次性灌入）。level: info/warn/error/success。
+fn push_log(app: Option<&AppHandle>, logs: &mut Vec<String>, level: &str, line: String) {
+    logs.push(line.clone());
+    if let Some(app) = app {
+        let _ = app.emit("task-log", serde_json::json!({ "line": line, "level": level }));
+    }
 }
 
 fn emit_task_progress(app: &AppHandle, completed: usize, total: usize, message: String) {

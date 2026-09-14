@@ -31,3 +31,25 @@ test('model bake workspace keeps authored colors neutral', () => {
   assert.deepEqual(blueHexLiterals(script, /#([0-9a-f]{6})\b/gi), []);
   assert.deepEqual(blueHexLiterals(script, /0x([0-9a-f]{6})\b/gi), []);
 });
+
+
+test('model bake viewport follows the Marmoset/Substance control scheme', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  assert.match(script, /mouseButtons = \{ LEFT: null, MIDDLE: THREE\.MOUSE\.PAN, RIGHT: THREE\.MOUSE\.PAN \}/);
+  assert.match(script, /controls\.mouseButtons\.LEFT = event\.type === 'keydown' \? THREE\.MOUSE\.ROTATE : null/);
+  assert.match(script, /removeEventListener\('keyup', keyboard\)/);
+  assert.match(script, /const standardViews = \{ 1: 'front', 3: 'side', 7: 'top' \}/);
+  assert.match(script, /Alt\+左键 旋转 · 中键 平移/);
+});
+
+
+test('model bake results are cached locally and exported on demand', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  const state = readFileSync(new URL('../src/renderer/scripts/model-bake-state.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(script, /请选择输出目录/);
+  assert.doesNotMatch(state, /output:/);
+  assert.match(script, /invoke\('bake_export', \{ files: results\.map\(file => file\.path\), directory \}\)/);
+  assert.match(script, /querySelectorAll\('\[data-bake-export\]'\)/);
+  assert.match(script, /结果先缓存在应用数据目录，导出时选择目标文件夹/);
+  assert.match(script, /打开缓存目录/);
+});

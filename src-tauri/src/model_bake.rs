@@ -245,12 +245,10 @@ pub async fn bake_start(
             .ok_or("模型句柄已失效，请重新导入")?
             .path()
             .join("model.json");
-        let root = PathBuf::from(
-            options["output"]
-                .as_str()
-                .filter(|s| !s.trim().is_empty())
-                .ok_or("请选择输出目录")?,
-        );
+        // 结果先缓存到应用数据目录（每次烘焙清空旧缓存），用户在结果页
+        // 手动导出到目标文件夹。
+        let root = bake_cache_root(&app)?;
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
         let output = root.join(format!("AIAS_bake_{}", id()));
@@ -413,6 +411,58 @@ pub fn bake_release(handle: String) -> Result<(), String> {
     Ok(())
 }
 
+fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("bake-cache"))
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+/// 把缓存目录内的贴图复制到用户选择的目标文件夹。源必须位于缓存目录内，
+/// 防止任意路径读取；同名文件直接覆盖（重复导出同目录是常态）。
+fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result<usize, String> {
+    let root = std::fs::canonicalize(cache_root)
+        .map_err(|error| format!("烘焙缓存目录不可用：{error}"))?;
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let mut exported = 0usize;
+    for file in files {
+        let source = std::fs::canonicalize(file)
+            .map_err(|error| format!("贴图文件不存在：{}（{error}）", file))?;
+        if !source.starts_with(&root) {
+            return Err(format!("拒绝导出缓存目录之外的文件：{}", source.display()));
+        }
+        let name = source
+            .file_name()
+            .ok_or_else(|| format!("无效的文件名：{}", source.display()))?;
+        std::fs::copy(&source, directory.join(name)).map_err(|error| {
+            format!("导出 {} 失败：{error}", name.to_string_lossy())
+        })?;
+        exported += 1;
+    }
+    Ok(exported)
+}
+
+#[tauri::command]
+pub async fn bake_export(
+    app: AppHandle,
+    files: Vec<String>,
+    directory: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if directory.trim().is_empty() {
+            return Err("请选择导出目标文件夹。".into());
+        }
+        if files.is_empty() {
+            return Err("没有可导出的贴图。".into());
+        }
+        let root = bake_cache_root(&app)?;
+        let exported = export_files(&root, &files, Path::new(&directory))?;
+        Ok(json!({ "exported": exported, "directory": directory }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(feature = "bake-validation")]
 pub fn validation_fault(job: &str, suspend: bool) -> Result<(), String> {    type Handle = *mut std::ffi::c_void;
     #[link(name = "kernel32")]
@@ -461,5 +511,47 @@ mod tests {
         assert!(validate_bake_options(&json!(true)).is_err());
         assert!(validate_bake_options(&json!({})).is_ok());
         assert!(validate_bake_options(&json!({"output": "C:/tmp", "ao": true})).is_ok());
+    }
+
+    #[test]
+    fn export_copies_cache_files_and_rejects_outside_sources() {
+        let cache = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let a = cache.path().join("1_ao.png");
+        let b = cache.path().join("1_uv.png");
+        std::fs::write(&a, b"ao").unwrap();
+        std::fs::write(&b, b"uv").unwrap();
+        let outside = cache.path().parent().unwrap().join("outside.png");
+        std::fs::write(&outside, b"x").unwrap();
+
+        let exported = export_files(
+            cache.path(),
+            &[a.display().to_string(), b.display().to_string()],
+            output.path(),
+        )
+        .unwrap();
+        assert_eq!(exported, 2);
+        assert_eq!(std::fs::read(output.path().join("1_ao.png")).unwrap(), b"ao");
+        assert_eq!(std::fs::read(output.path().join("1_uv.png")).unwrap(), b"uv");
+
+        let rejected = export_files(
+            cache.path(),
+            &[outside.display().to_string()],
+            output.path(),
+        );
+        assert!(rejected.unwrap_err().contains("缓存目录之外"));
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn export_overwrites_same_named_targets() {
+        let cache = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let file = cache.path().join("2_id.png");
+        std::fs::write(&file, b"first").unwrap();
+        export_files(cache.path(), &[file.display().to_string()], output.path()).unwrap();
+        std::fs::write(&file, b"second").unwrap();
+        export_files(cache.path(), &[file.display().to_string()], output.path()).unwrap();
+        assert_eq!(std::fs::read(output.path().join("2_id.png")).unwrap(), b"second");
     }
 }

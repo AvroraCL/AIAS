@@ -76,6 +76,9 @@
 #bake-uv-canvas { position: absolute; z-index: 2; left: var(--bake-left); right: var(--bake-right); top: 112px; bottom: 100px; margin: auto; max-width: calc(100% - var(--bake-left) - var(--bake-right) - 24px); max-height: calc(100% - 212px); object-fit: contain; border: 1px solid var(--border); background: var(--bg-deep); }
 #bake-uv-canvas[hidden], #bake-three[hidden], #bake-results[hidden] { display: none; }
 #bake-results { position: absolute; z-index: 2; inset: 68px 16px 92px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 220px)); align-content: start; justify-content: center; gap: 13px; overflow: auto; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: none; }
+.bake-results-toolbar { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 4px; }
+.bake-results-toolbar .secondary-action { width: auto; }
+.bake-results-toolbar small { color: var(--text-dim); font-size: 10px; }
 .bake-result { padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .bake-result img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: repeating-conic-gradient(#232428 0 25%, #1a1b1e 0 50%) 0/16px 16px; }
 .bake-result p { margin: 8px 0; color: var(--text-soft); font-size: 11px; }

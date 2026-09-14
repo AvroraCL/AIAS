@@ -260,7 +260,7 @@ fn generate(app: Option<&AppHandle>, options: RunOptions) -> Result<crate::TaskR
             }
             Ok::<_, String>(())
         })();
-        match result { Ok(()) => { completed += 1; logs.push(format!("完成 {input}")); }, Err(error) => logs.push(format!("失败 {input}：{error}")) }
+        match result { Ok(()) => { completed += 1; crate::push_log(app, &mut logs, "success", format!("完成 {input}")); }, Err(error) => crate::push_log(app, &mut logs, "error", format!("失败 {input}：{error}")) }
         progress(1.0, "该素材处理结束");
     }
     if completed == 0 { return Err(logs.join("\n")); }

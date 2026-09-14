@@ -868,9 +868,18 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .activity-item time { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #65656d; font-size: 9px; }
 .activity-item.success strong { color: var(--success); }
 .activity-item.error strong { color: #fff; }
-.log-viewer { min-width: 0; min-height: 0; overflow: auto; padding: 10px 14px; }
+.log-viewer { position: relative; min-width: 0; min-height: 0; overflow: auto; padding: 10px 14px; }
 .task-log { display: none; min-height: 100%; margin: 0; color: #aaaab2; font: 10px/1.55 "Cascadia Mono", "Consolas", monospace; white-space: pre-wrap; }
 .task-log.active { display: block; }
+.log-line { display: block; overflow-wrap: anywhere; }
+.log-line .t { color: #65656d; }
+.log-line.error { color: #ff7a76; }
+.log-line.success { color: var(--success); }
+.log-line.warn { color: #e5c07b; }
+.log-run-sep { margin: 8px 0 4px; color: #55555e; border-top: 1px solid rgba(41, 41, 45, 0.9); }
+.log-run-sep:first-child { margin-top: 0; border-top: none; }
+.log-copy { position: sticky; top: 0; float: right; z-index: 2; width: 26px; height: 26px; min-width: 26px; margin: -2px -4px 0 8px; background: rgba(11, 11, 13, 0.9); }
+.log-copy.hidden { display: none; }
 
 .preview-picker-backdrop { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, 0.72); }
 .preview-picker { display: grid; gap: 14px; width: min(420px, 100%); padding: 20px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-raised); box-shadow: var(--shadow-md); }

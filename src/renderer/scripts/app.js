@@ -54,7 +54,8 @@ import {
   Maximize2,
   Wand2,
   LayoutGrid,
-  CircleDot
+  CircleDot,
+  ClipboardCopy
 } from "lucide";
 
 const defaults = {
@@ -275,11 +276,14 @@ const state = {
   activeMode: "merge",
   activityCount: 0,
   lastOutputPath: "",
+  runningLogId: "",
+  streamingReceived: false,
   updateInProgress: false,
   taskProgressActive: false
 };
 
 const iconSet = {
+  ClipboardCopy,
   Box,
   ListTree,
   SlidersHorizontal,
@@ -1903,6 +1907,7 @@ function syncActiveLog(mode = state.activeMode) {
   document.querySelectorAll(".task-log").forEach((log) => {
     log.classList.toggle("active", log.id === activeLog);
   });
+  $("copy-log")?.classList.toggle("hidden", !activeLog);
 }
 
 const selectionCountIds = {
@@ -2097,13 +2102,60 @@ function setTaskProgress(completed, total, message, percent = null) {
   $("task-progress-track")?.setAttribute("aria-valuenow", String(Math.round(value)));
 }
 
+const LOG_MAX_LINES = 2000;
+
+// 无后端等级标注时的前缀兜底分类（与后端 push_log 的 level 语义对齐）。
+function classifyLogLine(text) {
+  if (/^(失败|错误)/.test(text)) return "error";
+  if (/^跳过/.test(text)) return "warn";
+  if (/^(完成|已保存|转换|拆分)/.test(text)) return "success";
+  return "info";
+}
+
+function logTimeString() {
+  const pad = (value) => String(value).padStart(2, "0");
+  const now = new Date();
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+// 追加一行带时间戳与等级配色的日志；用户停在底部附近时跟随滚动，超上限裁掉头部。
+function appendLogLine(log, text, level = null) {
+  if (!log || text == null) return;
+  const viewer = log.parentElement;
+  const stick = viewer ? viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40 : false;
+  const line = document.createElement("div");
+  line.className = `log-line ${level || classifyLogLine(text)}`;
+  const time = document.createElement("span");
+  time.className = "t";
+  time.textContent = `[${logTimeString()}] `;
+  line.append(time, document.createTextNode(text));
+  log.append(line);
+  while (log.children.length > LOG_MAX_LINES) log.firstElementChild?.remove();
+  if (stick && viewer) viewer.scrollTop = viewer.scrollHeight;
+}
+
+// 同模式连续运行不再清空上一次内容，只追加轮次分隔线。
+function appendLogRunSeparator(log) {
+  if (!log) return;
+  const viewer = log.parentElement;
+  const stick = viewer ? viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40 : false;
+  const separator = document.createElement("div");
+  separator.className = "log-run-sep";
+  separator.textContent = `── 运行 · ${logTimeString()} ──`;
+  log.append(separator);
+  while (log.children.length > LOG_MAX_LINES) log.firstElementChild?.remove();
+  if (stick && viewer) viewer.scrollTop = viewer.scrollHeight;
+}
+
 async function withLog(logId, button, action, title) {
   if (state.taskProgressActive) {
     reportRunBlocker("另一个任务正在运行，请等待完成后重试。");
     return null;
   }
   const log = $(logId);
-  if (log) log.textContent = "";
+  state.runningLogId = logId || "";
+  state.streamingReceived = false;
+  appendLogRunSeparator(log);
   setActivityPanel(true);
   setText("activity-summary", `${title}运行中`);
   const ownsButtonState = button?.dataset.busy !== "true";
@@ -2121,10 +2173,12 @@ async function withLog(logId, button, action, title) {
   setTaskProgress(0, 1, "正在准备任务");
   try {
     const result = await action();
-    for (const line of result.logs || []) {
-      if (log) log.textContent += `${line}\n`;
+    // 运行中已通过 task-log 事件实时收到的行不重复追加；一条都没收到
+    // （如暂无流式事件的后端路径）才退回整批写入。
+    if (!state.streamingReceived) {
+      for (const line of result.logs || []) appendLogLine(log, line);
     }
-    if (log) log.textContent += `完成：${result.completed} / ${result.total}`;
+    appendLogLine(log, `完成：${result.completed} / ${result.total}`, "success");
     const partial = result.completed < result.total;
     if (panel) panel.dataset.status = partial ? "partial" : "success";
     setTaskProgress(result.completed, result.total, partial ? `处理结束 · 成功 ${result.completed}/${result.total}，其余项目请查看日志` : `任务完成 · ${result.completed}/${result.total}`, 100);
@@ -2135,12 +2189,13 @@ async function withLog(logId, button, action, title) {
   } catch (error) {
     if (panel) panel.dataset.status = "error";
     setTaskProgress(0, 1, `任务失败 · ${error.message || error}`, Number(panel?.dataset.percent || 0));
-    if (log) log.textContent += `失败：${error.message || error}`;
+    appendLogLine(log, `失败：${error.message || error}`, "error");
     addActivity(title || "任务失败", error.message || String(error), "error");
     return null;
   } finally {
     clearInterval(elapsedTimer);
     updateElapsed();
+    state.runningLogId = "";
     state.taskProgressActive = false;
     if (ownsButtonState) setBusy(button, false);
     updateStatus();
@@ -2430,6 +2485,18 @@ function bindWorkspaceActions() {
     setText("activity-count", "0");
     setText("activity-summary", "暂无任务");
   });
+  $("copy-log")?.addEventListener("click", async () => {
+    const log = $(modeRegistry[state.activeMode]?.log || "");
+    const text = log ? [...log.children].map((line) => line.textContent).join("\n") : "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      addActivity("日志已复制", `${text.split("\n").length} 行已复制到剪贴板`, "success");
+    } catch (error) {
+      addActivity("复制失败", error.message || String(error), "error");
+    }
+  });
+
   $("open-current-output")?.addEventListener("click", async () => {
     const outputPath = getModeOutputPath();
     if (!outputPath) return;
@@ -2992,6 +3059,13 @@ async function boot() {
       if (!state.taskProgressActive) return;
       const progress = event.payload;
       setTaskProgress(progress.completed, progress.total, progress.message, progress.percent ?? null);
+    });
+    await listen("task-log", (event) => {
+      if (!state.taskProgressActive || !state.runningLogId) return;
+      const log = $(state.runningLogId);
+      if (!log) return;
+      state.streamingReceived = true;
+      appendLogLine(log, event.payload?.line ?? "", event.payload?.level || null);
     });
     await listen("model-progress", (event) => {
       const { modelId, file, completed, total } = event.payload;

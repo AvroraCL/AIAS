@@ -5,12 +5,16 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../src/renderer/scripts/app.js', import.meta.url), 'utf8');
 function fixture() {
   const elements = new Map();
+  // 运行记录改为 DOM 行结构后，withLog 依赖 document.createElement 与
+  // log.append/children；桩只需满足"可追加、有 children 数组"的最小形态。
+  const makeElement = () => ({ textContent: '', dataset: {}, className: '', children: [], firstElementChild: null, scrollTop: 0, scrollHeight: 100, clientHeight: 100, parentElement: null, classList: { remove() {}, toggle() {} }, style: { setProperty() {} }, setAttribute() {}, append() {}, remove() {} });
   const $ = id => {
-    if (!elements.has(id)) elements.set(id, { textContent: '', dataset: {}, classList: { remove() {}, toggle() {} }, style: { setProperty() {} }, setAttribute() {} });
+    if (!elements.has(id)) elements.set(id, makeElement());
     return elements.get(id);
   };
   let cleared = false;
   const context = vm.createContext({ $, state: {}, Date, setText: (id, text) => $(id).textContent = text,
+    document: { createElement: () => makeElement(), createTextNode: text => ({ textContent: text }) },
     setInterval: () => 1, clearInterval: () => { cleared = true; }, setBusy() {}, setActivityPanel() {}, addActivity() {}, reportRunBlocker() {}, getModeOutputPath: () => '', updateStatus() {} });
   vm.runInContext(source.slice(source.indexOf('function setTaskProgress('), source.indexOf('function collectSettings(')), context);
   return { context, $, cleared: () => cleared };
