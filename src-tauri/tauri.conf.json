@@ -57,7 +57,6 @@
       "../build/bake/oidn/OpenImageDenoise_core.dll": "bake/oidn/OpenImageDenoise_core.dll",
       "../build/bake/oidn/OpenImageDenoise_device_cpu.dll": "bake/oidn/OpenImageDenoise_device_cpu.dll",
       "../build/bake/oidn/tbb12.dll": "bake/oidn/tbb12.dll",
-      "../build/bake/oidn/OIDN-LICENSE.txt": "bake/oidn/OIDN-LICENSE.txt",
       "target/release/WebView2Loader.dll": "."
     },
     "windows": {

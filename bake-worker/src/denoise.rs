@@ -43,7 +43,13 @@ impl Oidn {
         if !dll.is_file() {
             return Err(format!("降噪组件不存在：{}", dll.display()));
         }
-        let lib = unsafe { Library::new(&dll) }.map_err(|e| format!("无法加载降噪组件：{e}"))?;
+        // Windows 依赖解析不含 DLL 自身目录：加载前临时切换工作目录到 bin_dir，
+        // 让所有依赖 DLL（tbb、core 等）都能从同一目录正确解析。
+        let old_dir = std::env::current_dir().ok();
+        std::env::set_current_dir(bin_dir).map_err(|e| format!("无法切换到降噪组件目录：{e}"))?;
+        let result = unsafe { Library::new("OpenImageDenoise.dll") };
+        if let Some(d) = old_dir { let _ = std::env::set_current_dir(d); }
+        let lib = result.map_err(|e| format!("无法加载降噪组件：{e}"))?;
         Ok(Self { _lib: lib })
     }
 

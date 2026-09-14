@@ -26,11 +26,9 @@ function run(command, args) { const result = spawnSync(command, args, { cwd: roo
   const out = path.join(root, 'build', 'bake'); fs.mkdirSync(out, { recursive: true });
   fs.copyFileSync(path.join(root, 'bake-worker', 'target', 'release', 'aias-bake-worker.exe'), path.join(out, 'aias-bake-worker.exe'));
   fs.copyFileSync(path.join(root, 'bake-worker', 'shaders', 'ao.dxil'), path.join(out, 'ao.dxil'));
-  // OIDN 降噪器 CPU 忒需文件
-  const oidnOut = path.join(out, 'oidn');
-  fs.mkdirSync(oidnOut, { recursive: true });
+  // OIDN 降噪器 CPU 忒需文件（与 worker exe 同目录，Windows 加载器搜索该目录）
   const oidnBin = path.join(root, '测试区', 'oidn-test', 'bin');
-  for (const name of ['OpenImageDenoise.dll', 'OpenImageDenoise_core.dll', 'OpenImageDenoise_device_cpu.dll', 'tbb12.dll', 'OIDN-LICENSE.txt']) {
-    fs.copyFileSync(path.join(oidnBin, name), path.join(oidnOut, name));
+  for (const name of ['OpenImageDenoise.dll', 'OpenImageDenoise_core.dll', 'OpenImageDenoise_device_cpu.dll', 'tbb12.dll']) {
+    if (fs.existsSync(path.join(oidnBin, name))) fs.copyFileSync(path.join(oidnBin, name), path.join(out, name));
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
