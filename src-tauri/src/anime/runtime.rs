@@ -142,38 +142,79 @@ pub(crate) fn emit_progress(app: Option<&AppHandle>, progress: ModelProgress) {
 }
 
 // Downloads (curl.exe ships with Windows 10+; HTTPS without extra crates)
+enum CurlDownloadError {
+    /// 服务端不支持 Range（curl 退出码 33）：重新从零下载一次。
+    RangeUnsupported,
+    Message(String),
+}
+
+/// 先下载到 `{dest}.part`（有已下载内容时 `-C -` 续传），成功后校验大小并改名到
+/// dest；失败保留 .part 供换镜像后续传。服务端不支持续传时删掉重下一遍。
 pub(crate) fn curl_download(
     url: &str,
     dest: &Path,
     expected_size: Option<u64>,
     on_progress: &dyn Fn(u64, u64),
 ) -> Result<(), String> {
-    if dest.exists() {
-        fs::remove_file(dest).map_err(to_string_error)?;
+    let mut part_name = dest
+        .file_name()
+        .ok_or("下载目标缺少文件名")?
+        .to_os_string();
+    part_name.push(".part");
+    let part = dest.with_file_name(part_name);
+    match curl_download_to(url, &part, expected_size, on_progress) {
+        Ok(()) => {}
+        Err(CurlDownloadError::RangeUnsupported) => {
+            let _ = fs::remove_file(&part);
+            match curl_download_to(url, &part, expected_size, on_progress) {
+                Ok(()) => {}
+                Err(CurlDownloadError::RangeUnsupported) => {
+                    let _ = fs::remove_file(&part);
+                    return Err("下载失败：服务器不支持断点续传。".into());
+                }
+                Err(CurlDownloadError::Message(message)) => return Err(message),
+            }
+        }
+        Err(CurlDownloadError::Message(message)) => return Err(message),
     }
+    fs::rename(&part, dest).map_err(to_string_error)?;
+    Ok(())
+}
+
+fn curl_download_to(
+    url: &str,
+    part: &Path,
+    expected_size: Option<u64>,
+    on_progress: &dyn Fn(u64, u64),
+) -> Result<(), CurlDownloadError> {
+    let resume = fs::metadata(part).map(|meta| meta.len()).unwrap_or(0) > 0;
     // speed-time 是卡死解药：60 秒无进展即失败，外层循环换下一镜像；max-time 只做兜底。
-    let mut child = crate::safety::quiet_command("curl")
-        .args([
-            "-sSL",
-            "--fail",
-            "--retry",
-            "3",
-            "--retry-delay",
-            "2",
-            "--connect-timeout",
-            "30",
-            "--speed-limit",
-            "1024",
-            "--speed-time",
-            "60",
-            "--max-time",
-            "3600",
-            "-o",
-        ])
-        .arg(dest)
+    let mut command = crate::safety::quiet_command("curl");
+    command.args([
+        "-sSL",
+        "--fail",
+        "--retry",
+        "3",
+        "--retry-delay",
+        "2",
+        "--connect-timeout",
+        "30",
+        "--speed-limit",
+        "1024",
+        "--speed-time",
+        "60",
+        "--max-time",
+        "3600",
+    ]);
+    if resume {
+        command.args(["-C", "-"]);
+    }
+    let mut child = command
+        .args(["-o"])
+        .arg(part)
         .arg(url)
         .spawn()
-        .map_err(|error| format!("无法启动 curl：{error}"))?;
+        .map_err(|error| CurlDownloadError::Message(format!("无法启动 curl：{error}")))?;
     let pid = child.id();
 
     let total = head_content_length(url).unwrap_or(0);
@@ -181,37 +222,41 @@ pub(crate) fn curl_download(
         std::thread::sleep(Duration::from_millis(300));
         match child.try_wait() {
             Ok(Some(status)) => {
-                let size = fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0);
+                let size = fs::metadata(part).map(|meta| meta.len()).unwrap_or(0);
                 if !status.success() {
-                    let _ = fs::remove_file(dest);
-                    return Err(format!(
+                    if status.code() == Some(33) {
+                        return Err(CurlDownloadError::RangeUnsupported);
+                    }
+                    return Err(CurlDownloadError::Message(format!(
                         "下载失败（curl 退出码 {}）",
                         status.code().unwrap_or(-1)
-                    ));
+                    )));
                 }
                 if size == 0 {
-                    return Err("下载失败：文件为空。".into());
+                    return Err(CurlDownloadError::Message("下载失败：文件为空。".into()));
                 }
                 if let Some(expected) = expected_size {
                     if size != expected {
-                        let _ = fs::remove_file(dest);
-                        return Err(format!(
+                        // 续传拼接后仍不完整或远端内容已变化：删掉 .part，避免每次
+                        // 都在错误的基线上续传。
+                        let _ = fs::remove_file(part);
+                        return Err(CurlDownloadError::Message(format!(
                             "下载失败：文件大小不匹配（期望 {expected} 字节，实际 {size} 字节）。"
-                        ));
+                        )));
                     }
                 }
                 on_progress(size, if total > 0 { total } else { size });
                 return Ok(());
             }
             Ok(None) => {
-                let size = fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0);
+                let size = fs::metadata(part).map(|meta| meta.len()).unwrap_or(0);
                 on_progress(size, if total > 0 { total } else { size });
             }
             Err(error) => {
                 let _ = crate::safety::quiet_command("taskkill")
                     .args(["/PID", &pid.to_string(), "/F"])
                     .status();
-                return Err(format!("下载过程出错：{error}"));
+                return Err(CurlDownloadError::Message(format!("下载过程出错：{error}")));
             }
         }
     }

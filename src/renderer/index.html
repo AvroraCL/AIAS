@@ -497,7 +497,10 @@
               <div id="task-progress" class="task-progress hidden" aria-live="polite">
                 <div><span id="task-progress-label">正在准备任务</span><strong id="task-progress-value">0%</strong></div>
                 <div id="task-progress-track" class="task-progress-track" role="progressbar" aria-label="任务进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="task-progress-fill"></span></div>
-                <p id="task-progress-detail" class="task-progress-detail"></p>
+                <div class="task-progress-footer">
+                  <p id="task-progress-detail" class="task-progress-detail"></p>
+                  <button id="task-stop" class="secondary-action task-stop hidden" type="button">停止</button>
+                </div>
               </div>
               <button id="open-current-output" class="secondary-action output-action hidden" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开输出目录</button>
             </div>

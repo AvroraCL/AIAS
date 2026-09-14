@@ -9,7 +9,7 @@ function fixture() {
   const elements = new Map();
   // textContent 按 DOM 语义从子节点合成；直接赋值时清空子节点并存为直设文本。
   const makeElement = () => {
-    const el = { dataset: {}, className: '', children: [], __parent: null, __direct: '', firstElementChild: null, scrollTop: 0, scrollHeight: 100, clientHeight: 100, parentElement: null, append(...nodes) { for (const node of nodes) { node.__parent = this; this.children.push(node); } }, remove() { const list = this.__parent?.children; const i = list ? list.indexOf(this) : -1; if (i >= 0) list.splice(i, 1); } };
+    const el = { dataset: {}, className: '', children: [], disabled: false, __parent: null, __direct: '', firstElementChild: null, scrollTop: 0, scrollHeight: 100, clientHeight: 100, parentElement: null, classList: { add() {}, remove() {}, toggle() {} }, style: { setProperty() {} }, setAttribute() {}, addEventListener() {}, append(...nodes) { for (const node of nodes) { node.__parent = this; this.children.push(node); } }, remove() { const list = this.__parent?.children; const i = list ? list.indexOf(this) : -1; if (i >= 0) list.splice(i, 1); } };
     Object.defineProperty(el, 'firstElementChild', { get: () => el.children[0] ?? null });
     Object.defineProperty(el, 'textContent', {
       get: () => (el.children.length ? el.children.map(child => child.textContent).join('') : el.__direct),

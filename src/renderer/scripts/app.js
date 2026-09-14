@@ -11,6 +11,9 @@ import { check, Update } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
 import { animateView, toggleGroup } from "./motion.js";
 import { createUpdateController, scheduleUpdateCheck } from "./updater.mjs";
+import { DEFAULTS as asciiDefaults } from "./ascii-state.mjs";
+import { mapDefaults } from "./material-map-state.mjs";
+import { bakeDefaults } from "./model-bake-state.mjs";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -808,7 +811,8 @@ function createBrowserPreviewApi() {
       stats: async () => {
         const total = 32 * 1024 ** 3;
         return { cpuUsage: 31, memoryUsed: Math.round(total * 0.48), memoryTotal: total };
-      }
+      },
+      cancelTask: async () => {}
     },
     gpu: {
       stats: async () => {
@@ -885,7 +889,8 @@ function createTauriApi() {
       delete: (filePath) => invoke("skin_delete", { filePath })
     },
     system: {
-      stats: () => invoke("system_stats")
+      stats: () => invoke("system_stats"),
+      cancelTask: () => invoke("task_cancel")
     },
     galleryThumbnail: (path) => invoke("gallery_thumbnail", { path }),
     filesExist: (paths) => invoke("files_exist", { paths }),
@@ -2147,6 +2152,36 @@ function appendLogRunSeparator(log) {
   if (stick && viewer) viewer.scrollTop = viewer.scrollHeight;
 }
 
+// 停止按钮属于当前运行：启动时显示并只绑定一次点击；点击后立即禁用防连点，
+// 后端按文件边界停止（可能还要几秒），由 withLog 的 finally 统一恢复。
+function bindTaskStop(button) {
+  if (!button) return;
+  button.classList.remove("hidden");
+  button.disabled = false;
+  button.textContent = "停止";
+  if (button.dataset.stopBound === "true") return;
+  button.dataset.stopBound = "true";
+  button.addEventListener("click", async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    button.textContent = "正在停止…";
+    try {
+      await api.system.cancelTask();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "停止";
+      addActivity("停止失败", error?.message || String(error), "error");
+    }
+  });
+}
+
+function resetTaskStop(button) {
+  if (!button) return;
+  button.classList.add("hidden");
+  button.disabled = false;
+  button.textContent = "停止";
+}
+
 async function withLog(logId, button, action, title) {
   if (state.taskProgressActive) {
     reportRunBlocker("另一个任务正在运行，请等待完成后重试。");
@@ -2162,6 +2197,8 @@ async function withLog(logId, button, action, title) {
   if (ownsButtonState) setBusy(button, true);
   state.taskProgressActive = true;
   const panel = $("task-progress");
+  const stopButton = $("task-stop");
+  bindTaskStop(stopButton);
   if (panel) panel.dataset.status = "running";
   const started = Date.now();
   const updateElapsed = () => {
@@ -2178,11 +2215,20 @@ async function withLog(logId, button, action, title) {
     if (!state.streamingReceived) {
       for (const line of result.logs || []) appendLogLine(log, line);
     }
-    appendLogLine(log, `完成：${result.completed} / ${result.total}`, "success");
-    const partial = result.completed < result.total;
-    if (panel) panel.dataset.status = partial ? "partial" : "success";
-    setTaskProgress(result.completed, result.total, partial ? `处理结束 · 成功 ${result.completed}/${result.total}，其余项目请查看日志` : `任务完成 · ${result.completed}/${result.total}`, 100);
-    addActivity(title || "任务完成", `${result.completed} / ${result.total}`, partial ? "idle" : "success");
+    if (result.cancelled) {
+      // 用户主动停止不是错误：已完成文件保留，按 partial 视觉呈现。
+      // 停止行由后端 push_log 流式推送；仅在没有流式事件时兜底补一条。
+      if (!state.streamingReceived) appendLogLine(log, "任务已停止，已完成文件保留。", "warn");
+      if (panel) panel.dataset.status = "partial";
+      setTaskProgress(result.completed, result.total, `已停止 · 完成 ${result.completed}/${result.total}`);
+      addActivity("已停止", `${result.completed} / ${result.total}`, "idle");
+    } else {
+      appendLogLine(log, `完成：${result.completed} / ${result.total}`, "success");
+      const partial = result.completed < result.total;
+      if (panel) panel.dataset.status = partial ? "partial" : "success";
+      setTaskProgress(result.completed, result.total, partial ? `处理结束 · 成功 ${result.completed}/${result.total}，其余项目请查看日志` : `任务完成 · ${result.completed}/${result.total}`, 100);
+      addActivity(title || "任务完成", `${result.completed} / ${result.total}`, partial ? "idle" : "success");
+    }
     state.lastOutputPath = getModeOutputPath();
     $("open-current-output")?.classList.toggle("hidden", !state.lastOutputPath);
     return result;
@@ -2198,6 +2244,7 @@ async function withLog(logId, button, action, title) {
     state.runningLogId = "";
     state.taskProgressActive = false;
     if (ownsButtonState) setBusy(button, false);
+    resetTaskStop(stopButton);
     updateStatus();
   }
 }
@@ -2510,13 +2557,13 @@ function bindWorkspaceActions() {
   document.querySelectorAll(".inspector select, .inspector input[type='checkbox']").forEach((control) => {
     control.addEventListener("change", () => {
       updateStatus();
-      saveSettings();
+      saveSettings().catch(reportSaveError);
     });
   });
 
   $("anime-model")?.addEventListener("change", () => {
     updateStatus();
-    saveSettings();
+    saveSettings().catch(reportSaveError);
     renderAnimeModelStatus();
     // 结果键带模型 id：切换模型后按新后缀探测/展示对应结果
     renderAnimeGallery();
@@ -2526,12 +2573,12 @@ function bindWorkspaceActions() {
   $("anime-hair-download")?.addEventListener("click", () => manageHairRefiner());
   $("anime-hair-uninstall")?.addEventListener("click", () => manageHairRefiner(true));
   $("anime-hair-refiner")?.addEventListener("change", () => {
-    saveSettings();
+    saveSettings().catch(reportSaveError);
     renderAnimeModelStatus();
     renderAnimeGallery();
   });
   $("anime-detail-recovery")?.addEventListener("change", () => {
-    saveSettings();
+    saveSettings().catch(reportSaveError);
     renderAnimeModelStatus();
     renderAnimeGallery();
   });
@@ -2595,15 +2642,19 @@ function bindSettingsActions() {
     const confirmed = await openPreviewConfirm("重置设置", "所有路径和选项将恢复默认值，确定继续？");
     if (!confirmed) return;
     try {
-      await api.settings.set(defaults);
+      // 主设置与三个子模块（ASCII/材质图/模型烘焙）的设置一并重置；
+      // 子模块内存状态靠随后的 reload 重建，比逐个通知子模块更稳。
+      await api.settings.set({
+        ...defaults,
+        ascii: { ...asciiDefaults },
+        materialMaps: { ...mapDefaults },
+        modelBake: { ...bakeDefaults, workspace: { ...bakeDefaults.workspace } }
+      });
     } catch (e) {
       addActivity("重置失败", e.message || String(e), "error");
       return;
     }
-    state.settings = { ...defaults };
-    applySettingsToForm();
-    updateStatus();
-    addActivity("已重置", "所有设置已恢复默认值", "success");
+    location.reload();
   });
 
   $("set-license")?.addEventListener("click", () => {
@@ -2895,7 +2946,11 @@ function bindRunActions() {
     // 倍率变了，旧结果文件名对不上新倍率：清空后按新倍率重新探测。
     resetSuperresResults();
     renderSuperresGallery();
-    await saveSettings();
+    try {
+      await saveSettings();
+    } catch (e) {
+      reportSaveError(e);
+    }
   });
 }
 
@@ -2928,14 +2983,27 @@ function bindSkinActions() {
   });
 
   $("skin-import-btn")?.addEventListener("click", async () => {
+    const importBtn = $("skin-import-btn");
+    // 涂装动辄 GB 级复制，期间禁用按钮并改文案，防连点并发导入
+    const importHtml = importBtn?.innerHTML;
+    if (importBtn) { importBtn.disabled = true; importBtn.textContent = "导入中…"; }
     try {
       const sources = await api.dialog.selectDirectories();
       if (!sources.length) return;
       const result = await api.skin.import({ sources, targetDirectory: $("skin-path").value });
       addActivity("导入完成", `已导入 ${result.imported} 个涂装`, "success");
+      if (result.errors?.length) {
+        const detail = result.errors.slice(0, 3).join("；");
+        addActivity(result.imported === 0 ? "导入失败" : `导入完成但有 ${result.errors.length} 个失败`, detail, "error");
+      }
       await refreshSkins();
     } catch (e) {
       addActivity("导入失败", e.message || String(e), "error");
+    } finally {
+      if (importBtn) {
+        importBtn.disabled = false;
+        if (importHtml !== undefined) importBtn.innerHTML = importHtml;
+      }
     }
   });
 

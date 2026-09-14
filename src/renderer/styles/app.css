@@ -766,6 +766,8 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .task-progress strong { color: var(--text-soft); font-size: 10px; }
 .task-progress-track { height: 5px; overflow: hidden; border-radius: 999px; background: #2a2a2f; }
 .task-progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent-strong); transition: width 180ms ease; }
+.task-progress-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.task-progress-footer .task-stop { min-height: 26px; padding: 0 12px; margin-top: 6px; font-size: 10px; }
 .output-action { width: 100%; margin-top: 8px; }
 
 .secondary-action,

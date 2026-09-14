@@ -70,10 +70,16 @@ struct Settings {
     anime_detail_recovery: bool,
     #[serde(default)]
     superres_output_path: String,
+    #[serde(default = "default_superres_scale")]
+    superres_scale: String,
 }
 
 fn default_comfyui_address() -> String {
     "127.0.0.1:8188".into()
+}
+
+fn default_superres_scale() -> String {
+    "2".into()
 }
 
 fn default_anime_model() -> String {
@@ -107,6 +113,7 @@ impl Default for Settings {
             comfyui_address: default_comfyui_address(),
             anime_cutout_output_path: String::new(),
             anime_model: default_anime_model(),
+            superres_scale: default_superres_scale(),
             anime_hair_refiner: false,
             anime_detail_recovery: false,
             superres_output_path: String::new(),
@@ -138,6 +145,9 @@ struct TaskResult {
     logs: Vec<String>,
     #[serde(default)]
     outputs: Vec<String>,
+    /// 用户点了停止、任务在文件边界退出：已完成成果保留。
+    #[serde(default)]
+    cancelled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -430,6 +440,7 @@ fn main() {
             model_bake::bake_cancel,
             model_bake::bake_export,
             model_bake::bake_release,
+            task_cancel,
             settings_set,
             texture_find_groups,
             texture_merge_pbr,
@@ -508,6 +519,11 @@ unsafe fn apply_dark_titlebar(hwnd: *mut std::ffi::c_void) {
 }
 
 #[tauri::command]
+fn task_cancel() {
+    safety::request_task_cancel();
+}
+
+#[tauri::command]
 fn settings_get(state: State<AppState>) -> Result<Settings, String> {
     load_settings(&state.settings_path)
 }
@@ -583,25 +599,40 @@ fn texture_merge_pbr_inner(
     let alpha = options.alpha.as_deref().unwrap_or("black");
     let scale = options.scale.as_deref().unwrap_or("none");
     let mut completed = 0;
+    let mut cancelled = false;
+    let _ = safety::take_task_cancel();
 
     for group in &groups {
+        if safety::take_task_cancel() {
+            cancelled = true;
+            push_log(Some(app), &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            break;
+        }
         let c_path = Path::new(&options.output_path).join(format!("{}_c.dds", group.prefix));
         let n_path = Path::new(&options.output_path).join(format!("{}_n.dds", group.prefix));
-        process_base_color(
-            Path::new(&group.files.basecolor),
-            &c_path,
-            alpha,
-            format,
-            scale,
-        )?;
-        process_roughness_metallic_normal(
-            Path::new(&group.files.roughness),
-            Path::new(&group.files.metallic),
-            Path::new(&group.files.normal),
-            &n_path,
-            format,
-            scale,
-        )?;
+        // 逐组捕获：单组坏图跳过并在日志里带组名前缀，不再中断整个批次。
+        let outcome = (|| -> Result<(), String> {
+            process_base_color(
+                Path::new(&group.files.basecolor),
+                &c_path,
+                alpha,
+                format,
+                scale,
+            )?;
+            process_roughness_metallic_normal(
+                Path::new(&group.files.roughness),
+                Path::new(&group.files.metallic),
+                Path::new(&group.files.normal),
+                &n_path,
+                format,
+                scale,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = outcome {
+            push_log(Some(app), &mut logs, "error", format!("失败 {}：{error}", group.prefix));
+            continue;
+        }
         completed += 1;
         push_log(Some(app), &mut logs, "success", format!("完成 {}", group.prefix));
         emit_task_progress(
@@ -617,6 +648,7 @@ fn texture_merge_pbr_inner(
         total: groups.len(),
         logs,
         outputs: Vec::new(),
+        cancelled,
     })
 }
 
@@ -642,82 +674,102 @@ fn texture_split_pbr_inner(
     let output_dir = Path::new(&options.output_path);
     let mut logs = Vec::new();
     let mut completed = 0;
+    let mut cancelled = false;
+    let _ = safety::take_task_cancel();
 
     for file in &options.files {
+        if safety::take_task_cancel() {
+            cancelled = true;
+            push_log(Some(app), &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            break;
+        }
         let file_path = Path::new(file);
-        let stem = file_path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| format!("文件名无效：{file}"))?;
-        let prefix = stem
-            .trim_end_matches("_c")
-            .trim_end_matches("_C")
-            .trim_end_matches("_n")
-            .trim_end_matches("_N");
-        let image = dds_to_image(file_path)?;
-        let rgba = apply_scale(image.to_rgba8(), scale);
-        let (width, height) = rgba.dimensions();
-        let lower = stem.to_lowercase();
+        let Some(stem) = file_path.file_stem().and_then(|value| value.to_str()) else {
+            push_log(Some(app), &mut logs, "error", format!("失败 {file}：文件名无效"));
+            continue;
+        };
+        // 逐文件捕获：单张坏图跳过并在日志里带文件名，不再中断整个批次。
+        let outcome = (|| -> Result<Option<String>, String> {
+            let prefix = stem
+                .trim_end_matches("_c")
+                .trim_end_matches("_C")
+                .trim_end_matches("_n")
+                .trim_end_matches("_N");
+            let image = dds_to_image(file_path)?;
+            let rgba = apply_scale(image.to_rgba8(), scale);
+            let (width, height) = rgba.dimensions();
+            let lower = stem.to_lowercase();
 
-        if lower.ends_with("_c") {
-            let mut rgb = Vec::with_capacity((width * height * 3) as usize);
-            let mut alpha = Vec::with_capacity((width * height) as usize);
-            for pixel in rgba.pixels() {
-                rgb.extend_from_slice(&[pixel[0], pixel[1], pixel[2]]);
-                alpha.push(pixel[3]);
-            }
-            save_rgb_image(
-                &rgb,
-                width,
-                height,
-                output_dir.join(format!("{prefix}_BaseColor.{export_format}")),
-                export_format,
-            )?;
-            if export_alpha {
-                save_luma_image(
-                    &alpha,
+            if lower.ends_with("_c") {
+                let mut rgb = Vec::with_capacity((width * height * 3) as usize);
+                let mut alpha = Vec::with_capacity((width * height) as usize);
+                for pixel in rgba.pixels() {
+                    rgb.extend_from_slice(&[pixel[0], pixel[1], pixel[2]]);
+                    alpha.push(pixel[3]);
+                }
+                save_rgb_image(
+                    &rgb,
                     width,
                     height,
-                    output_dir.join(format!("{prefix}_Alpha.{export_format}")),
+                    output_dir.join(format!("{prefix}_BaseColor.{export_format}")),
                     export_format,
                 )?;
+                if export_alpha {
+                    save_luma_image(
+                        &alpha,
+                        width,
+                        height,
+                        output_dir.join(format!("{prefix}_Alpha.{export_format}")),
+                        export_format,
+                    )?;
+                }
+                Ok(Some(format!(
+                    "拆分 {stem}: BaseColor{}",
+                    if export_alpha { " / Alpha" } else { "" }
+                )))
+            } else if lower.ends_with("_n") {
+                let mut roughness = Vec::with_capacity((width * height) as usize);
+                let mut metallic = Vec::with_capacity((width * height) as usize);
+                let mut normal = RgbaImage::new(width, height);
+                for (x, y, pixel) in rgba.enumerate_pixels() {
+                    roughness.push(255 - pixel[0]);
+                    metallic.push(pixel[2]);
+                    normal.put_pixel(x, y, Rgba([pixel[3], pixel[1], 255, 255]));
+                }
+                save_luma_image(
+                    &roughness,
+                    width,
+                    height,
+                    output_dir.join(format!("{prefix}_Roughness.{export_format}")),
+                    export_format,
+                )?;
+                save_luma_image(
+                    &metallic,
+                    width,
+                    height,
+                    output_dir.join(format!("{prefix}_Metallic.{export_format}")),
+                    export_format,
+                )?;
+                save_dynamic_image(
+                    &DynamicImage::ImageRgba8(normal),
+                    output_dir.join(format!("{prefix}_Normal.{export_format}")),
+                    export_format,
+                )?;
+                Ok(Some(format!("拆分 {stem}: Roughness / Metallic / Normal")))
+            } else {
+                Ok(None)
             }
-            push_log(Some(app), &mut logs, "success", format!(
-                "拆分 {stem}: BaseColor{}",
-                if export_alpha { " / Alpha" } else { "" }
-            ));
-        } else if lower.ends_with("_n") {
-            let mut roughness = Vec::with_capacity((width * height) as usize);
-            let mut metallic = Vec::with_capacity((width * height) as usize);
-            let mut normal = RgbaImage::new(width, height);
-            for (x, y, pixel) in rgba.enumerate_pixels() {
-                roughness.push(255 - pixel[0]);
-                metallic.push(pixel[2]);
-                normal.put_pixel(x, y, Rgba([pixel[3], pixel[1], 255, 255]));
+        })();
+        match outcome {
+            Ok(message) => {
+                if let Some(message) = message {
+                    push_log(Some(app), &mut logs, "success", message);
+                }
+                completed += 1;
+                emit_task_progress(app, completed, options.files.len(), format!("完成 {stem}"));
             }
-            save_luma_image(
-                &roughness,
-                width,
-                height,
-                output_dir.join(format!("{prefix}_Roughness.{export_format}")),
-                export_format,
-            )?;
-            save_luma_image(
-                &metallic,
-                width,
-                height,
-                output_dir.join(format!("{prefix}_Metallic.{export_format}")),
-                export_format,
-            )?;
-            save_dynamic_image(
-                &DynamicImage::ImageRgba8(normal),
-                output_dir.join(format!("{prefix}_Normal.{export_format}")),
-                export_format,
-            )?;
-            push_log(Some(app), &mut logs, "success", format!("拆分 {stem}: Roughness / Metallic / Normal"));
+            Err(error) => push_log(Some(app), &mut logs, "error", format!("失败 {stem}：{error}")),
         }
-        completed += 1;
-        emit_task_progress(app, completed, options.files.len(), format!("完成 {stem}"));
     }
 
     Ok(TaskResult {
@@ -725,6 +777,7 @@ fn texture_split_pbr_inner(
         total: options.files.len(),
         logs,
         outputs: Vec::new(),
+        cancelled,
     })
 }
 
@@ -769,11 +822,17 @@ fn texture_create_mipmap_inner(
             "实验模式仅使用 p0，自动生成到 1×1；p1 等自定义层不参与。".into(),
             "Mipmap_reference.dds：直接缩小对照；Mipmap_intermediate.dds：每层先缩至 75% 再缩至 50%。".into(),
             "两份 DDS 均使用标准减半层级；不改变游戏视距或采样器设置。".into(),
-        ], outputs });
+        ], outputs, cancelled: false });
     }
     let mut files = Vec::new();
+    let mut cancelled = false;
+    let _ = safety::take_task_cancel();
 
     for index in 0..1000 {
+        if safety::take_task_cancel() {
+            cancelled = true;
+            break;
+        }
         if let Some(path) = image_exts()
             .iter()
             .map(|ext| Path::new(&options.input_path).join(format!("p{index}{ext}")))
@@ -805,6 +864,15 @@ fn texture_create_mipmap_inner(
         );
     }
 
+    if cancelled {
+        return Ok(TaskResult {
+            completed: 0,
+            total: files.len(),
+            logs: vec!["任务已停止，未生成文件。".into()],
+            outputs: Vec::new(),
+            cancelled: true,
+        });
+    }
     let output_file = Path::new(&options.output_path).join("Mipmap.dds");
     write_dds_with_mipmaps(&images, &output_file, format)?;
     Ok(TaskResult {
@@ -812,6 +880,7 @@ fn texture_create_mipmap_inner(
         total: files.len(),
         logs: vec![format!("生成 {}", output_file.display())],
         outputs: Vec::new(),
+        cancelled: false,
     })
 }
 
@@ -838,8 +907,16 @@ fn texture_convert_images_to_dds_inner(
     let format = options.format.as_deref().unwrap_or("DXT5");
     let scale = options.scale.as_deref().unwrap_or("none");
     let mut logs = Vec::new();
+    let mut completed = 0usize;
+    let mut cancelled = false;
+    let _ = safety::take_task_cancel();
 
     for file in &options.files {
+        if safety::take_task_cancel() {
+            cancelled = true;
+            push_log(Some(app), &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            break;
+        }
         let input = Path::new(file);
         let output_file = Path::new(&options.output_path)
             .join(
@@ -849,7 +926,12 @@ fn texture_convert_images_to_dds_inner(
                     .unwrap_or("output"),
             )
             .with_extension("dds");
-        image_to_dds(input, &output_file, alpha, format, scale)?;
+        // 逐文件捕获：单张坏图跳过并在日志里带文件名，不再中断整个批次。
+        if let Err(error) = image_to_dds(input, &output_file, alpha, format, scale) {
+            push_log(Some(app), &mut logs, "error", format!("失败 {}：{error}", input.display()));
+            continue;
+        }
+        completed += 1;
         push_log(Some(app), &mut logs, "success", format!(
             "转换 {} -> {}",
             input
@@ -863,7 +945,7 @@ fn texture_convert_images_to_dds_inner(
         ));
         emit_task_progress(
             app,
-            logs.len(),
+            completed,
             options.files.len(),
             format!(
                 "完成 {}",
@@ -876,10 +958,11 @@ fn texture_convert_images_to_dds_inner(
     }
 
     Ok(TaskResult {
-        completed: options.files.len(),
+        completed,
         total: options.files.len(),
         logs,
         outputs: Vec::new(),
+        cancelled,
     })
 }
 
@@ -1051,8 +1134,15 @@ fn anime_cutout_inner(
     }
     let mut outputs = Vec::new();
     let mut completed = 0usize;
+    let mut cancelled = false;
+    let _ = safety::take_task_cancel();
 
     for file in &options.files {
+        if safety::take_task_cancel() {
+            cancelled = true;
+            push_log(app, &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            break;
+        }
         let input = Path::new(file);
         if !input.exists() {
             push_log(app, &mut logs, "warn", format!("跳过（文件不存在）：{file}"));
@@ -1182,6 +1272,7 @@ fn anime_cutout_inner(
         total: options.files.len(),
         logs,
         outputs,
+        cancelled,
     })
 }
 
@@ -1262,9 +1353,16 @@ fn superres_run_inner(
     });
     let mut outputs = Vec::new();
     let mut completed = 0usize;
+    let mut cancelled = false;
     let scale = options.scale.unwrap_or(4).clamp(2, 4);
+    let _ = safety::take_task_cancel();
 
     for (file_index, file) in options.files.iter().enumerate() {
+        if safety::take_task_cancel() {
+            cancelled = true;
+            push_log(app, &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            break;
+        }
         let input = Path::new(file);
         if !input.exists() {
             push_log(app, &mut logs, "warn", format!("跳过（文件不存在）：{file}"));
@@ -1360,6 +1458,7 @@ fn superres_run_inner(
         total: options.files.len(),
         logs,
         outputs,
+        cancelled,
     })
 }
 
@@ -2026,6 +2125,18 @@ fn to_string_error(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_round_trip_includes_superres_scale() {
+        let mut settings = super::Settings::default();
+        assert_eq!(settings.superres_scale, "2");
+        super::merge_settings(&mut settings, serde_json::json!({ "superresScale": "4" })).unwrap();
+        assert_eq!(settings.superres_scale, "4");
+        let serialized = serde_json::to_value(settings.clone()).unwrap();
+        assert_eq!(serialized["superresScale"], "4");
+        let restored: super::Settings = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.superres_scale, "4");
+    }
+
     use super::*;
     use std::io::Cursor;
 

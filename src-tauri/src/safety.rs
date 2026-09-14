@@ -1,4 +1,4 @@
-use std::{collections::HashSet, io::{BufWriter, Write}, path::Path, sync::{Mutex, MutexGuard}};
+use std::{collections::HashSet, io::{BufWriter, Write}, path::Path, sync::{atomic::{AtomicBool, Ordering}, Mutex, MutexGuard}};
 
 static TASK: Mutex<()> = Mutex::new(());
 pub(crate) fn task_guard() -> Result<MutexGuard<'static, ()>, String> {
@@ -7,6 +7,18 @@ pub(crate) fn task_guard() -> Result<MutexGuard<'static, ()>, String> {
         Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
         Err(std::sync::TryLockError::WouldBlock) => Err("另一个图片任务正在运行，请等待完成后重试。".into()),
     }
+}
+
+/// 批量任务的协作式取消：前端点击停止置位，任务循环在文件边界消费。
+/// 消费式（swap false）保证残留不会误停下一个任务；每个任务开始前再清一次。
+static TASK_CANCEL: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn request_task_cancel() {
+    TASK_CANCEL.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn take_task_cancel() -> bool {
+    TASK_CANCEL.swap(false, Ordering::SeqCst)
 }
 
 pub(crate) fn unique_stems(files: &[String]) -> Result<(), String> {
@@ -72,6 +84,14 @@ mod tests {
     fn rejects_cross_directory_and_extension_collisions() {
         assert!(unique_stems(&["a/Hero.png".into(), "b/hero.jpg".into()]).is_err());
         assert!(unique_stems(&["a/hero.png".into(), "b/hero_pose.jpg".into()]).is_ok());
+    }
+    #[test]
+    fn task_cancel_request_is_consumed_once() {
+        let _ = take_task_cancel();
+        assert!(!take_task_cancel());
+        request_task_cancel();
+        assert!(take_task_cancel(), "first take consumes the request");
+        assert!(!take_task_cancel(), "second take must not re-trigger");
     }
     #[test]
     fn exclusive_task_guard_recovers_after_release() {

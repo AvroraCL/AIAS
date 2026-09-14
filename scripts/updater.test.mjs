@@ -110,3 +110,17 @@ test('installation error does not trigger another download or installer', async 
   assert.ok(f.events.some(e => e[0] === '更新失败'));
   assert.deepEqual(f.events.at(-1), ['busy', false]);
 });
+
+test('silent check failure reports nothing, manual check still surfaces it', async () => {
+  const failing = { check: async () => { throw Error('network down'); } };
+  const silent = fixture(failing);
+  await silent.run(true);
+  assert.equal(silent.events.some(e => Array.isArray(e) && e[0] === '更新失败'), false, 'silent failure must not reach the activity feed');
+  assert.equal(silent.events.includes('更新失败'), false, 'silent failure must not change status');
+  assert.deepEqual(silent.events.at(-1), ['busy', false]);
+
+  const manual = fixture(failing);
+  await manual.run(false);
+  assert.ok(manual.events.some(e => Array.isArray(e) && e[0] === '更新失败' && e[2] === 'error'));
+  assert.ok(manual.events.includes('更新失败'));
+});

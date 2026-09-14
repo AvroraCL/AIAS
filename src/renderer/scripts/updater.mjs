@@ -52,9 +52,10 @@ export function createUpdateController({ isDesktop, check, checkMirror, getVersi
       await installer.install();
       ui.activity("更新安装器已启动", "应用将退出以完成更新", "success");
     } catch (error) {
-      const message = error.message || String(error);
-      ui.activity("更新失败", message, "error");
+      // 启动时的自动检查（silent）失败完全安静：不弹窗、不写状态，也不打扰活动流
       if (!silent) {
+        const message = error.message || String(error);
+        ui.activity("更新失败", message, "error");
         ui.status("更新失败");
         await ui.message("更新失败", message);
       }

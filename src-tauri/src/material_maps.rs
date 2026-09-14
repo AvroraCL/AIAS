@@ -264,7 +264,7 @@ fn generate(app: Option<&AppHandle>, options: RunOptions) -> Result<crate::TaskR
         progress(1.0, "该素材处理结束");
     }
     if completed == 0 { return Err(logs.join("\n")); }
-    Ok(crate::TaskResult { completed, total: options.files.len(), logs, outputs })
+    Ok(crate::TaskResult { completed, total: options.files.len(), logs, outputs, cancelled: false })
 }
 #[tauri::command]
 pub(crate) async fn material_maps_generate(app: AppHandle, options: RunOptions) -> Result<crate::TaskResult, String> {
