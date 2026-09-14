@@ -121,9 +121,35 @@ fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {
     assert_eq!(w.len(), 1024);
     let c = [false, false, false, false, true, false, false, false, false];
     let d = bake::dilate(&c, 3, 1);
-    assert!(d.iter().all(|s| *s == Some(4)));
+    assert!(d.iter().all(|s| *s == 4));
     assert_ne!(bake::color(0), bake::color(1));
     assert_eq!(bake::safe_name("中文:/材质"), "中文__材质");
+}
+
+#[test]
+fn material_stems_follow_sp_style_naming() {
+    let named = |id: usize, name: &str| Named {
+        id,
+        name: name.into(),
+    };
+    let stems = bake::material_stems(&[
+        named(0, "Body"),
+        named(1, "Hair"),
+        named(2, "同名"),
+        named(3, "同名"),
+        named(4, "  "),
+    ]);
+    assert_eq!(stems[0], "Body");
+    assert_eq!(stems[1], "Hair");
+    assert_eq!(stems[2], "同名_2");
+    assert_eq!(stems[3], "同名_3");
+    assert_eq!(stems[4], "material_4");
+    for stem in &stems {
+        assert!(!stem.contains("_m0"), "old id-tagged format must not survive");
+    }
+    // 同名区分依据全部材质统计，批量清洗过滤不会改变已定名。
+    let single = bake::material_stems(&[named(0, "同名")]);
+    assert_eq!(single[0], "同名");
 }
 fn hash(mut x: u32) -> u32 {
     x ^= x >> 16;

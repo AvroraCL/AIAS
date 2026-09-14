@@ -48,7 +48,8 @@ pub struct Output {
     pub kind: String,
     pub path: PathBuf,
 }
-pub fn safe_name(name: &str) -> String {
+/// 清洗非法字符、截断并去掉首尾空格/点；空结果返回空串（调用方决定回退名）。
+fn clean_name(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| {
@@ -60,29 +61,76 @@ pub fn safe_name(name: &str) -> String {
         })
         .take(80)
         .collect();
-    let s = s.trim_matches([' ', '.']);
+    s.trim_matches([' ', '.']).to_string()
+}
+
+pub fn safe_name(name: &str) -> String {
+    let s = clean_name(name);
     if s.is_empty() {
         "model".into()
     } else {
-        s.into()
+        s
     }
+}
+
+/// SP 风格的输出命名：按材质名分文件，不带模型名与对象信息。
+/// 重名材质（清洗后同名）整批加 `_{id}` 区分，依据全部材质统计，不随勾选漂移。
+pub fn material_stems(materials: &[crate::model::Named]) -> Vec<String> {
+    let names: Vec<String> = materials
+        .iter()
+        .map(|material| clean_name(&material.name))
+        .collect();
+    materials
+        .iter()
+        .enumerate()
+        .map(|(id, _)| {
+            let name = &names[id];
+            if name.is_empty() {
+                return format!("material_{id}");
+            }
+            if names.iter().filter(|other| *other == name).count() > 1 {
+                format!("{name}_{id}")
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
 }
 pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     let mut f = tempfile::NamedTempFile::new_in(path.parent().ok_or("缺失父目录")?)
         .map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut f, value).map_err(|e| e.to_string())?;
-    f.flush().map_err(|e| e.to_string())?;
+    // serde_json 逐 token 写；未缓冲时每个 token 一次 WriteFile，大模型的
+    // model.json 会产生千万级系统调用（实测 103MB 的导入被拖到几十秒）。
+    {
+        let mut writer = std::io::BufWriter::new(f.as_file_mut());
+        serde_json::to_writer(&mut writer, value).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+    }
     f.as_file().sync_all().map_err(|e| e.to_string())?;
     f.persist(path).map_err(|e| e.to_string())?;
     Ok(())
 }
 fn save(path: &Path, image: image::DynamicImage) -> Result<(), String> {
+    use image::ImageEncoder as _;
     let mut f = tempfile::NamedTempFile::new_in(path.parent().ok_or("缺失父目录")?)
         .map_err(|e| e.to_string())?;
-    image
-        .write_to(&mut f, image::ImageFormat::Png)
+    {
+        let writer = std::io::BufWriter::new(f.as_file_mut());
+        // 默认 zlib-6 编码在批量烘焙里占大头（4K 一批可达分钟级）；改用与
+        // 主应用一致的 fdeflate 快速档，视觉无损、体积略增。
+        image::codecs::png::PngEncoder::new_with_quality(
+            writer,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::Adaptive,
+        )
+        .write_image(
+            image.as_bytes(),
+            image.width(),
+            image.height(),
+            image.color().into(),
+        )
         .map_err(|e| e.to_string())?;
-    f.flush().map_err(|e| e.to_string())?;
+    }
     f.as_file().sync_all().map_err(|e| e.to_string())?;
     f.persist(path).map_err(|e| e.to_string())?;
     Ok(())
@@ -138,18 +186,11 @@ pub fn run(
         directory: options.output.clone(),
         ..Default::default()
     };
-    let mut gpu = None;
-    if options.ao {
-        progress(serde_json::json!({"phase":"构建 GPU 加速结构","progress":0}));
-        let selected: Vec<_> = model
-            .triangles
-            .iter()
-            .filter(|t| options.objects.contains(&t.object))
-            .collect();
-        let vertices: Vec<_> = selected.iter().flat_map(|t| t.positions).collect();
-        let objects: Vec<_> = selected.iter().map(|t| t.object as u32).collect();
-        gpu = Some(Gpu::new(options.device, &vertices, &objects)?);
-    }
+    // GPU 加速结构惰性构建：坏 UV 模型会在逐材质校验里提前失败，不应白付
+    // DXR 初始化与 BLAS 构建（大模型数秒到十几秒），错误信息也不该被
+    // 显存类问题抢先。
+    let mut gpu: Option<Gpu> = None;
+    let stems = material_stems(&model.materials);
     for (position, material) in options.materials.iter().copied().enumerate() {
         if options.cancel_path.exists() {
             result.cancelled = true;
@@ -157,12 +198,7 @@ pub fn run(
         }
         let channel = options.channels.get(&material).copied().unwrap_or(0);
         let report = inspect(&model, material, channel, &options.objects);
-        let prefix = format!(
-            "{}_m{:04}_{}",
-            safe_name(&model.name),
-            material,
-            safe_name(&model.materials[material].name)
-        );
+        let prefix = stems[material].clone();
         let attempt = (|| -> Result<(), String> {
             let (surfaces, covered, wire) = raster(
                 &model,
@@ -213,7 +249,7 @@ pub fn run(
                 let c = color(material);
                 let mut pixels = vec![0; covered.len() * 4];
                 for (i, source) in nearest.iter().enumerate() {
-                    if source.is_some() {
+                    if *source != u32::MAX {
                         pixels[i * 4..i * 4 + 4].copy_from_slice(&c);
                     }
                 }
@@ -232,13 +268,29 @@ pub fn run(
                 });
                 atomic_json(&options.output.join("result.json"), &result)?;
             }
-            if let Some(gpu) = gpu.as_mut() {
+            if options.ao {
+                if gpu.is_none() {
+                    progress(serde_json::json!({"phase":"构建 GPU 加速结构","progress":0}));
+                    let selected: Vec<_> = model
+                        .triangles
+                        .iter()
+                        .filter(|t| options.objects.contains(&t.object))
+                        .collect();
+                    let vertices: Vec<_> = selected.iter().flat_map(|t| t.positions).collect();
+                    let objects: Vec<_> = selected.iter().map(|t| t.object as u32).collect();
+                    gpu = Some(Gpu::new(options.device, &vertices, &objects)?);
+                }
+                let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
                 let mut values = vec![1f32; covered.len()];
                 let block = gpu.block_size;
                 let diagonal = (Vec3::from_array(model.bounds[1])
                     - Vec3::from_array(model.bounds[0]))
                 .length();
                 let bias = (diagonal * 1e-5).max(1e-7).min(options.distance * 0.01);
+                // 进度事件按"进展 ≥1% 或距上次 ≥100ms"节流：4096² 时 chunk 数
+                // 可达上万，逐条跨进程→Rust→IPC→WebView 四跳纯属空耗。
+                let mut last_emit = Instant::now();
+                let mut last_percent = -1i64;
                 for (chunk_index, chunk) in surfaces.chunks(block).enumerate() {
                     let hits = gpu.trace(
                         chunk,
@@ -252,15 +304,27 @@ pub fn run(
                     for (surface, hits) in chunk.iter().zip(hits) {
                         values[surface.pixel as usize] = 1. - hits as f32 / options.samples as f32;
                     }
-                    progress(
-                        serde_json::json!({"phase":format!("材质 {} · GPU AO",material),"material":material,"progress":(position as f64+(chunk_index*block+chunk.len()) as f64/surfaces.len() as f64)/options.materials.len() as f64,"blockSize":block}),
-                    );
+                    let done = (chunk_index * block + chunk.len()) as f64 / surfaces.len() as f64;
+                    let percent = (done * 100.0) as i64;
+                    if percent != last_percent && last_emit.elapsed().as_millis() >= 100 {
+                        last_emit = Instant::now();
+                        last_percent = percent;
+                        progress(
+                            serde_json::json!({"phase":format!("材质 {} · GPU AO",material),"material":material,"progress":(position as f64+done)/options.materials.len() as f64,"blockSize":block}),
+                        );
+                    }
                 }
+                progress(
+                    serde_json::json!({"phase":format!("材质 {} · GPU AO",material),"material":material,"progress":(position as f64+1.0)/options.materials.len() as f64,"blockSize":block}),
+                );
                 let path = options.output.join(format!("{prefix}_ao.png"));
                 if options.bits == 16 {
                     let data: Vec<u16> = nearest
                         .iter()
-                        .map(|s| (s.map(|s| values[s]).unwrap_or(1.) * 65535.).round() as u16)
+                        .map(|s| {
+                            let value = if *s == u32::MAX { 1. } else { values[*s as usize] };
+                            (value * 65535.).round() as u16
+                        })
                         .collect();
                     save(
                         &path,
@@ -276,7 +340,10 @@ pub fn run(
                 } else {
                     let data: Vec<u8> = nearest
                         .iter()
-                        .map(|s| (s.map(|s| values[s]).unwrap_or(1.) * 255.).round() as u8)
+                        .map(|s| {
+                            let value = if *s == u32::MAX { 1. } else { values[*s as usize] };
+                            (value * 255.).round() as u8
+                        })
                         .collect();
                     save(
                         &path,
@@ -460,21 +527,25 @@ fn line(pixels: &mut [u8], n: usize, a: Vec2, b: Vec2) {
         pixels[(y * n + x) * 4..(y * n + x) * 4 + 4].copy_from_slice(&[224, 231, 239, 255]);
     }
 }
-pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<Option<usize>> {
-    let mut nearest: Vec<_> = covered
+/// 内边距扩张：每个像素给出扩张后区域内最近覆盖像素的索引，
+/// u32::MAX 表示扩张后仍未覆盖。哨兵 u32 替代 Option<usize>——
+/// Option 无 niche 优化占 16 B/槽，4096² 下多占约 200 MB。
+pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
+    let mut nearest: Vec<u32> = covered
         .iter()
         .enumerate()
-        .map(|(i, c)| if *c { Some(i) } else { None })
+        .map(|(i, c)| if *c { i as u32 } else { u32::MAX })
         .collect();
-    let mut queue = VecDeque::new();
+    let mut queue: VecDeque<u32> = VecDeque::new();
     let mut distance = vec![u32::MAX; covered.len()];
     for (i, c) in covered.iter().enumerate() {
         if *c {
             distance[i] = 0;
-            queue.push_back(i);
+            queue.push_back(i as u32);
         }
     }
     while let Some(i) = queue.pop_front() {
+        let i = i as usize;
         if distance[i] >= margin {
             continue;
         }
@@ -496,10 +567,10 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<Option<usize>> 
                 continue;
             }
             let j = ny as usize * size + nx as usize;
-            if nearest[j].is_none() {
+            if nearest[j] == u32::MAX {
                 nearest[j] = nearest[i];
                 distance[j] = distance[i] + 1;
-                queue.push_back(j);
+                queue.push_back(j as u32);
             }
         }
     }

@@ -14,6 +14,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let resultChannels = {};
   let capabilitiesRequested = false;
   let saveTimer, renderFrame, unlisten, outputDirectory = '', reportRevision = 0, orthographicHeight = 2, renderWidth = 0, renderHeight = 0;
+  let reportTimer, reportPending = false, reportInFlight = false, inFlightSignature = '', lastReportSignature = '';
+  const objectBounds = new Map();
+  const scratchPoint = new THREE.Vector3(), scratchSize = new THREE.Vector3();
 
   const section = (name, html) => `<section class="bake-control-section"><h3>${name}</h3>${html}</section>`;
   const select = (id, title, entries) => `<label>${title}<select id="bake-${id}" aria-label="${title}">${entries.map(([value, text]) => `<option value="${value}">${text}</option>`).join('')}</select></label>`;
@@ -98,6 +101,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let devices = [];
   const presets = { draft: [512, 32], standard: [2048, 128], high: [4096, 256] };
   const status = text => { $('status').textContent = text; };
+  // 大网格解析/构建前让状态文案先上屏：等两帧覆盖一次绘制；窗口最小化时 rAF
+  // 不触发，用 200ms 定时器兜底，避免导入流程停住。
+  const nextPaint = () => new Promise(resolve => {
+    const timer = setTimeout(resolve, 200);
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); }));
+  });
   const persist = () => {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => save({ ...stored, workspace: { ...stored.workspace } }).catch(notify), 250);
@@ -150,8 +159,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
 
   function updateSceneHelpers() {
     if (!group || !grid || !axes) return;
-    const box = new THREE.Box3().setFromObject(group);
-    if (box.isEmpty()) return;
+    const box = selectionBox();
+    if (!box) return;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const span = Math.max(size.x, size.y, size.z, 0.1);
@@ -268,19 +277,27 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
   }
 
+  // 一次性为全部 (对象,材质) 组合建立网格，并按对象预计算包围盒：之后选择变化只切
+  // mesh.visible，不再重扫三角形重建几何体（该函数只允许在导入/几何体变化时调用）。
   function buildMeshes() {
     init3d();
     if (!group || !geometry) return;
     clearMeshes();
+    objectBounds.clear();
     const batches = new Map();
     for (const triangle of geometry.triangles) {
-      if (!objects.has(triangle.object)) continue;
+      let bounds = objectBounds.get(triangle.object);
+      if (!bounds) objectBounds.set(triangle.object, bounds = new THREE.Box3());
+      for (const position of triangle.positions) bounds.expandByPoint(scratchPoint.set(position[0], position[1], position[2]));
       const key = `${triangle.object}:${triangle.material}`;
       if (!batches.has(key)) batches.set(key, { positions: [], normals: [], uvs: [], material: triangle.material, object: triangle.object });
       const batch = batches.get(key);
-      batch.positions.push(...triangle.positions.flat());
-      batch.normals.push(...triangle.normals.flat());
-      batch.uvs.push(...(triangle.uvs[channels[triangle.material] ?? 0] || [[0, 0], [0, 0], [0, 0]]).flat());
+      const [p0, p1, p2] = triangle.positions;
+      batch.positions.push(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]);
+      const [n0, n1, n2] = triangle.normals;
+      batch.normals.push(n0[0], n0[1], n0[2], n1[0], n1[1], n1[2], n2[0], n2[1], n2[2]);
+      const uv = triangle.uvs[channels[triangle.material] ?? 0] || [[0, 0], [0, 0], [0, 0]];
+      batch.uvs.push(uv[0][0], uv[0][1], uv[1][0], uv[1][1], uv[2][0], uv[2][1]);
     }
     for (const batch of batches.values()) {
       const meshGeometry = new THREE.BufferGeometry();
@@ -295,26 +312,63 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (ao) { mesh.material.aoMap = ao.clone(); mesh.material.aoMap.needsUpdate = true; }
       group.add(mesh);
     }
+    syncMeshVisibility();
     updateSceneHelpers();
     syncDisplayControls();
   }
 
-  function meshBounds() {
-    if (!group?.children.length) return null;
-    const box = new THREE.Box3().setFromObject(group);
+  function syncMeshVisibility() {
+    if (!group) return;
+    for (const mesh of group.children) mesh.visible = objects.has(mesh.userData.object) && materials.has(mesh.userData.material);
+  }
+
+  // 通道切换只更新该材质的 uv 属性，并让 AO 贴图随通道失效或恢复（等价于原整表重建）。
+  function refreshMaterialUv(id) {
+    if (!group || !geometry) return;
+    const channel = channels[id] ?? 0;
+    const values = new Map();
+    for (const triangle of geometry.triangles) {
+      if (triangle.material !== id) continue;
+      if (!values.has(triangle.object)) values.set(triangle.object, []);
+      const uv = triangle.uvs[channel] || [[0, 0], [0, 0], [0, 0]];
+      values.get(triangle.object).push(uv[0][0], uv[0][1], uv[1][0], uv[1][1], uv[2][0], uv[2][1]);
+    }
+    const ao = aoTextures.get(`${id}:${channel}`);
+    for (const mesh of group.children) {
+      if (mesh.userData.material !== id) continue;
+      const next = values.get(mesh.userData.object);
+      if (!next) continue;
+      const attribute = mesh.geometry.getAttribute('uv');
+      if (attribute.array.length === next.length) {
+        attribute.array.set(next);
+        attribute.needsUpdate = true;
+      } else {
+        mesh.geometry.setAttribute('uv', new THREE.Float32BufferAttribute(next, 2));
+      }
+      mesh.material.aoMap?.dispose();
+      mesh.material.aoMap = ao ? ao.clone() : null;
+      if (mesh.material.aoMap) mesh.material.aoMap.needsUpdate = true;
+      mesh.material.needsUpdate = true;
+    }
+  }
+
+  // 取景与网格辅助按对象选择计算（与改造前 setFromObject 选中网格的语义一致）。
+  function selectionBox() {
+    const box = new THREE.Box3();
+    for (const id of objects) {
+      const bounds = objectBounds.get(id);
+      if (bounds) box.union(bounds);
+    }
     return box.isEmpty() ? null : box;
   }
 
   function selectedBounds() {
-    const box = new THREE.Box3();
-    for (const triangle of geometry?.triangles || []) if (objects.has(triangle.object)) {
-      for (const position of triangle.positions) box.expandByPoint(new THREE.Vector3(...position));
-    }
-    return box.isEmpty() ? 0 : box.getSize(new THREE.Vector3()).length();
+    const box = selectionBox();
+    return box ? box.getSize(scratchSize).length() : 0;
   }
 
   function frameSelection(resetDirection = false) {
-    const box = meshBounds();
+    const box = selectionBox();
     if (!box || !camera || !controls) return;
     controls.update();
     const center = box.getCenter(new THREE.Vector3());
@@ -405,10 +459,11 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         input.onchange = () => {
           if (input.checked) selected.add(item.id);
           else selected.delete(item.id);
+          syncMeshVisibility();
           if (name === 'objects') {
-            buildMeshes();
+            updateSceneHelpers();
             $('distance').value = String(Math.max(selectedBounds() * stored.distanceRatio, 0.000001));
-            refreshReports();
+            scheduleRefreshReports();
           }
           refresh();
         };
@@ -428,10 +483,62 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
   }
 
-  async function refreshReports() {
+  const reportSignature = () => JSON.stringify([
+    [...objects].sort((a, b) => a - b),
+    // channels 的键序不稳定，排序后的键值对参与签名，避免同参数被判成新检查。
+    Object.entries(channels).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
+  ]);
+
+  function syncInspecting() {
+    inspecting = reportInFlight || reportPending || reportTimer !== undefined;
+    refresh();
+  }
+
+  function scheduleRefreshReports() {
     if (!model) return;
+    clearTimeout(reportTimer);
+    const signature = reportSignature();
+    if (signature === lastReportSignature) {
+      // 参数与上次成功检查一致：复用报告，不置 inspecting、不发请求。
+      reportTimer = undefined;
+      reportPending = false;
+      if (reportInFlight && inFlightSignature !== signature) ++reportRevision;
+      inspectionError = '';
+      drawUv();
+      syncInspecting();
+      return;
+    }
+    if (reportInFlight && inFlightSignature === signature) { syncInspecting(); return; }
+    inspectionError = '';
+    // 300ms trailing：连续勾选/切换通道只在操作停止后检查一次。
+    reportTimer = setTimeout(() => { reportTimer = undefined; refreshReports(); }, 300);
+    syncInspecting();
+  }
+
+  async function refreshReports() {
+    if (!model || disposed) return;
+    const signature = reportSignature();
+    if (signature === lastReportSignature) {
+      reportPending = false;
+      if (reportInFlight && inFlightSignature !== signature) ++reportRevision;
+      inspectionError = '';
+      drawUv();
+      syncInspecting();
+      return;
+    }
+    if (reportInFlight) {
+      if (inFlightSignature === signature) return;
+      // 后端任务锁一次只允许一个 worker：在途时不并发，只排队，结束后用最新参数补跑。
+      reportPending = true;
+      syncInspecting();
+      return;
+    }
+    reportPending = false;
     const revision = ++reportRevision;
-    inspecting = true; inspectionError = ''; refresh();
+    inFlightSignature = signature;
+    reportInFlight = true;
+    inspectionError = '';
+    syncInspecting();
     try {
       const reports = await invoke('bake_inspect', { handle: model.handle, objects: [...objects], channels });
       if (revision !== reportRevision || disposed) return;
@@ -441,11 +548,20 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         if (index >= 0) material.channels[index] = report;
         else material.channels.push(report);
       }
+      // 只有成功才记签名：失败的检查必须允许重试，不能被缓存跳过。
+      lastReportSignature = signature;
       drawUv();
     } catch (error) {
       if (revision === reportRevision) { inspectionError = String(error); status(`UV 检查失败：${error}`); }
     } finally {
-      if (revision === reportRevision) { inspecting = false; refresh(); }
+      reportInFlight = false;
+      if (reportPending && !disposed) {
+        reportPending = false;
+        refreshReports();
+      } else {
+        reportPending = false;
+        syncInspecting();
+      }
     }
   }
 
@@ -607,9 +723,14 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       pendingModel = data;
       const response = await fetch(convertFileSrc(data.meshPath));
       if (!response.ok) throw Error('无法读取规范化网格');
+      // 大模型 JSON 在主线程解析需数秒到十数秒：先让状态提示上屏，避免界面被误判为卡死。
+      status('正在解析网格数据（大型模型可能需数秒）…');
+      await nextPaint();
       const mesh = await response.json();
       if (!data.materials?.length || !data.objects?.length || !mesh.triangles?.length) throw Error('模型没有可用的网格或材质');
       if (model) await invoke('bake_release', { handle: model.handle });
+      // 新模型已带全量检查报告：丢弃旧防抖/排队与成功签名，避免把新参数误判为已检查。
+      clearTimeout(reportTimer); reportTimer = undefined; reportPending = false; lastReportSignature = '';
       ++reportRevision; inspecting = false; inspectionError = '';
       aoTextures.forEach(texture => texture.dispose()); aoTextures.clear();
       outputDirectory = '';
@@ -629,6 +750,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       }
       lists();
       updatePanelState('outliner'); updatePanelState('settings');
+      status('正在建立三维预览…');
+      await nextPaint();
       buildMeshes();
       resizeRenderer(); reset();
       $('distance').value = String(selectedBounds() * stored.distanceRatio);
@@ -683,9 +806,15 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     for (const file of results) {
       const card = document.createElement('div');
       card.className = 'bake-result';
+      const materialName = model?.materials.find(item => item.id === file.material)?.name;
+      const label = materialName ? `${materialName} · ${file.kind.toUpperCase()}` : `材质 ${file.material} · ${file.kind.toUpperCase()}`;
       const title = document.createElement('p');
-      title.textContent = `材质 ${file.material} · ${file.kind.toUpperCase()}`;
+      title.textContent = label;
       const image = document.createElement('img');
+      // 一次烘焙最多“材质数×3”张全分辨率贴图（4K 单张解码约 67MB）；
+      // 懒加载把解码推迟到卡片接近视口，避免批量解码的内存尖峰。
+      image.loading = 'lazy';
+      image.decoding = 'async';
       image.src = convertFileSrc(file.path);
       image.alt = title.textContent;
       const preview = document.createElement('button');
@@ -802,8 +931,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   $('channel').onchange = () => {
     if (focused === null) return;
     channels[focused] = +$('channel').value;
-    buildMeshes();
-    refreshReports();
+    refreshMaterialUv(focused);
+    scheduleRefreshReports();
   };
   $('distance').onchange = () => {
     const value = +$('distance').value;
@@ -841,7 +970,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   }
 
   $('empty-import').onclick = () => $('import').click();
-  $('check-uv').onclick = () => { setView('uv'); refreshReports(); };
+  $('check-uv').onclick = () => { setView('uv'); scheduleRefreshReports(); };
   root.querySelectorAll('[data-bake-preset]').forEach(button => {
     button.onclick = () => {
       [stored.resolution, stored.samples] = presets[button.dataset.bakePreset];
@@ -853,8 +982,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     button.onclick = () => {
       if (!model || running || loading) return;
       objects = new Set(button.dataset.bakeSelect === 'all' ? model.objects.map(item => item.id) : []);
-      lists(); buildMeshes(); $('distance').value = String(Math.max(selectedBounds() * stored.distanceRatio, 0.000001));
-      refreshReports(); refresh();
+      lists(); syncMeshVisibility(); updateSceneHelpers(); $('distance').value = String(Math.max(selectedBounds() * stored.distanceRatio, 0.000001));
+      scheduleRefreshReports(); refresh();
     };
   });
   const standardViews = { 1: 'front', 3: 'side', 7: 'top' };
@@ -903,6 +1032,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     dispose() {
       disposed = true;
       clearTimeout(saveTimer);
+      clearTimeout(reportTimer);
       cancelAnimationFrame(renderFrame);
       resizeObserver?.disconnect();
       document.removeEventListener('keydown', keyboard);

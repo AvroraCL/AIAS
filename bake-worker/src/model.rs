@@ -147,22 +147,27 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
                 source_object = object_names.len() - 1;
             }
             Some("f") => {
-                let corners: Vec<_> = parts
-                    .map(|p| p.split('/').map(str::to_owned).collect::<Vec<_>>())
-                    .collect();
-                if corners.len() != 3 {
+                // 只需要知道每个角是否带非空 UV/法线；百万级角上分配
+                // String/Vec 是导入的次要瓶颈，直接零分配解析三段。
+                let mut corner = 0usize;
+                let mut uv = [false; 3];
+                let mut normal = [false; 3];
+                for p in parts {
+                    if corner < 3 {
+                        let mut segments = p.split('/');
+                        let _vertex = segments.next();
+                        uv[corner] = segments.next().is_some_and(|s| !s.is_empty());
+                        normal[corner] = segments.next().is_some_and(|s| !s.is_empty());
+                    }
+                    corner += 1;
+                }
+                if corner != 3 {
                     return Err(format!(
                         "源面 {} 不是三角形，请三角化后导出",
                         source_faces.len()
                     ));
                 }
-                let uv = corners
-                    .iter()
-                    .all(|c| c.get(1).is_some_and(|s| !s.is_empty()));
-                let normal = std::array::from_fn::<_, 3, _>(|i| {
-                    corners[i].get(2).is_some_and(|s| !s.is_empty())
-                });
-                source_faces.push((source_object, uv, normal));
+                source_faces.push((source_object, uv.iter().all(|flag| *flag), normal));
             }
             _ => {}
         }
@@ -447,7 +452,9 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
     let mut valid = vec![];
     let mut add = |kind: &str, index: usize, other: Option<usize>| {
         count += 1;
-        if issues.len() < 10000 {
+        // 明细只保留前 2000 条：前端每材质只渲染 30 条，其余用于标红三角；
+        // 上限 10000 时导入响应最坏 21MB，跨 stdout/IPC 两次克隆代价高。
+        if issues.len() < 2000 {
             let t = &model.triangles[index];
             issues.push(Issue {
                 kind: kind.into(),

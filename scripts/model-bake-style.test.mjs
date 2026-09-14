@@ -53,3 +53,32 @@ test('model bake results are cached locally and exported on demand', () => {
   assert.match(script, /结果先缓存在应用数据目录，导出时选择目标文件夹/);
   assert.match(script, /打开缓存目录/);
 });
+
+test('model bake lazily decodes result images and debounces uv inspection', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  assert.match(script, /image\.loading = 'lazy'/);
+  assert.match(script, /image\.decoding = 'async'/);
+  assert.match(script, /function scheduleRefreshReports\(\)/);
+  assert.match(script, /refreshReports\(\); \}, 300\)/);
+  assert.match(script, /lastReportSignature/);
+  assert.match(script, /reportInFlight/);
+});
+
+test('model bake toggles mesh visibility instead of rebuilding meshes on selection change', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  assert.match(script, /function syncMeshVisibility\(\)/);
+  assert.match(script, /mesh\.visible = objects\.has\(mesh\.userData\.object\) && materials\.has\(mesh\.userData\.material\)/);
+  assert.match(script, /const objectBounds = new Map\(\)/);
+  assert.match(script, /objectBounds\.clear\(\)/);
+  assert.match(script, /function selectionBox\(\)/);
+  assert.match(script, /refreshMaterialUv\(focused\)/);
+  // 整表构建只允许导入路径触发：定义 1 处 + 调用 1 处；勾选/通道变化不得再重建。
+  assert.equal([...script.matchAll(/buildMeshes\(\)/g)].length, 2);
+});
+
+test('model bake yields a painted status before parsing large mesh JSON', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  assert.match(script, /await nextPaint\(\)/);
+  assert.match(script, /正在解析网格数据（大型模型可能需数秒）…'\);\s*await nextPaint\(\);\s*const mesh = await response\.json\(\);/);
+});
+

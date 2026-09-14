@@ -446,7 +446,11 @@ impl Gpu {
                 false,
             )?;
             self.sample_memory();
-            for start in (0..samples).step_by(8) {
+            // 每批 64 个采样一次提交。着色器按 sampleStart 顺序累加命中数，
+            // 批次只改变提交次数、不改变逐像素累加顺序，结果逐位一致；
+            // 大批量把 submit/fence 往返从每 8 采样一次降到每 64 一次。
+            const SAMPLE_BATCH: u32 = 64;
+            for start in (0..samples).step_by(SAMPLE_BATCH as usize) {
                 if cancelled() {
                     return Err("任务已取消".into());
                 }
@@ -463,7 +467,7 @@ impl Gpu {
                 let params = [
                     surfaces.len() as u32,
                     start,
-                    8.min(samples - start),
+                    SAMPLE_BATCH.min(samples - start),
                     samples,
                     distance.to_bits(),
                     bias.to_bits(),
