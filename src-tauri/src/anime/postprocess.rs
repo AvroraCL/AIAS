@@ -458,44 +458,6 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
     out
 }
 
-/// O(n) 积分图盒均值。
-/// O(n) 积分图盒均值。`sat`/`out` 由调用方提供以便同一调用点连续求多路均值
-/// （去污染为 4 路）时复用缓冲，省去每次数百 MB 的临时分配与清零；
-/// 逐元素结果与独立分配调用完全一致。
-pub(crate) fn box_mean_f64_into(
-    values: &[f64],
-    w: usize,
-    h: usize,
-    radius: usize,
-    sat: &mut Vec<f64>,
-    out: &mut Vec<f64>,
-) {
-    let stride = w + 1;
-    sat.clear();
-    sat.resize(stride * (h + 1), 0.0);
-    for y in 0..h {
-        let mut row_sum = 0f64;
-        for x in 0..w {
-            row_sum += values[y * w + x];
-            sat[(y + 1) * stride + (x + 1)] = sat[y * stride + (x + 1)] + row_sum;
-        }
-    }
-    out.clear();
-    out.resize(w * h, 0.0);
-    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-        let y0 = y.saturating_sub(radius);
-        let y1 = (y + radius + 1).min(h);
-        for x in 0..w {
-            let x0 = x.saturating_sub(radius);
-            let x1 = (x + radius + 1).min(w);
-            let area = ((y1 - y0) * (x1 - x0)) as f64;
-            let sum = sat[y1 * stride + x1] - sat[y0 * stride + x1] - sat[y1 * stride + x0]
-                + sat[y0 * stride + x0];
-            row[x] = sum / area;
-        }
-    });
-}
-
 /// O(n) 积分图盒均值（f32 版）单次调用形态；生产路径一律走 `box_mean_f32_into`
 /// 复用积分图缓冲，此包装仅供测试直接调用。
 #[cfg(test)]
@@ -504,8 +466,8 @@ pub(crate) fn box_mean_f32(values: &[f32], w: usize, h: usize, radius: usize) ->
     box_mean_f32_into(values, w, h, radius, &mut sat)
 }
 
-/// 同 `box_mean_f64_into`：`sat` 由调用方复用容量，引导滤波/整定一次要连续
-/// 求十余路均值，免去每次数百 MB 积分图的分配与清零；逐元素结果一致。
+/// `sat` 由调用方复用容量，引导滤波/整定一次要连续求十余路均值，
+/// 免去每次数百 MB 积分图的分配与清零；逐元素结果一致。
 pub(crate) fn box_mean_f32_into(
     values: &[f32],
     w: usize,

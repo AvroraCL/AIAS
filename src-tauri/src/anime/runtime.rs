@@ -18,6 +18,15 @@ pub(crate) fn ort_dll_path(base: &Path) -> PathBuf {
 pub(crate) static ORT_READY: OnceLock<()> = OnceLock::new();
 
 pub fn ensure_ort_runtime(base: &Path) -> Result<(), String> {
+    ensure_ort_runtime_with(base, &|_, _| {})
+}
+
+/// 同 `ensure_ort_runtime`，但把运行库下载的字节进度透出给调用方
+/// （首次使用且本机无种子时，CPU 运行库有几十 MB，静默下载看起来像卡死）。
+pub fn ensure_ort_runtime_with(
+    base: &Path,
+    on_progress: &dyn Fn(u64, u64),
+) -> Result<(), String> {
     fs::create_dir_all(base).map_err(to_string_error)?;
     // 进程内 ORT 只会加载一次 dll：优先使用完整 GPU 版运行库，其次才是种子/下载的 CPU 版。
     let dll = if gpu_ort_ready(base) {
@@ -26,7 +35,7 @@ pub fn ensure_ort_runtime(base: &Path) -> Result<(), String> {
         ort_dll_path(base)
     };
     if !dll.exists() {
-        acquire_ort_dll(base)?;
+        acquire_ort_dll(base, on_progress)?;
     }
     if ORT_READY.get().is_some() {
         return Ok(());
@@ -64,7 +73,7 @@ pub(crate) fn ort_seed_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-pub(crate) fn acquire_ort_dll(base: &Path) -> Result<(), String> {
+pub(crate) fn acquire_ort_dll(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Result<(), String> {
     for candidate in ort_seed_candidates() {
         if candidate.exists() {
             // CPU 版核心 dll 就够运行了；provider DLL 由 GPU 运行库自带，不复制
@@ -85,7 +94,7 @@ pub(crate) fn acquire_ort_dll(base: &Path) -> Result<(), String> {
     let archive = tmp_dir.join(format!("ort-{VERSION}.zip"));
     let mut last_error = String::from("无可用下载源");
     for url in archive_urls {
-        match curl_download(&url, &archive, None, &|_, _| {}) {
+        match curl_download(&url, &archive, None, on_progress) {
             Ok(()) => {
                 let status = crate::safety::quiet_command("tar")
                     .args(["-xf"])
@@ -361,6 +370,11 @@ pub fn uninstall_model(base: &Path, id: &str) -> Result<(), String> {
                 errors.push(format!("删除 {} 失败：{error}", file.name));
             }
         }
+        // 顺带清掉中断下载留下的 .part 残片。
+        let part = part_path(&path);
+        if part.exists() {
+            let _ = fs::remove_file(&part);
+        }
     }
     if errors.is_empty() {
         Ok(())
@@ -380,12 +394,23 @@ pub fn uninstall_hair_refiner(base: &Path) -> Result<(), String> {
                 errors.push(format!("删除 {} 失败：{error}", file.name));
             }
         }
+        let part = part_path(&path);
+        if part.exists() {
+            let _ = fs::remove_file(&part);
+        }
     }
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors.join("；"))
     }
+}
+
+/// `.part` 临时文件路径（与 curl_download 的命名一致）。
+pub(crate) fn part_path(dest: &Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    dest.with_file_name(name)
 }
 
 pub(crate) fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {

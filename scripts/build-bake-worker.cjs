@@ -12,8 +12,12 @@ function run(command, args) { const result = spawnSync(command, args, { cwd: roo
 (async () => {
   fs.mkdirSync(tools, { recursive: true });
   const archive = path.join(tools, 'dxc.zip');
-  if (!fs.existsSync(archive)) { const response = await fetch(url); if (!response.ok) throw Error(`DXC download: ${response.status}`); fs.writeFileSync(archive, Buffer.from(await response.arrayBuffer())); }
-  if (crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== sha256) throw Error('DXC checksum mismatch');
+  if (!fs.existsSync(archive)) { const response = await fetch(url, { signal: AbortSignal.timeout(60_000) }); if (!response.ok) throw Error(`DXC download: ${response.status}`); fs.writeFileSync(archive, Buffer.from(await response.arrayBuffer())); }
+  if (crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== sha256) {
+    // 损坏的缓存会让后续每次构建都在同一份坏档上失败，删掉让它下次自动重下。
+    fs.unlinkSync(archive);
+    throw Error('DXC checksum mismatch (cached archive removed; retry to re-download)');
+  }
   // Always extract the verified archive; a modified cached executable is never trusted.
   const quote = value => `'${value.replaceAll("'", "''")}'`;
   run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath ${quote(archive)} -DestinationPath ${quote(tools)} -Force`]);

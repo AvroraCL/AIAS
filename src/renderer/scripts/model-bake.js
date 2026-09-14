@@ -6,7 +6,7 @@ import { bakeDefaults as defaults, restoreBakeSettings } from './model-bake-stat
 export function createModelBake({ root, desktop, invoke, open, openPath, convertFileSrc, listen, settings, save, busy, withLog, notify, syncSelect = () => {}, progress }) {
   const stored = restoreBakeSettings(settings);
   let model = null, geometry = null, active = false, running = false, loading = false, disposed = false, job = '', view = 'model';
-  let objects = new Set(), materials = new Set(), channels = {}, focused = null, results = [];
+  let materials = new Set(), channels = {}, focused = null, results = [];
   let renderer, controls, scene, camera, group, grid, axes, resizeObserver;
   let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false;
   let narrowPanel = 'settings';
@@ -63,11 +63,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         </div></details>
       </div>
       <div id="bake-viewport-note" class="bake-viewport-note">Alt+左键 旋转 · 中键 平移 · 滚轮 缩放 · F 聚焦 · 1/3/7 前侧顶视图</div>
-      <aside id="bake-outliner-panel" class="bake-float-panel bake-outliner-panel" aria-label="对象与材质">
-        <header class="bake-panel-heading"><h2>对象与材质</h2><button data-bake-panel-toggle="outliner" class="bake-floating-button bake-panel-close" type="button" aria-label="收起对象与材质面板">×</button></header>
+      <aside id="bake-outliner-panel" class="bake-float-panel bake-outliner-panel" aria-label="材质">
+        <header class="bake-panel-heading"><h2>材质</h2><button data-bake-panel-toggle="outliner" class="bake-floating-button bake-panel-close" type="button" aria-label="收起材质面板">×</button></header>
         <div class="bake-panel-scroll">
-          <section class="bake-outliner-section"><h3>参与烘焙的对象 <span id="bake-object-count"></span></h3><div class="bake-list-actions"><button data-bake-select="all" type="button">全选</button><button data-bake-select="none" type="button">清空</button></div><div id="bake-objects"></div></section>
-          <section class="bake-outliner-section"><h3>输出材质</h3><small class="bake-list-note">勾选决定输出，点击名称检查 UV</small><div id="bake-materials"></div></section>
+          <section class="bake-outliner-section"><h3>输出材质 <span id="bake-object-count"></span></h3><div class="bake-list-actions"><button data-bake-select="all" type="button">全选</button><button data-bake-select="none" type="button">清空</button></div><small class="bake-list-note">勾选决定输出，点击名称检查 UV</small><div id="bake-materials"></div></section>
           <section class="bake-control-section"><p id="bake-focused">选择材质检查 UV</p>${select('channel', '当前材质 UV 通道', [[0, 'UV0']])}<button id="bake-check-uv" class="secondary-action" type="button">检查当前材质 UV</button><div id="bake-issues" hidden></div></section>
         </div>
       </aside>
@@ -119,7 +118,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (inspecting) return '正在检查 UV…';
     if (inspectionError) return 'UV 检查失败，请重新检查后烘焙。';
     if (!model) return '请导入模型。';
-    if (!objects.size || !materials.size) return '请选择对象和输出材质。';
+    if (!materials.size) return '请选择输出材质。';
     if (!stored.ao && !stored.uv && !stored.id) return '请选择输出类型。';
     if (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0) return '遮蔽距离必须大于 0。';
     if (!Number.isInteger(+$('margin').value) || +$('margin').value < 0 || +$('margin').value > 128) return '边缘扩展应为 0–128 的整数。';
@@ -319,7 +318,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
 
   function syncMeshVisibility() {
     if (!group) return;
-    for (const mesh of group.children) mesh.visible = objects.has(mesh.userData.object) && materials.has(mesh.userData.material);
+    for (const mesh of group.children) mesh.visible = materials.has(mesh.userData.material);
   }
 
   // 通道切换只更新该材质的 uv 属性，并让 AO 贴图随通道失效或恢复（等价于原整表重建）。
@@ -352,13 +351,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
   }
 
-  // 取景与网格辅助按对象选择计算（与改造前 setFromObject 选中网格的语义一致）。
+  // 取景与网格辅助覆盖整个模型（对象不再参与筛选）。
   function selectionBox() {
     const box = new THREE.Box3();
-    for (const id of objects) {
-      const bounds = objectBounds.get(id);
-      if (bounds) box.union(bounds);
-    }
+    for (const bounds of objectBounds.values()) box.union(bounds);
     return box.isEmpty() ? null : box;
   }
 
@@ -447,47 +443,37 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   }
 
   function lists() {
-    for (const [name, items, selected] of [['objects', model.objects, objects], ['materials', model.materials, materials]]) {
-      $(name).replaceChildren();
-      for (const item of items) {
-        const row = document.createElement('div');
-        row.className = 'bake-select-row';
-        const input = document.createElement('input');
-        input.type = 'checkbox';
-        input.checked = selected.has(item.id);
-        input.setAttribute('aria-label', `${name === 'objects' ? '对象' : '材质'} ${item.id} ${item.name}`);
-        input.onchange = () => {
-          if (input.checked) selected.add(item.id);
-          else selected.delete(item.id);
-          syncMeshVisibility();
-          if (name === 'objects') {
-            updateSceneHelpers();
-            $('distance').value = String(Math.max(selectedBounds() * stored.distanceRatio, 0.000001));
-            scheduleRefreshReports();
-          }
-          refresh();
-        };
-        const label = document.createElement('button');
-        label.className = 'bake-item';
-        label.type = 'button';
-        label.textContent = item.name;
-        label.title = item.name;
-        label.dataset.material = item.id;
-        label.onclick = () => {
-          if (name === 'materials') focusMaterial(item.id);
-          else { input.checked = !input.checked; input.onchange(); }
-        };
-        row.append(input, label);
-        $(name).append(row);
-      }
+    const container = $('materials');
+    container.replaceChildren();
+    for (const item of model.materials) {
+      const row = document.createElement('div');
+      row.className = 'bake-select-row';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = materials.has(item.id);
+      input.setAttribute('aria-label', `材质 ${item.id} ${item.name}`);
+      input.onchange = () => {
+        if (input.checked) materials.add(item.id);
+        else materials.delete(item.id);
+        syncMeshVisibility();
+        refresh();
+      };
+      const label = document.createElement('button');
+      label.className = 'bake-item';
+      label.type = 'button';
+      label.textContent = item.name;
+      label.title = item.name;
+      label.dataset.material = item.id;
+      label.onclick = () => focusMaterial(item.id);
+      row.append(input, label);
+      container.append(row);
     }
   }
 
-  const reportSignature = () => JSON.stringify([
-    [...objects].sort((a, b) => a - b),
+  const reportSignature = () => JSON.stringify(
     // channels 的键序不稳定，排序后的键值对参与签名，避免同参数被判成新检查。
     Object.entries(channels).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
-  ]);
+  );
 
   function syncInspecting() {
     inspecting = reportInFlight || reportPending || reportTimer !== undefined;
@@ -540,7 +526,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     inspectionError = '';
     syncInspecting();
     try {
-      const reports = await invoke('bake_inspect', { handle: model.handle, objects: [...objects], channels });
+      // 对象不再参与筛选：始终传全部对象 id（worker 按此过滤三角形）。
+      const reports = await invoke('bake_inspect', { handle: model.handle, objects: model.objects.map(item => item.id), channels });
       if (revision !== reportRevision || disposed) return;
       for (const report of reports) {
         const material = model.materials.find(item => item.id === report.material);
@@ -581,7 +568,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const report = model.materials.find(material => material.id === focused)?.channels.find(channel => channel.channel === (channels[focused] ?? 0));
     const bad = new Set((report?.issues || []).flatMap(issue => [issue.triangle, issue.otherTriangle]).filter(index => index != null));
     geometry.triangles.forEach((triangle, index) => {
-      if (triangle.material !== focused || !objects.has(triangle.object)) return;
+      if (triangle.material !== focused) return;
       const uv = triangle.uvs[channels[focused] ?? 0];
       if (!uv) return;
       context.beginPath();
@@ -663,7 +650,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('check-uv').disabled = !model || locked || inspecting;
     $('cancel').disabled = cancelling;
     $('progress').hidden = !running;
-    $('object-count').textContent = model ? `${objects.size} / ${model.objects.length}` : '';
     const count = materials.size * ['ao', 'uv', 'id'].filter(key => stored[key]).length;
     $('output-summary').textContent = `${materials.size} 个材质 · 预计 ${count} 张贴图`;
     $('quality-note').textContent = stored.ao ? `${stored.samples} 次 AO 采样 · ${stored.bits} 位灰度` : 'UV 与 ID 导出不使用 AO 采样';
@@ -738,7 +724,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       pendingModel = null;
       geometry = mesh;
       highlightedTriangle = null;
-      objects = new Set(model.objects.map(item => item.id));
       materials = new Set(model.materials.map(item => item.id));
       channels = Object.fromEntries(model.materials.map(item => [item.id, 0]));
       results = [];
@@ -879,7 +864,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         const data = await invoke('bake_start', {
           handle: model.handle,
           jobId: job,
-          options: { ...options, device: +stored.device, objects: [...objects], materials: [...materials], channels: { ...channels }, distance: +$('distance').value },
+          options: { ...options, device: +stored.device, objects: model.objects.map(item => item.id), materials: [...materials], channels: { ...channels }, distance: +$('distance').value },
         });
         showResults(data);
         return {
@@ -981,9 +966,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   root.querySelectorAll('[data-bake-select]').forEach(button => {
     button.onclick = () => {
       if (!model || running || loading) return;
-      objects = new Set(button.dataset.bakeSelect === 'all' ? model.objects.map(item => item.id) : []);
-      lists(); syncMeshVisibility(); updateSceneHelpers(); $('distance').value = String(Math.max(selectedBounds() * stored.distanceRatio, 0.000001));
-      scheduleRefreshReports(); refresh();
+      materials = new Set(button.dataset.bakeSelect === 'all' ? model.materials.map(item => item.id) : []);
+      lists(); syncMeshVisibility(); scheduleRefreshReports(); refresh();
     };
   });
   const standardViews = { 1: 'front', 3: 'side', 7: 'top' };

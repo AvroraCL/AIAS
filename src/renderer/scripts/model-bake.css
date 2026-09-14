@@ -23,7 +23,7 @@
 .bake-view-tabs { justify-self: center; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .bake-view-tabs button { min-width: 54px; min-height: 28px; padding: 0 10px; border: 0; border-radius: calc(var(--radius) - 3px); color: var(--text-dim); background: transparent; font-size: 11px; }
 .bake-view-tabs button:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
-.bake-view-tabs button.active { color: var(--text); background: var(--surface-hover); }
+.bake-view-tabs button.active { color: var(--text); background: var(--surface-hover); box-shadow: inset 0 0 0 1px var(--border-strong); }
 
 .bake-float-panel { position: absolute; z-index: 4; top: 68px; bottom: 90px; display: flex; flex-direction: column; width: 226px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: none; }
 .bake-outliner-panel { left: 16px; bottom: auto; max-height: calc(100% - 158px); }
@@ -95,7 +95,6 @@
 .bake-floating-button svg { width: 15px; height: 15px; }
 .bake-import-button { background: var(--surface-raised); color: var(--text-soft); border-color: var(--border-strong); }
 .bake-import-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
-.bake-floating-button.active, .bake-view-tabs button.active { background: var(--surface-hover); box-shadow: inset 0 -2px var(--text-soft); }
 .bake-display-tools { position: absolute; z-index: 6; top: 68px; left: var(--bake-left); display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; }
 .bake-display-tools[hidden] { display: none; }
 .bake-display-tools > button { border-color: transparent; }

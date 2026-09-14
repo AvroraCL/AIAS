@@ -449,6 +449,8 @@ pub async fn bake_export(
     directory: String,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // 持任务锁：否则"导出期间开始烘焙"会清空缓存，导出到一半报文件不存在。
+        let _guard = crate::safety::task_guard()?;
         if directory.trim().is_empty() {
             return Err("请选择导出目标文件夹。".into());
         }

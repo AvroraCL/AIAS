@@ -1453,6 +1453,8 @@ pub(crate) fn try_run_birefnet_path(
     let (w, h) = rgb.dimensions();
 
     // Exports fix the input square; fall back if a rebuild is dynamic.
+    // mut 仅在测试构建（下方 cfg(test) 的尺寸覆盖）需要。
+    #[cfg_attr(not(test), allow(unused_mut))]
     let (mut seg_h, mut seg_w) = input_size(session).unwrap_or((1024, 1024));
     // 动态 shape 的外部候选只能在开发期按显式尺寸复核；正式模型仍严格使用
     // 各自导出声明的输入尺寸，避免环境变量悄然改变用户侧输出或显存占用。

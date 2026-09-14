@@ -163,21 +163,28 @@ pub(crate) struct Preview {
     source: String, normal: String, height: String, width: u32, height_pixels: u32,
 }
 #[tauri::command]
-pub(crate) async fn material_maps_preview(input: String, parameters: Parameters) -> Result<Preview, String> {
+pub(crate) async fn material_maps_preview(input: String, parameters: Parameters, views: Option<Vec<String>>) -> Result<Preview, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _task = crate::safety::task_guard()?;
-        preview(&input, &parameters)
+        preview(&input, &parameters, views.as_deref())
     })
     .await
     .map_err(crate::to_string_error)?
 }
-fn preview(input: &str, parameters: &Parameters) -> Result<Preview, String> {
+/// `views` 按需编码：前端只拿当前视图需要的贴图（拖滑杆时通常只需 normal），
+/// 未请求的字段返回空串。缺省（None）返回全部三张，保持旧调用兼容。
+fn preview(input: &str, parameters: &Parameters, views: Option<&[String]>) -> Result<Preview, String> {
         parameters.validate()?;
+        let wanted = |name: &str| views.is_none_or(|list| list.iter().any(|view| view == name));
         let image = decode(Path::new(&input))?;
         let source = if image.width().max(image.height()) > 1024 { image.resize(1024, 1024, image::imageops::FilterType::Triangle) } else { image };
-        let field = height_field(&source, &parameters);
-        Ok(Preview { source: png_data(&source)?, normal: png_data(&DynamicImage::ImageRgb8(normals(&field, &parameters)))?,
-            height: png_data(&height_image(&field, 8))?, width: source.width(), height_pixels: source.height() })
+        let field = height_field(&source, parameters);
+        Ok(Preview {
+            source: if wanted("source") { png_data(&source)? } else { String::new() },
+            normal: if wanted("normal") { png_data(&DynamicImage::ImageRgb8(normals(&field, parameters)))? } else { String::new() },
+            height: if wanted("height") { png_data(&height_image(&field, 8))? } else { String::new() },
+            width: source.width(), height_pixels: source.height(),
+        })
 }
 
 #[derive(Deserialize)]
@@ -238,7 +245,14 @@ fn generate(app: Option<&AppHandle>, options: RunOptions) -> Result<crate::TaskR
     std::fs::create_dir_all(&options.output_path).map_err(crate::to_string_error)?;
     let plan = output_plan(&options)?;
     let mut outputs = Vec::new(); let mut logs = Vec::new(); let mut completed = 0;
+    let mut cancelled = false;
+    let _ = crate::safety::take_task_cancel();
     for (index, (input, targets)) in options.files.iter().zip(plan).enumerate() {
+        if crate::safety::take_task_cancel() {
+            cancelled = true;
+            crate::push_log(app, &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            break;
+        }
         let progress = |fraction: f64, phase: &str| {
             if let Some(app) = app { crate::emit_task_progress_percent(app, index, options.files.len(),
                 format!("第 {}/{} 张 · {} · {phase}", index + 1, options.files.len(), Path::new(input).file_name().unwrap_or_default().to_string_lossy()),
@@ -263,8 +277,8 @@ fn generate(app: Option<&AppHandle>, options: RunOptions) -> Result<crate::TaskR
         match result { Ok(()) => { completed += 1; crate::push_log(app, &mut logs, "success", format!("完成 {input}")); }, Err(error) => crate::push_log(app, &mut logs, "error", format!("失败 {input}：{error}")) }
         progress(1.0, "该素材处理结束");
     }
-    if completed == 0 { return Err(logs.join("\n")); }
-    Ok(crate::TaskResult { completed, total: options.files.len(), logs, outputs, cancelled: false })
+    if completed == 0 && !cancelled { return Err(logs.join("\n")); }
+    Ok(crate::TaskResult { completed, total: options.files.len(), logs, outputs, cancelled })
 }
 #[tauri::command]
 pub(crate) async fn material_maps_generate(app: AppHandle, options: RunOptions) -> Result<crate::TaskResult, String> {
@@ -280,6 +294,9 @@ pub(crate) async fn material_maps_generate(app: AppHandle, options: RunOptions) 
 mod tests {
     use super::*;
     use image::GenericImageView;
+    // 取消标志是进程全局的；跑 generate 的测试串行化，避免一个测试的取消请求
+    // 被另一个测试的循环检查消费造成偶发失败。
+    static GENERATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn gray(w: u32, h: u32, sample: impl Fn(u32, u32) -> u16) -> DynamicImage {
         DynamicImage::ImageLuma16(ImageBuffer::from_fn(w, h, |x,y| Luma([sample(x,y)])))
     }
@@ -369,6 +386,7 @@ mod tests {
     }
     #[test]
     fn generation_writes_sixteen_bit_height_and_pbr_named_normal() {
+        let _guard = GENERATE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let temp=area();let input=temp.path().join("tile_basecolor.png");
         gray(7,5,|x,y|(10000+x*700+y*300) as u16).save(&input).unwrap();
         let result=generate(None,RunOptions {files:vec![input.display().to_string()],output_path:temp.path().display().to_string(),kind:"normal".into(),parameters:Parameters{also_height:true,..Default::default()}}).unwrap();
@@ -378,6 +396,52 @@ mod tests {
         assert_eq!(image::open(temp.path().join("tile_normal.png")).unwrap().color(),image::ColorType::Rgb8);
     }
     #[test]
+    fn cancel_residual_is_cleared_and_does_not_stop_next_batch() {
+        let _guard = GENERATE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::safety::request_task_cancel();
+        let temp = area();
+        let input = temp.path().join("residual_basecolor.png");
+        gray(4, 4, |_, _| 20000).save(&input).unwrap();
+        let result = generate(None, RunOptions {
+            files: vec![input.display().to_string()],
+            output_path: temp.path().display().to_string(),
+            kind: "normal".into(),
+            parameters: Parameters::default(),
+        })
+        .unwrap();
+        assert_eq!(result.completed, 1);
+        assert!(!result.cancelled, "残留的取消请求必须被批次开始处清掉");
+    }
+
+    #[test]
+    fn cancel_during_batch_stops_at_file_boundary_and_keeps_results() {
+        let _guard = GENERATE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let temp = area();
+        let mut files = Vec::new();
+        for index in 0..60 {
+            let path = temp.path().join(format!("batch_{index:02}_basecolor.png"));
+            gray(128, 128, |x, y| (x * 300 + y * 200) as u16).save(&path).unwrap();
+            files.push(path.display().to_string());
+        }
+        let output_path = temp.path().display().to_string();
+        let handle = std::thread::spawn(move || {
+            generate(None, RunOptions {
+                files,
+                output_path,
+                kind: "normal".into(),
+                parameters: Parameters::default(),
+            })
+        });
+        // 给首张图留出处理起步时间后请求停止；60 张 128² 的处理远超此窗口。
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        crate::safety::request_task_cancel();
+        let result = handle.join().unwrap().unwrap();
+        assert!(result.cancelled, "循环应在文件边界消费取消请求");
+        assert!(result.completed < 60, "应停在批次中途而不是跑完");
+        assert!(result.logs.iter().any(|line| line.contains("任务已停止")), "停止提示应进入日志");
+    }
+
+    #[test]
     #[ignore = "manual real-material verification within test area"]
     fn real_material_export() {
         let root=Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("测试区");
@@ -385,7 +449,7 @@ mod tests {
         let out=root.join("AB测试结果/13_material_maps");
         let result=generate(None,RunOptions{files:vec![input.display().to_string()],output_path:out.display().to_string(),kind:"normal".into(),parameters:Parameters{also_height:true,strength:3.0,..Default::default()}}).unwrap();
         assert_eq!(result.completed,1);
-        let preview=preview(&input.display().to_string(),&Parameters{strength:3.0,..Default::default()}).unwrap();
+        let preview=preview(&input.display().to_string(),&Parameters{strength:3.0,..Default::default()},None).unwrap();
         assert!(preview.width.max(preview.height_pixels)<=1024);
         std::fs::write(out.join("preview.json"),serde_json::to_vec(&preview).unwrap()).unwrap();
         let source=decode(&input).unwrap().resize(1024,1024,image::imageops::FilterType::Triangle);

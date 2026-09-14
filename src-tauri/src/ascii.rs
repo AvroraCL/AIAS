@@ -1,5 +1,5 @@
 use base64::Engine;
-use std::{fs, path::Path};
+use std::path::Path;
 
 fn export_bytes(format: &str, content: &str) -> Result<Vec<u8>, String> {
     if content.len() > 32 * 1024 * 1024 {
@@ -57,7 +57,10 @@ fn write_export(path: String, format: String, content: String) -> Result<String,
         return Err("文件扩展名与导出格式不一致。".into());
     }
     let bytes = export_bytes(&format, &content)?;
-    fs::write(target, bytes).map_err(|e| format!("保存失败：{e}"))?;
+    crate::safety::atomic_write(target, |writer| {
+        use std::io::Write;
+        writer.write_all(&bytes).map_err(|e| format!("保存失败：{e}"))
+    })?;
     Ok(path)
 }
 
@@ -86,9 +89,9 @@ mod tests {
             .to_string_lossy()
             .to_string();
         write_export(txt.clone(), "txt".into(), " @\n. ".into()).unwrap();
-        assert_eq!(fs::read_to_string(&txt).unwrap(), " @\n. ");
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), " @\n. ");
         assert!(write_export(txt.clone(), "png".into(), "invalid".into()).is_err());
-        assert_eq!(fs::read_to_string(&txt).unwrap(), " @\n. ");
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), " @\n. ");
         let mut png = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(12, 18)
             .write_to(&mut png, image::ImageFormat::Png)

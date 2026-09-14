@@ -112,7 +112,7 @@ npm run dev:renderer  # 仅渲染层浏览器预览（内置 mock 数据，无�
 ```bash
 npm run check        # vite build，验证渲染层可构建
 npm run build        # 正式打包（NSIS 安装包）
-npm run build:fast   # 跳过 LTO 的快速打包（调试用）
+npm run build:fast   # 调试版打包（debug 二进制，含调试符号，不用于发布）
 cd src-tauri && cargo test --release   # Rust 回归测试（无需模型与 GPU）
 ```
 

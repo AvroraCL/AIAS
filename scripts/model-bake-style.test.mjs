@@ -67,11 +67,16 @@ test('model bake lazily decodes result images and debounces uv inspection', () =
 test('model bake toggles mesh visibility instead of rebuilding meshes on selection change', () => {
   const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
   assert.match(script, /function syncMeshVisibility\(\)/);
-  assert.match(script, /mesh\.visible = objects\.has\(mesh\.userData\.object\) && materials\.has\(mesh\.userData\.material\)/);
+  // SP 式按材质工作流：对象不参与任何筛选，可见性只看材质勾选。
+  assert.match(script, /mesh\.visible = materials\.has\(mesh\.userData\.material\)/);
   assert.match(script, /const objectBounds = new Map\(\)/);
   assert.match(script, /objectBounds\.clear\(\)/);
   assert.match(script, /function selectionBox\(\)/);
   assert.match(script, /refreshMaterialUv\(focused\)/);
+  // 对象列表与对象选择状态整体移除
+  assert.doesNotMatch(script, /参与烘焙的对象/);
+  assert.doesNotMatch(script, /id="bake-objects"/);
+  assert.doesNotMatch(script, /objects = new Set\(/);
   // 整表构建只允许导入路径触发：定义 1 处 + 调用 1 处；勾选/通道变化不得再重建。
   assert.equal([...script.matchAll(/buildMeshes\(\)/g)].length, 2);
 });

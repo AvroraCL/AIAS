@@ -97,6 +97,8 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
   $('map-open-output').innerHTML = '<i data-lucide="folder-open" aria-hidden="true"></i>打开输出目录';
   let stored = restoreMapSettings(settings), kind = 'normal', files = [], selected = '', preview = null;
   let view = 'generated', light = [0.4, 0.3, 1], exporting = false, active = false, bitmapRevision = 0, disposed = false;
+  // draw() 触发的补请求视图：同视图只补一次，防止缺失时反复重发
+  const supplementalViews = new Set();
   let renderer;
   try { renderer = lightRenderer($('map-light')); } catch { renderer = null; }
   $('map-runtime').textContent = desktop ? '本地处理' : '网页演示 · 请在桌面软件中导入并生成';
@@ -138,8 +140,15 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
   function draw() {
     root.querySelectorAll('[data-map-view]').forEach(button => { button.classList.toggle('selected', button.dataset.mapView === view); button.setAttribute('aria-pressed', String(button.dataset.mapView === view)); });
     if (!preview) return;
-    $('map-empty').hidden = true;
     const showLight = view === 'light' && renderer;
+    // 光照视图用 normal 位图；按需解码后所需视图可能缺失，补一次请求
+    const bitmapKey = showLight ? 'normal' : view === 'source' ? 'source' : kind;
+    const bitmap = preview.images[bitmapKey];
+    if (!bitmap) {
+      if (!supplementalViews.has(bitmapKey)) { supplementalViews.add(bitmapKey); requestPreview({ keepSupplemental: true }); }
+      return;
+    }
+    $('map-empty').hidden = true;
     $('map-light').hidden = !showLight; $('map-2d').hidden = Boolean(showLight);
     const canvas = showLight ? $('map-light') : $('map-2d');
     const stage = $('map-stage');
@@ -147,26 +156,36 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
     const displayWidth = Math.max(1, preview.width * fit) * Number($('map-zoom').value);
     canvas.style.width = `${displayWidth}px`; canvas.style.height = 'auto';
     if (showLight) renderer.draw(light, preview.convention === 'directx');
-    else { const ctx = canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(preview.images[view === 'source' ? 'source' : kind],0,0); }
+    else { const ctx = canvas.getContext('2d'); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(bitmap,0,0); }
   }
   const queue = createPreviewQueue({
-    run: async input => ({ data: await invoke('material_maps_preview', input), convention: input.parameters.convention }),
+    run: async input => {
+      // 只请求当前会用到的视图：normal 恒需要，height 仅高度图模式，source 仅原图视图
+      const views = ['normal'];
+      if (kind === 'height') views.push('height');
+      if (view === 'source') views.push('source');
+      return { data: await invoke('material_maps_preview', { ...input, views }), convention: input.parameters.convention };
+    },
     ready: async ({ data, convention }) => {
       const revision = bitmapRevision;
       const images = {};
       try {
-        for (const key of ['source','normal','height']) images[key] = await createImageBitmap(await (await fetch(data[key])).blob());
+        for (const key of ['source','normal','height']) {
+          if (typeof data[key] !== 'string' || !data[key]) continue;
+          images[key] = await createImageBitmap(await (await fetch(data[key])).blob());
+        }
       } catch (error) { Object.values(images).forEach(image => image.close?.()); throw error; }
       if (disposed || revision !== bitmapRevision || !active) { Object.values(images).forEach(image => image.close?.()); return; }
       clearPreview(); preview = { images, width: data.width, height: data.heightPixels, convention };
       for (const canvas of [$('map-2d'),$('map-light')]) { canvas.width = preview.width; canvas.height = preview.height; }
-      renderer?.upload(images.normal);
+      if (renderer && images.normal) renderer.upload(images.normal);
       $('map-preview-status').textContent = `${data.width} × ${data.heightPixels} 预览 · 导出保持原始尺寸${renderer ? ' · 光照视图可拖动光源' : ' · WebGL 不可用'}`;
       draw();
     },
     failed: error => { clearPreview(); $('map-preview-status').textContent = `预览失败：${message(error)}`; },
   });
-  function requestPreview() {
+  function requestPreview({ keepSupplemental = false } = {}) {
+    if (!keepSupplemental) supplementalViews.clear();
     queue.invalidate(); clearPreview();
     if (!selected || !active) { $('map-preview-status').textContent = ''; return; }
     if (!desktop) { $('map-preview-status').textContent = '网页演示不执行本地贴图转换，请打开桌面软件。'; return; }

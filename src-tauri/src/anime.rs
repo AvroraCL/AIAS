@@ -283,7 +283,9 @@ pub struct CutoutOutcome {
     pub fallback: bool, // 是否从 toonout 回退到其他模型
 }
 
-// Public entry: cut a single image
+// 单图抠图便捷入口；生产路径走 anime_cutout_inner（带进度与批量编排），
+// 这两个包装保留给测试与二开直接调用。
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn cutout(base: &Path, model_id: &str, input: &Path, output: &Path) -> Result<(), String> {
     cutout_with_fallback(base, model_id, input, output).map(|_| ())
 }
@@ -312,6 +314,7 @@ where
     f()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn cutout_with_fallback(
     base: &Path,
     model_id: &str,
@@ -537,6 +540,4 @@ pub(crate) fn exif_orientation(
     Ok(decoder.orientation().ok())
 }
 
-pub(crate) fn to_string_error(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
+pub(crate) use crate::to_string_error;

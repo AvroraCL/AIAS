@@ -11,7 +11,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "check": "vite build",
-    "build": "tauri build",
+    "build": "node scripts/build-release.cjs",
     "build:fast": "tauri build --debug",
     "postbuild": "node -e \"const{readdirSync,cpSync}=require('fs');const{join}=require('path');const dir='src-tauri/target/release/bundle/nsis';const version=require('./package.json').version;const file=`AIAS_${version}_x64-setup.exe`;if(readdirSync(dir).includes(file))cpSync(join(dir,file),join('dist',file))\""
   },

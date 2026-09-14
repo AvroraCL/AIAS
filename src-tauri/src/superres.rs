@@ -139,6 +139,11 @@ pub fn uninstall_model(base: &Path, id: &str) -> Result<(), String> {
     if path.exists() {
         fs::remove_file(&path).map_err(crate::anime::to_string_error)?;
     }
+    // 顺带清掉中断下载留下的 .part 残片。
+    let part = crate::anime::part_path(&path);
+    if part.exists() {
+        let _ = fs::remove_file(&part);
+    }
     Ok(())
 }
 
@@ -194,7 +199,10 @@ pub fn upscale_with_progress(
 ) -> Result<(), String> {
     let scale = scale.clamp(2, 4);
     on_progress(0, 1, "正在准备推理运行库");
-    crate::anime::ensure_ort_runtime(base)?;
+    crate::anime::ensure_ort_runtime_with(base, &|done, total| {
+        let percent = if total > 0 { (done as f64 / total as f64 * 100.0).round() as u64 } else { 0 };
+        on_progress(0, 1, &format!("正在下载推理运行库 {percent}%"));
+    })?;
     superres_spec(id)?;
     // 与抠图家族跨功能互斥：清掉全部动漫会话，只保留当前超分模型的槽位
     // （GPU/CPU 两个）；切换功能后首次推理重建会话，与动漫家族取舍一致。

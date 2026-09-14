@@ -101,15 +101,26 @@ test('legacy-style 4x outputs still map without run-start keys', () => {
 
 test('result probes look for the file named after the current scale', () => {
   const { context, filesExistCalls } = fixture({ scale: '2' });
-  context.probeSuperresResult('C:/input/hero.png', 'anime');
+  context.probeSuperresBatch(['C:/input/hero.png']);
   assert.equal(filesExistCalls.length, 1);
-  assert.deepEqual(filesExistCalls[0], ['C:/output/hero_2x_anime.png']);
+  assert.deepEqual(filesExistCalls[0], ['C:/output/hero_2x_anime.png', 'C:/output/hero_2x_general.png']);
+});
+
+test('all pending probes share a single batched filesExist call', () => {
+  const { context, state, filesExistCalls } = fixture();
+  state.superresFiles = ['C:/input/a.png', 'C:/input/b.png'];
+  context.probeSuperresBatch(state.superresFiles);
+  assert.equal(filesExistCalls.length, 1);
+  assert.deepEqual(filesExistCalls[0], [
+    'C:/output/a_4x_anime.png', 'C:/output/a_4x_general.png',
+    'C:/output/b_4x_anime.png', 'C:/output/b_4x_general.png'
+  ]);
 });
 
 test('an existing result file is stored under its key', async () => {
   const { context, state, resolvers, flush, file } = fixture();
-  context.probeSuperresResult(file, 'anime');
-  resolvers[0].resolve([true]);
+  context.probeSuperresBatch([file]);
+  resolvers[0].resolve([true, false]);
   await flush();
   assert.equal(state.superresResults.get(context.superresResultKey(file, 'anime')), 'C:/output/hero_4x_anime.png');
 });
@@ -126,9 +137,9 @@ test('a probe hit flips the model badge in place without rebuilding the grid', a
       return null;
     }
   };
-  controls['superres-grid'] = { children: [card] };
-  context.probeSuperresResult(file, 'anime');
-  resolvers[0].resolve([true]);
+  controls['superres-thumbs'] = { children: [card] };
+  context.probeSuperresBatch([file]);
+  resolvers[0].resolve([true, false]);
   await flush();
   assert.equal(state.superresResults.get(context.superresResultKey(file, 'anime')), 'C:/output/hero_4x_anime.png');
   assert.equal(badge.className, 'thumb-badge done');
@@ -139,8 +150,8 @@ test('a probe hit flips the model badge in place without rebuilding the grid', a
 
 test('a probe hit without a rendered card skips the incremental update entirely', async () => {
   const { context, state, resolvers, flush, file, calls } = fixture();
-  context.probeSuperresResult(file, 'anime');
-  resolvers[0].resolve([true]);
+  context.probeSuperresBatch([file]);
+  resolvers[0].resolve([true, false]);
   await flush();
   assert.equal(state.superresResults.size, 1);
   assert.equal(calls.rebuilds, 0);
@@ -148,37 +159,37 @@ test('a probe hit without a rendered card skips the incremental update entirely'
 
 test('missing results unmark the probe so later renders can retry', async () => {
   const { context, state, filesExistCalls, resolvers, flush, file } = fixture();
-  context.probeSuperresResult(file, 'anime');
-  resolvers[0].resolve([false]);
+  context.probeSuperresBatch([file]);
+  resolvers[0].resolve([false, false]);
   await flush();
   assert.equal(state.superresProbed.has(context.superresResultKey(file, 'anime')), false);
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   assert.equal(filesExistCalls.length, 2);
 });
 
 test('late superres probes cannot restore old directory results', async () => {
   const { context, state, controls, resolvers, flush, file } = fixture();
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   controls['superres-output'].value = 'C:/other';
   context.resetSuperresResults();
-  resolvers[0].resolve([true]);
+  resolvers[0].resolve([true, true]);
   await flush();
   assert.equal(state.superresResults.size, 0);
 });
 test('empty directory does not prevent a later result probe', () => {
   const { context, controls, filesExistCalls, file } = fixture();
   controls['superres-output'].value = '';
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   controls['superres-output'].value = 'C:/output';
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   assert.equal(filesExistCalls.length, 1);
 });
 test('late probes preserve newer completed outputs', async () => {
   const { context, state, resolvers, flush, file } = fixture();
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   const key = context.superresResultKey(file, 'anime');
   state.superresResults.set(key, 'new-result');
-  resolvers[0].resolve([true]);
+  resolvers[0].resolve([true, true]);
   await flush();
   assert.equal(state.superresResults.get(key), 'new-result');
 });
@@ -193,40 +204,85 @@ test('output keys preserve captured scale after changing slider', () => {
 
 test('directory round trip cannot revive a probe from an earlier revision', async () => {
   const { context, state, controls, resolvers, flush, file } = fixture();
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   controls['superres-output'].value = 'C:/other';
   context.resetSuperresResults();
   controls['superres-output'].value = 'C:/output';
   context.resetSuperresResults();
-  context.probeSuperresResult(file, 'anime');
-  resolvers[0].resolve([true]);
+  context.probeSuperresBatch([file]);
+  resolvers[0].resolve([true, true]);
   await flush();
   assert.equal(state.superresResults.size, 0);
-  resolvers[1].resolve([true]);
+  resolvers[1].resolve([true, true]);
   await flush();
-  assert.equal(state.superresResults.size, 1);
+  assert.equal(state.superresResults.size, 2);
 });
 
 test('old failed probes cannot clear the new in-flight probe marker', async () => {
   const { context, state, resolvers, flush, file } = fixture();
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   context.resetSuperresResults();
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   resolvers[0].reject(new Error('stale probe'));
   await flush();
   assert.equal(state.superresProbed.has(context.superresResultKey(file, 'anime')), true);
+});
+
+test('a batch rejection unlocks every probed key from that batch', async () => {
+  const { context, state, resolvers, flush, file } = fixture();
+  context.probeSuperresBatch([file]);
+  resolvers[0].reject(new Error('ipc down'));
+  await flush();
+  assert.equal(state.superresProbed.size, 0);
 });
 
 test('remove and re-add invalidates previous callbacks and all cached scales', async () => {
   const { context, state, resolvers, flush, file } = fixture();
   context.updateStatus = () => {};
   vm.runInContext(source.slice(source.indexOf('function removeSuperresFile('), source.indexOf('async function runSuperres(')), context);
-  context.probeSuperresResult(file, 'anime');
+  context.probeSuperresBatch([file]);
   state.superresResults.set(context.superresResultKey(file, 'anime', 2), 'old');
   context.removeSuperresFile(file);
   state.superresFiles.push(file);
-  resolvers[0].resolve([true]);
+  resolvers[0].resolve([true, true]);
   await flush();
   assert.equal(state.superresResults.size, 0);
   assert.equal(state.superresProbed.size, 0);
+});
+
+test('compare stage shows original and result, with epoch cache busting', () => {
+  const { context, state, controls, file } = fixture();
+  const el = () => ({
+    classList: { toggle() {}, add() {}, contains: () => false },
+    style: { setProperty() {} },
+    setAttribute() {}, removeAttribute() {},
+    hidden: true, src: '', onload: null,
+  });
+  for (const id of ['superres-compare', 'superres-compare-frame', 'superres-compare-original', 'superres-compare-after', 'superres-compare-hint', 'superres-compare-empty', 'superres-compare-divider']) controls[id] = el();
+  state.activeMode = 'superres-anime';
+  state.superresResults.set(context.superresResultKey(file, 'anime'), 'C:/output/hero_4x_anime.png');
+  state.superresResultEpoch = 1700000000000;
+  context.renderSuperresCompare(file);
+  assert.equal(controls['superres-compare-original'].src, file);
+  assert.equal(controls['superres-compare-after'].src, 'C:/output/hero_4x_anime.png?v=1700000000000');
+});
+
+test('compare prefers the active mode model and falls back to the other', () => {
+  const { context, state, controls, file } = fixture();
+  const el = () => ({
+    classList: { toggle() {}, add() {}, contains: () => false },
+    style: { setProperty() {} },
+    setAttribute() {}, removeAttribute() {},
+    hidden: true, src: '', onload: null,
+  });
+  for (const id of ['superres-compare', 'superres-compare-frame', 'superres-compare-original', 'superres-compare-after', 'superres-compare-hint', 'superres-compare-empty', 'superres-compare-divider']) controls[id] = el();
+  // 只跑了通用模型：动漫模式下也应回退展示通用结果。
+  state.activeMode = 'superres-anime';
+  state.superresResults.set(context.superresResultKey(file, 'general'), 'C:/output/hero_4x_general.png');
+  context.renderSuperresCompare(file);
+  assert.match(controls['superres-compare-after'].src, /hero_4x_general\.png$/);
+  // 两模型都有时，动漫模式优先动漫结果。
+  state.superresResults.set(context.superresResultKey(file, 'anime'), 'C:/output/hero_4x_anime.png');
+  context.renderSuperresCompare(file);
+  assert.match(controls['superres-compare-after'].src, /hero_4x_anime\.png/);
 });

@@ -39,6 +39,7 @@
             <button class="mode-tab" data-view="ascii" type="button"><i data-lucide="file-stack" aria-hidden="true"></i><span>图片转 ASCII</span></button>
             <button class="mode-tab" data-view="ascii-block" type="button"><i data-lucide="layout-grid" aria-hidden="true"></i><span>方块</span></button>
             <button class="mode-tab" data-view="ascii-dot" type="button"><i data-lucide="circle-dot" aria-hidden="true"></i><span>波点</span></button>
+            <button class="mode-tab" data-view="ascii-hatch" type="button"><i data-lucide="pen-line" aria-hidden="true"></i><span>线条款描</span></button>
           </div>
           <div class="nav-section-label">AI 图像</div>
           <div class="tabs-track">
@@ -219,7 +220,7 @@
             <section class="mode-view anime-view" id="view-superres">
               <div class="stage-heading">
                 <div><span>效果预览</span><strong>立绘 / 素材 4 倍超分</strong></div>
-                <small>RealESRGAN 本地推理 · PNG · JPG · WebP · TGA · 输出为原图 4 倍分辨率</small>
+                <small>拖动分割线对比原图与超分结果 · RealESRGAN 本地推理 · 输出为原图 2–4 倍分辨率</small>
               </div>
               <div class="anime-toolbar">
                 <button class="secondary-action" id="pick-superres-files" type="button"><i data-lucide="image-plus" aria-hidden="true"></i>添加图片</button>
@@ -231,7 +232,25 @@
                 <small>动漫超分适合立绘插画，通用超分适合照片和一般素材 · 点击上方「添加图片」或直接拖进窗口</small>
               </div>
               <div class="anime-gallery" id="superres-gallery" hidden>
-                <div class="superres-grid" id="superres-grid"></div>
+                <div class="compare-stage" id="superres-compare" style="--compare-pos: 50%">
+                  <div class="compare-frame" id="superres-compare-frame">
+                    <img class="compare-after" id="superres-compare-after" alt="超分结果" draggable="false" />
+                    <div class="compare-before" id="superres-compare-before">
+                      <img class="compare-original" id="superres-compare-original" alt="原图" draggable="false" />
+                    </div>
+                    <div class="compare-divider" id="superres-compare-divider">
+                      <span class="compare-handle"><i data-lucide="chevrons-left-right" aria-hidden="true"></i></span>
+                    </div>
+                    <span class="compare-tag compare-tag-before">原图</span>
+                    <span class="compare-tag compare-tag-after">超分</span>
+                    <div class="compare-empty" id="superres-compare-empty" hidden>
+                      <i data-lucide="image-off" aria-hidden="true"></i>
+                      <small>浏览器预览无法读取本地图片，请在 Tauri 窗口中使用</small>
+                    </div>
+                  </div>
+                  <p class="compare-hint" id="superres-compare-hint" hidden>该图片还没有超分结果，运行后可对比前后效果</p>
+                </div>
+                <div class="anime-thumbs" id="superres-thumbs"></div>
               </div>
             </section>
 
@@ -258,6 +277,7 @@
                 <button id="skin-import-btn" class="primary-compact" type="button"><i data-lucide="upload" aria-hidden="true"></i>导入涂装</button>
                 <small id="skin-count">0 个涂装</small>
                 <div class="spacer"></div>
+                <input id="skin-search" type="search" placeholder="搜索涂装…" aria-label="搜索涂装">
                 <div id="skin-sort-wrapper">
                   <select id="skin-sort" aria-label="排序方式" title="排序方式">
                     <option value="name-asc">名称 A-Z</option>
@@ -525,7 +545,6 @@
               <pre id="mipmap-log" class="task-log"></pre>
               <pre id="image-log" class="task-log"></pre>
               <pre id="anime-log" class="task-log"></pre>
-              <pre id="ascii-log" class="task-log"></pre>
               <pre id="material-maps-log" class="task-log"></pre>
               <pre id="model-bake-log" class="task-log"></pre>
               <pre id="superres-log" class="task-log"></pre>

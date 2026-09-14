@@ -36,13 +36,7 @@ base64 = "0.22"
 
 [profile.release]
 panic = "abort"
-codegen-units = 1
-lto = true
+# thin LTO：比 fat LTO 内存占用低得多（16GB 构建机可稳定完成），并行 codegen
+# （不指定 codegen-units，用默认值换取低峰值内存）
+lto = "thin"
 strip = true
-
-# 快速打包：跳过 LTO 和多线程编译（正式发布用 release）
-[profile.release-fast]
-inherits = "release"
-codegen-units = 8
-lto = false
-strip = false

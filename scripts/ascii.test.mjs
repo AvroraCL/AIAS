@@ -83,3 +83,61 @@ test('shape size and ratio persist with bounds for block and dot styles', () => 
   assert.equal(restoreAsciiSettings({version:2, shapeSize:'x'}).shapeSize, DEFAULTS.shapeSize);
   assert.equal(restoreAsciiSettings({version:2, shapeRatio:10}).shapeRatio, DEFAULTS.shapeRatio);
 });
+
+test('dither settings restore only known values', () => {
+  assert.equal(DEFAULTS.dither, 'none');
+  assert.equal(restoreAsciiSettings({version:2, dither:'ordered'}).dither, 'ordered');
+  assert.equal(restoreAsciiSettings({version:2, dither:'diffusion'}).dither, 'diffusion');
+  assert.equal(restoreAsciiSettings({version:2, dither:'noise'}).dither, 'none');
+  assert.equal(restoreAsciiSettings({version:2, style:'hatch'}).style, 'hatch');
+  assert.equal(restoreAsciiSettings({version:2, hatchAngle:90, hatchRounds:2}).hatchRounds, 2);
+  assert.equal(restoreAsciiSettings({version:2, hatchAngle:999}).hatchAngle, 45);
+  assert.equal(restoreAsciiSettings({version:2, hatchRounds:0}).hatchRounds, 3);
+});
+
+test('ordered dithering breaks a flat 50% gray band into mixed levels', () => {
+  // 4×4 全 128 灰：无抖动时 16 格全同字符；有序抖动应出现两种以上档位。
+  const pixels = new Array(16 * 4).fill(0).map((_, i) => i % 4 === 3 ? 255 : 128);
+  const plain = convertAscii({pixels, columns: 4, rows: 4, settings: {...DEFAULTS}});
+  const ordered = convertAscii({pixels, columns: 4, rows: 4, settings: {...DEFAULTS, dither: 'ordered'}});
+  assert.equal(new Set(plain.chars).size, 1, '无抖动时平场应只有一种字符');
+  assert.ok(new Set(ordered.chars).size >= 2, '有序抖动应产生至少两种字符档位');
+  // 均值近似保持（抖动不改变整体明暗）。
+  const mean = text => [...text].reduce((sum, ch) => sum + (' .:-=+*#%@'.indexOf(ch)), 0) / text.length;
+  assert.ok(Math.abs(mean(plain.text) - mean(ordered.text)) < 1, '抖动应保持整体明暗水平');
+});
+
+test('diffusion dithering spreads error across a horizontal ramp', () => {
+  // 16×1 从黑到白的平滑渐变：无抖动时量化步长内多格同字符；扩散应更细腻。
+  const pixels = [];
+  for (let x = 0; x < 16; x++) pixels.push(Math.round(x / 15 * 255), Math.round(x / 15 * 255), Math.round(x / 15 * 255), 255);
+  const plain = convertAscii({pixels, columns: 16, rows: 1, settings: {...DEFAULTS}});
+  const diffusion = convertAscii({pixels, columns: 16, rows: 1, settings: {...DEFAULTS, dither: 'diffusion'}});
+  const rampIndex = text => [...text].map(ch => ' .:-=+*#%@'.indexOf(ch));
+  const diffusionIndices = rampIndex(diffusion.text);
+  assert.ok(diffusionIndices.every((v, i, arr) => i === 0 || v >= arr[i-1] - 0), '扩散输出应保持单调不减的趋势');
+  assert.ok(diffusionIndices.at(-1) > diffusionIndices[0], '渐变两端应有明暗差异');
+  assert.equal(convertAscii({pixels, columns: 16, rows: 1, settings: {...DEFAULTS, dither: 'none'}}).chars, plain.chars);
+});
+
+test('hatch style skips ramp validation and keeps continuous lights like other graphics', () => {
+  const settings = {...DEFAULTS, style: 'hatch', charset: 'custom', custom: '  '};
+  const result = convertAscii({pixels: [0,0,0,255, 255,255,255,255], columns: 2, rows: 1, settings});
+  assert.equal(result.text.trim(), '', '款描风格不产出字符文本');
+  assert.deepEqual([...result.lights], [0, 255]);
+  assert.equal(restoreAsciiSettings({version:2, style:'hatch'}).style, 'hatch');
+});
+
+test('stage wires wheel zoom and drag pan with pointer capture', async () => {
+  const { readFileSync } = await import('node:fs');
+  const script = readFileSync(new URL('../src/renderer/scripts/ascii.js', import.meta.url), 'utf8');
+  // 滚轮缩放必须非 passive 才能 preventDefault；缩放边界与滑块一致。
+  assert.match(script, /addEventListener\('wheel', event => \{/);
+  assert.match(script, /\{ passive: false \}/);
+  assert.match(script, /const ZOOM_MIN = 0\.25, ZOOM_MAX = 3/);
+  // 拖拽平移走 pointer capture，且拖拽态有独立类名供 CSS 切换光标。
+  assert.match(script, /addEventListener\('pointerdown', event => \{/);
+  assert.match(script, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(script, /classList\.add\('ascii-dragging'\)/);
+  assert.match(script, /scrollLeft = drag\.left - \(event\.clientX - drag\.x\)/);
+});

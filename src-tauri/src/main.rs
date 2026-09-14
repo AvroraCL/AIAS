@@ -554,8 +554,12 @@ fn save_settings(path: &Path, settings: &Settings) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(to_string_error)?;
     }
-    let content = serde_json::to_string_pretty(settings).map_err(to_string_error)?;
-    fs::write(path, format!("{content}\n")).map_err(to_string_error)
+    let content = format!("{}\n", serde_json::to_string_pretty(settings).map_err(to_string_error)?);
+    // 原子写：掉电/崩溃时不会把 settings.json 截断成半截 JSON。
+    safety::atomic_write(path, |writer| {
+        use std::io::Write;
+        writer.write_all(content.as_bytes()).map_err(to_string_error)
+    })
 }
 
 fn merge_settings(settings: &mut Settings, patch: serde_json::Value) -> Result<(), String> {
@@ -594,6 +598,9 @@ fn texture_merge_pbr_inner(
     require_directory(&options.input_path, "输入目录")?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let groups = find_texture_groups(Path::new(&options.input_path))?;
+    if groups.is_empty() {
+        return Err("未找到完整 PBR 贴图（需要 *_c 与 *_n 配对）。".into());
+    }
     let mut logs = vec![format!("找到 {} 组完整 PBR 贴图。", groups.len())];
     let format = options.format.as_deref().unwrap_or("DXT5");
     let alpha = options.alpha.as_deref().unwrap_or("black");
@@ -643,6 +650,9 @@ fn texture_merge_pbr_inner(
         );
     }
 
+    if completed == 0 && !cancelled {
+        return Err(format!("{} 组贴图全部处理失败，请查看运行日志。", groups.len()));
+    }
     Ok(TaskResult {
         completed,
         total: groups.len(),
@@ -1119,7 +1129,18 @@ fn anime_cutout_inner(
     if options.recover_details && model_id != "anime-specialist" {
         return Err("高分辨率细节补全目前仅支持动漫专精（AnimeSeg）。".into());
     }
-    anime::ensure_ort_runtime(&base)?;
+    anime::ensure_ort_runtime_with(&base, &|done, total| {
+        if let Some(handle) = app {
+            let percent = if total > 0 { done as f64 / total as f64 * 100.0 } else { 0.0 };
+            emit_task_progress_percent(
+                handle,
+                0,
+                1,
+                format!("首次使用：正在下载推理运行库（{}%）", percent.round()),
+                Some(percent),
+            );
+        }
+    })?;
 
     let mut logs = Vec::new();
     push_log(app, &mut logs, "info", if anime::cuda_ep_compiled() {
@@ -1343,7 +1364,18 @@ fn superres_run_inner(
     if !superres::is_model_ready(&base, &options.model) {
         return Err("超分模型未安装，请先在右侧栏下载。".into());
     }
-    anime::ensure_ort_runtime(&base)?;
+    anime::ensure_ort_runtime_with(&base, &|done, total| {
+        if let Some(handle) = app {
+            let percent = if total > 0 { done as f64 / total as f64 * 100.0 } else { 0.0 };
+            emit_task_progress_percent(
+                handle,
+                0,
+                1,
+                format!("首次使用：正在下载推理运行库（{}%）", percent.round()),
+                Some(percent),
+            );
+        }
+    })?;
 
     let mut logs = Vec::new();
     push_log(app, &mut logs, "info", if anime::cuda_ep_compiled() {
