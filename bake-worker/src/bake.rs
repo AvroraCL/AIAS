@@ -23,6 +23,12 @@ pub struct Options {
     pub channels: BTreeMap<usize, u32>,
     pub resolution: u32,
     pub samples: u32,
+    /// AI 降噪（OIDN）：开启时烘焙完成后对 AO 灰度执行降噪。
+    #[serde(default)]
+    pub denoise: bool,
+    /// 降噪组件 DLL 所在目录（由主应用按需下载后传入）。
+    #[serde(default)]
+    pub oidn_dir: Option<String>,
     pub distance: f32,
     pub margin: u32,
     pub self_only: bool,
@@ -329,6 +335,12 @@ pub fn run(
                 progress(
                     serde_json::json!({"phase":format!("{material_label} · GPU AO"),"material":material,"progress":(position as f64+1.0)/options.materials.len() as f64,"blockSize":block}),
                 );
+                if options.denoise {
+                    let oidn_dir = options.oidn_dir.as_deref().ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
+                    progress(serde_json::json!({"phase":format!("{material_label} · AI 降噪"),"material":material,"progress":(position as f64+0.98)/options.materials.len() as f64}));
+                    let denoiser = crate::denoise::Oidn::load(std::path::Path::new(oidn_dir))?;
+                    denoiser.denoise_gray(&mut values, options.resolution as usize, options.resolution as usize)?;
+                }
                 let path = options.output.join(format!("{prefix}_ao.png"));
                 if options.bits == 16 {
                     let data: Vec<u16> = nearest

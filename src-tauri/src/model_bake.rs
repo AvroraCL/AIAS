@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::os::windows::process::CommandExt;
 use std::{
     collections::HashMap,
+    fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -241,6 +242,14 @@ pub async fn bake_start(
             return Err("任务编号无效".into());
         }
         let started = Instant::now();
+        // AI 降噪：勾选时校验组件已就位，并把组件目录传给 worker。
+        if options["denoise"].as_bool().unwrap_or(false) {
+            let bin = oidn_bin_dir(&app)?.join("bin");
+            if !bin.join("OpenImageDenoise.dll").is_file() {
+                return Err("AI 降噪组件未下载，请先在烘焙设置中下载降噪组件。".into());
+            }
+            options["oidnDir"] = json!(bin.display().to_string());
+        }
         let model_path = MODELS
             .lock()
             .map_err(|_| "模型状态锁损坏")?
@@ -407,6 +416,133 @@ pub(crate) fn cancel_active_bake() -> bool {
         }
         None => false,
     }
+}
+
+const OIDN_VERSION: &str = "2.2.2";
+const OIDN_ZIP_NAME: &str = "oidn-2.2.2.x64.windows.zip";
+const OIDN_ZIP_SIZE: u64 = 28_934_149;
+const OIDN_ZIP_SHA256: &str = "5cc8bcc2a3321ef32547c3be70d43878a41324718cabdfb151b332a2a4928297";
+const OIDN_MODEL_ID: &str = "oidn";
+/// CPU 降噪所需文件（其余 cuda/hip/sycl 设备与基准工具不下载）。
+const OIDN_EXTRACT: &[&str] = &[
+    "oidn-2.2.2.x64.windows/bin/OpenImageDenoise.dll",
+    "oidn-2.2.2.x64.windows/bin/OpenImageDenoise_core.dll",
+    "oidn-2.2.2.x64.windows/bin/OpenImageDenoise_device_cpu.dll",
+    "oidn-2.2.2.x64.windows/bin/tbb12.dll",
+    "oidn-2.2.2.x64.windows/bin/tbbbind.dll",
+    "oidn-2.2.2.x64.windows/bin/tbbbind_2_0.dll",
+    "oidn-2.2.2.x64.windows/bin/tbbbind_2_5.dll",
+    "oidn-2.2.2.x64.windows/doc/LICENSE.txt",
+];
+const OIDN_URLS: &[&str] = &[
+    "https://ghfast.top/https://github.com/OpenImageDenoise/oidn/releases/download/v2.2.2/oidn-2.2.2.x64.windows.zip",
+    "https://github.com/OpenImageDenoise/oidn/releases/download/v2.2.2/oidn-2.2.2.x64.windows.zip",
+];
+
+pub(crate) fn oidn_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("oidn").join("bin"))
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+pub(crate) fn oidn_installed(app: &AppHandle) -> bool {
+    oidn_bin_dir(app)
+        .map(|dir| dir.join("OpenImageDenoise.dll").is_file())
+        .unwrap_or(false)
+}
+
+fn sha256_of_file(path: &Path) -> Result<String, String> {
+    // Windows 自带 certutil，避免为一次性校验引入哈希依赖。
+    let output = crate::safety::quiet_command("certutil")
+        .args(["-hashfile"])
+        .arg(path)
+        .arg("SHA256")
+        .output()
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .map(|line| line.trim())
+        .find(|line| line.len() == 64 && line.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|line| line.to_lowercase())
+        .ok_or_else(|| "无法读取文件哈希".into())
+}
+
+fn progress_oidn(app: &AppHandle, completed: u64, total: u64, file: &str) {
+    crate::anime::emit_progress(
+        Some(app),
+        crate::anime::ModelProgress {
+            model_id: OIDN_MODEL_ID.into(),
+            file: file.into(),
+            completed,
+            total,
+        },
+    );
+}
+
+#[tauri::command]
+pub(crate) async fn oidn_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    let installed = oidn_installed(&app);
+    Ok(json!({ "installed": installed }))
+}
+
+#[tauri::command]
+pub(crate) async fn oidn_install(app: AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bin = oidn_bin_dir(&app)?.join("bin");
+        if bin.join("OpenImageDenoise.dll").is_file() {
+            return Ok(json!({ "installed": true }));
+        }
+        let tmp = tempfile::Builder::new()
+            .prefix("aias-oidn-")
+            .tempdir()
+            .map_err(|e| e.to_string())?;
+        let archive = tmp.path().join(OIDN_ZIP_NAME);
+        let mut last_error = String::from("没有可用的下载地址");
+        for url in OIDN_URLS {
+            match crate::anime::curl_download(url, &archive, Some(OIDN_ZIP_SIZE), &|done, total| {
+                progress_oidn(&app, done, total, OIDN_ZIP_NAME);
+            }) {
+                Ok(()) => {
+                    last_error = String::new();
+                    break;
+                }
+                Err(error) => last_error = error,
+            }
+        }
+        if !last_error.is_empty() {
+            return Err(format!("下载降噪组件失败：{last_error}"));
+        }
+        let actual = sha256_of_file(&archive)?;
+        if actual != OIDN_ZIP_SHA256 {
+            let _ = fs::remove_file(&archive);
+            return Err("降噪组件校验失败（SHA256 不匹配），请重试下载。".into());
+        }
+        std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+        for entry in OIDN_EXTRACT {
+            let output = crate::safety::quiet_command("tar")
+                .arg("-xf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&bin)
+                .arg(entry)
+                .output()
+                .map_err(|error| format!("无法启动 tar 解压：{error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "解压降噪组件失败：{}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+        }
+        fs::rename(bin.join("doc").join("LICENSE.txt"), bin.join("OIDN-LICENSE.txt"))
+            .or_else(|_| fs::copy(bin.join("doc").join("LICENSE.txt"), bin.join("OIDN-LICENSE.txt")).map(|_| ()))
+            .map_err(|e| e.to_string())?;
+        let _ = fs::remove_file(&archive);
+        Ok(json!({ "installed": true }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

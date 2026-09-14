@@ -440,6 +440,8 @@ fn main() {
             model_bake::bake_cancel,
             model_bake::bake_export,
             model_bake::bake_release,
+            model_bake::oidn_status,
+            model_bake::oidn_install,
             task_cancel,
             settings_set,
             texture_find_groups,

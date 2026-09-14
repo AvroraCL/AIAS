@@ -8,7 +8,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let model = null, geometry = null, active = false, running = false, loading = false, disposed = false, job = '', view = 'model';
   let materials = new Set(), channels = {}, focused = null, results = [];
   let renderer, controls, scene, camera, group, grid, axes, resizeObserver;
-  let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false;
+  let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false, oidnReady = false;
   let narrowPanel = 'settings';
   const aoTextures = new Map();
   let resultChannels = {};
@@ -79,7 +79,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
           ${section('03 / 导出', `<button id="bake-export" class="secondary-action output-action" data-bake-export type="button"><i data-lucide="download" aria-hidden="true"></i>导出全部贴图</button><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开缓存目录</button><small>结果先缓存在应用数据目录，导出时选择目标文件夹</small>`)}
           <details class="bake-advanced"><summary>高级设置</summary>
           ${section('计算设备', `${select('device', 'GPU', [[0, '检测设备中…']])}<small id="bake-device-note"></small>`)}
-          ${section('AO 与边缘', `${select('samples', 'AO 采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', 'AO 位深', [[8, '8 位线性灰度'], [16, '16 位线性灰度']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>遮蔽距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${select('selfOnly', '遮挡对象', [['false', '所选对象相互遮挡'], ['true', '仅自身遮挡']])}<small>按不透明几何计算，不读取透明贴图。</small>`)}
+          ${section('AO 与边缘', `${select('samples', 'AO 采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', 'AO 位深', [[8, '8 位线性灰度'], [16, '16 位线性灰度']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>遮蔽距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${check('denoise', 'AI 降噪（去除 AO 噪点）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相遮挡'], ['true', '仅模型自身遮挡']])}<small>按不透明几何计算，不读取透明贴图。</small>`)}
           </details>
         </div>
       </aside>
@@ -123,6 +123,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0) return '遮蔽距离必须大于 0。';
     if (!Number.isInteger(+$('margin').value) || +$('margin').value < 0 || +$('margin').value > 128) return '边缘扩展应为 0–128 的整数。';
     if (stored.ao && !devices.find(device => device.index === +stored.device)?.supported) return '当前设备不支持 DXR 1.1 AO。';
+    if (stored.denoise && desktop && !oidnReady) return 'AI 降噪组件未下载，请先点击「下载降噪组件」。';
     return null;
   }
 
@@ -668,6 +669,11 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('ao').closest('label').title = device?.supported ? '使用 GPU 生成环境遮蔽' : '当前设备不支持 AO，仍可导出 UV 与材质 ID';
     $('device-note').textContent = !desktop ? '桌面版可检测 DXR 显卡' : device ? `${device.supported ? 'DXR 1.1 可用' : device.reason} · 可用预算 ${(device.availableBytes / 1073741824).toFixed(1)} GiB${[4098, 32902].includes(device.vendor) ? '；按能力支持，待硬件实测' : ''}` : '无合格显卡；仍可导出 UV／ID';
     const reason = blocker();
+    const oidnDownload = $('oidn-download');
+    if (oidnDownload) {
+      oidnDownload.hidden = !desktop || !stored.denoise || oidnReady || locked;
+      oidnDownload.disabled = locked;
+    }
     $('run').disabled = Boolean(reason);
     $('run').title = reason || '';
     $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : reason || `已就绪 · ${count} 张贴图`;
@@ -1000,6 +1006,36 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   syncDisplayControls();
   setView('model');
 
+  let oidnProgressUnlisten = null;
+  async function refreshOidnStatus() {
+    if (!desktop) return;
+    try {
+      oidnReady = Boolean((await invoke('oidn_status')).installed);
+    } catch { oidnReady = false; }
+    refresh();
+  }
+  function bindOidnDownload() {
+    const button = $('oidn-download');
+    if (!button || button.dataset.bound === 'true') return;
+    button.dataset.bound = 'true';
+    button.onclick = async () => {
+      if (button.disabled) return;
+      button.disabled = true; button.textContent = '正在下载…';
+      try {
+        await invoke('oidn_install');
+        oidnReady = true;
+        status('AI 降噪组件已就绪。');
+        notify('AI 降噪组件已下载');
+      } catch (error) {
+        status(`降噪组件下载失败：${error}`);
+        notify(`降噪组件下载失败：${error}`);
+      } finally {
+        button.disabled = false; button.textContent = '下载降噪组件';
+        refresh();
+      }
+    };
+  }
+
   // 构造时不再无条件探测 DXR 能力（会拉起 worker 子进程拖慢启动）；
   // 首次激活烘焙模式时由 app.js 调用，已拉取过或正在拉取则跳过。
   function refreshCapabilities() {
@@ -1017,6 +1053,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (active) {
         init3d();
         requestAnimationFrame(() => resizeRenderer());
+        if (desktop) invoke('oidn_status').then(s => { oidnReady = Boolean(s.installed); refresh(); }).catch(() => {});
       }
       refresh();
     },

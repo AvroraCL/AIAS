@@ -1,4 +1,5 @@
 mod bake;
+mod denoise;
 mod gpu;
 mod model;
 #[cfg(test)]
