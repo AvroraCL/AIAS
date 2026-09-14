@@ -77,7 +77,7 @@ fn main() {
                     serde_json::json!({"id":m.id,"name":m.name,"channels":channels.iter().map(|c|model::inspect(&model,m.id,*c,&objects)).collect::<Vec<_>>()})
                 }).collect();
                     Ok(
-                        serde_json::json!({"name":model.name,"objects":model.objects,"materials":materials,"bounds":model.bounds,"units":model.units,"meshPath":dir.join("model.json"),"triangleCount":model.triangles.len()}),
+                        serde_json::json!({"name":model.name,"objects":model.objects,"materials":materials,"bounds":model.bounds,"units":model.units,"meshPath":dir.join("model.json"),"triangleCount":model.triangles.len(),"degenerateFaces":model.degenerate_faces,"degenerateExamples":model.degenerate_examples}),
                     )
                 }
                 "bake" => {

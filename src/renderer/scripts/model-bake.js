@@ -610,6 +610,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       results = [];
       $('results').replaceChildren();
       $('model-info').textContent = `${model.name} · ${model.objects.length} 对象 · ${model.triangleCount.toLocaleString()} 三角形`;
+      if (model.degenerateFaces > 0) {
+        const examples = (model.degenerateExamples || []).join('、');
+        notify(`已跳过 ${model.degenerateFaces} 个零面积退化面${examples ? `（${examples}${model.degenerateFaces > (model.degenerateExamples || []).length ? ' 等' : ''}）` : ''}，这些面对烘焙无影响。`);
+      }
       lists();
       updatePanelState('outliner'); updatePanelState('settings');
       buildMeshes();

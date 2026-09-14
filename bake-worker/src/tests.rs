@@ -41,6 +41,8 @@ fn model(triangles: Vec<Triangle>) -> Model {
         triangles,
         bounds: [[0., 0., 0.], [1., 1., 1.]],
         units: "模型单位".into(),
+        degenerate_faces: 0,
+        degenerate_examples: vec![],
     }
 }
 #[test]
@@ -55,6 +57,23 @@ fn uv_shared_edges_at_fractional_offsets_do_not_overlap() {
         assert!(!model::overlap([p, q, r], [p, s, q]), "shared edge at {i}");
         assert!(model::overlap([p, q, r], [p, q, r]), "real overlap at {i}");
     }
+}
+#[test]
+fn degenerate_faces_are_skipped_and_counted() {
+    // 第二个面三点共线（z 轴上等距），导入必须跳过并计数，而不是拒收。
+    let dir = std::env::temp_dir().join(format!("aias-bake-degenerate-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("degenerate.obj");
+    std::fs::write(
+        &path,
+        "o 0\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 2 0 0\nv 3 0 0\nv 4 0 0\nf 1 2 3\nf 4 5 6\n",
+    )
+    .unwrap();
+    let loaded = model::load(&path).unwrap();
+    assert_eq!(loaded.triangles.len(), 1, "only the valid face survives");
+    assert_eq!(loaded.degenerate_faces, 1);
+    assert_eq!(loaded.degenerate_examples, vec!["对象 0 面 1".to_string()]);
+    std::fs::remove_dir_all(&dir).ok();
 }
 #[test]
 fn uv_shared_edge_allowed_and_overlap_located() {

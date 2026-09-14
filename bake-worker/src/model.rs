@@ -25,6 +25,12 @@ pub struct Model {
     pub triangles: Vec<Triangle>,
     pub bounds: [[f32; 3]; 2],
     pub units: String,
+    /// 零面积（叉积归零）面在导入时被跳过的数量：这类面光栅化不可见、对
+    /// 烘焙零贡献，跳过而非拒收整个模型。serde(default) 兼容旧 model.json。
+    #[serde(default)]
+    pub degenerate_faces: usize,
+    #[serde(default)]
+    pub degenerate_examples: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +64,8 @@ pub fn load(path: &Path) -> Result<Model, String> {
         triangles: vec![],
         bounds: [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]],
         units: "模型单位".into(),
+        degenerate_faces: 0,
+        degenerate_examples: vec![],
     };
     match path
         .extension()
@@ -73,14 +81,21 @@ pub fn load(path: &Path) -> Result<Model, String> {
     if model.triangles.is_empty() {
         return Err("模型没有三角网格".into());
     }
-    for t in &mut model.triangles {
+    let mut kept = Vec::with_capacity(model.triangles.len());
+    for mut t in std::mem::take(&mut model.triangles) {
         if t.positions.iter().flatten().any(|x| !x.is_finite()) {
             return Err("模型坐标包含非有限值".into());
         }
         let p = t.positions.map(Vec3::from_array);
         let geometric = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
         if geometric == Vec3::ZERO {
-            return Err(format!("对象 {} 面 {} 的几何退化", t.object, t.source_face));
+            model.degenerate_faces += 1;
+            if model.degenerate_examples.len() < 5 {
+                model
+                    .degenerate_examples
+                    .push(format!("对象 {} 面 {}", t.object, t.source_face));
+            }
+            continue;
         }
         for n in &mut t.normals {
             let normalized = Vec3::from_array(*n).normalize_or_zero();
@@ -97,7 +112,9 @@ pub fn load(path: &Path) -> Result<Model, String> {
                 model.bounds[1][axis] = model.bounds[1][axis].max(p[axis]);
             }
         }
+        kept.push(t);
     }
+    model.triangles = kept;
     Ok(model)
 }
 fn import_budget(bytes: u64) -> Result<(), String> {
