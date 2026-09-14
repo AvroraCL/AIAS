@@ -387,8 +387,13 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
     a.x * b.y - a.y * b.x
 }
 pub fn overlap(a: [[f32; 2]; 3], b: [[f32; 2]; 3]) -> bool {
-    let mut polygon: Vec<Vec2> = a.into_iter().map(Vec2::from_array).collect();
-    let b = b.map(Vec2::from_array);
+    // Clipping shared edges in f32 can manufacture a nonzero polygon area.
+    // Promote the stored UV coordinates before all intersection arithmetic.
+    use glam::DVec2;
+    let cross = |a: DVec2, b: DVec2| a.x * b.y - a.y * b.x;
+    let point = |v: [f32; 2]| DVec2::new(v[0] as f64, v[1] as f64);
+    let mut polygon: Vec<DVec2> = a.into_iter().map(point).collect();
+    let b = b.map(point);
     let sign = cross(b[1] - b[0], b[2] - b[0]).signum();
     for edge in 0..3 {
         let p = b[edge];
@@ -411,9 +416,10 @@ pub fn overlap(a: [[f32; 2]; 3], b: [[f32; 2]; 3]) -> bool {
             pd = cd;
         }
     }
+    let origin = polygon.first().copied().unwrap_or_default();
     let area = (0..polygon.len())
-        .map(|i| cross(polygon[i], polygon[(i + 1) % polygon.len()]))
-        .sum::<f32>()
+        .map(|i| cross(polygon[i] - origin, polygon[(i + 1) % polygon.len()] - origin))
+        .sum::<f64>()
         .abs()
         * 0.5;
     area > 1e-10

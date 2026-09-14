@@ -49,8 +49,10 @@ fn main() {
                     )
                     .map_err(|e| e.to_string())?;
                     let model: model::Model = serde_json::from_reader(
-                        std::fs::File::open(request["modelPath"].as_str().ok_or("缺失模型路径")?)
-                            .map_err(|e| e.to_string())?,
+                        std::io::BufReader::new(
+                            std::fs::File::open(request["modelPath"].as_str().ok_or("缺失模型路径")?)
+                                .map_err(|e| e.to_string())?,
+                        ),
                     )
                     .map_err(|e| e.to_string())?;
                     let objects: Vec<usize> = serde_json::from_value(request["objects"].clone())

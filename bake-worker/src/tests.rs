@@ -44,6 +44,19 @@ fn model(triangles: Vec<Triangle>) -> Model {
     }
 }
 #[test]
+fn uv_shared_edges_at_fractional_offsets_do_not_overlap() {
+    for i in 1..2000 {
+        let x = (i * 37 % 997) as f32 / 1103.;
+        let y = (i * 71 % 991) as f32 / 1109.;
+        let p = [x, y];
+        let q = [x + 0.0073, y + 0.0268];
+        let r = [x + 0.042, y - 0.008];
+        let s = [x - 0.011, y + 0.025];
+        assert!(!model::overlap([p, q, r], [p, s, q]), "shared edge at {i}");
+        assert!(model::overlap([p, q, r], [p, q, r]), "real overlap at {i}");
+    }
+}
+#[test]
 fn uv_shared_edge_allowed_and_overlap_located() {
     let a = [[0., 0.], [1., 1.], [1., 0.]];
     let b = [[0., 0.], [0., 1.], [1., 1.]];
