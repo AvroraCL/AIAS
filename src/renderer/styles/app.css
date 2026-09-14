@@ -750,17 +750,7 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .run-button { display: flex; width: 100%; min-height: 44px; align-items: center; justify-content: center; gap: 8px; border-color: var(--accent); color: #0d0d0f; background: var(--accent); font-size: 13px; font-weight: 700; }
 .run-button:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
 .run-button:disabled { border-color: #3d3d44; color: #8b8b93; background: #242428; opacity: 1; }
-.run-button.busy svg { display: none; }
-.run-button.busy::before {
-  content: "";
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  border: 2px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
+.run-button.busy svg { animation: spin 0.8s linear infinite; }
 .task-progress { margin-top: 10px; }
 .task-progress > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--text-dim); font-size: 10px; }
 .task-progress strong { color: var(--text-soft); font-size: 10px; }
