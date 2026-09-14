@@ -3,7 +3,6 @@
 use super::*;
 use image::{RgbImage, RgbaImage};
 use rayon::prelude::*;
-use std::collections::HashMap;
 
 // P5 GT 诊断开关：只在测试构建中允许逐项绕过后处理，用于确定性 A/B；
 // 正式应用始终保持完整管线，避免环境变量改变用户产物。
@@ -350,29 +349,24 @@ pub(crate) fn smooth_matte_edges(mask: &[f32], w: u32, h: u32) -> Vec<f32> {
         return mask.to_vec();
     }
     let soft = |value: f32| value > 0.02 && value < 0.98;
-    let mut band = vec![false; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            if !soft(mask[y * w + x]) {
-                continue;
-            }
-            let x0 = x.saturating_sub(1);
+    // 带区 = 软像素集合的 3×3 膨胀；逐像素取邻域 OR 与串行互标记结果一致。
+    let band: Vec<bool> = (0..w * h)
+        .into_par_iter()
+        .map(|index| {
+            let (x, y) = (index % w, index / w);
             let y0 = y.saturating_sub(1);
-            let x1 = (x + 1).min(w - 1);
             let y1 = (y + 1).min(h - 1);
-            for yy in y0..=y1 {
-                for xx in x0..=x1 {
-                    band[yy * w + xx] = true;
-                }
-            }
-        }
-    }
+            let x0 = x.saturating_sub(1);
+            let x1 = (x + 1).min(w - 1);
+            (y0..=y1).any(|yy| (x0..=x1).any(|xx| soft(mask[yy * w + xx])))
+        })
+        .collect();
     const KERNEL: [f32; 9] = [1.0, 2.0, 1.0, 2.0, 4.0, 2.0, 1.0, 2.0, 1.0];
-    mask.iter()
-        .enumerate()
-        .map(|(index, value)| {
+    (0..w * h)
+        .into_par_iter()
+        .map(|index| {
             if !band[index] {
-                return *value;
+                return mask[index];
             }
             let (x, y) = (index % w, index / w);
             let mut sum = 0.0;
@@ -417,39 +411,39 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
     }
     // Only confident background can estimate the old background color. Soft
     // foreground pixels otherwise contaminate their own estimate and lose color.
-    let weight: Vec<f64> = matte.iter().map(|a| if *a <= 0.05 { 1.0 } else { 0.0 }).collect();
+    // 权重与加权颜色都是 {0,1}×u8 的精确可表示值，f32 存储零误差；积分图在
+    // box_mean 内部仍按 f64 累加，只有均值输出降为 f32（相对误差 ~1e-7，
+    // 远小于后续 ±24 clamp 与 8bit 量化），4K 下省约 600MB 瞬时缓冲。
+    let weight: Vec<f32> = matte.iter().map(|a| if *a <= 0.05 { 1.0 } else { 0.0 }).collect();
     let rgb_raw = rgb.as_raw();
-    let build_weighted = |ch: usize| -> Vec<f64> {
+    let build_weighted = |ch: usize| -> Vec<f32> {
         weight
             .par_iter()
             .enumerate()
-            .map(|(index, wgt)| rgb_raw[index * 3 + ch] as f64 * wgt)
+            .map(|(index, wgt)| rgb_raw[index * 3 + ch] as f32 * wgt)
             .collect()
     };
     let weighted = [build_weighted(0), build_weighted(1), build_weighted(2)];
     // 4 路均值共用同一积分图缓冲，省去重复的数百 MB 分配与清零。
     let mut sat = Vec::new();
-    let mut buf: Vec<f64> = Vec::new();
-    box_mean_f64_into(&weight, w, h, RADIUS, &mut sat, &mut buf);
-    let mean_w = std::mem::take(&mut buf);
-    let mut mean_c: [Vec<f64>; 3] = Default::default();
+    let mean_w = box_mean_f32_into(&weight, w, h, RADIUS, &mut sat);
+    let mut mean_c: [Vec<f32>; 3] = Default::default();
     for ch in 0..3 {
-        box_mean_f64_into(&weighted[ch], w, h, RADIUS, &mut sat, &mut buf);
-        mean_c[ch] = std::mem::take(&mut buf);
+        mean_c[ch] = box_mean_f32_into(&weighted[ch], w, h, RADIUS, &mut sat);
     }
     out.resize(total, [0u8; 3]);
     out.par_iter_mut().enumerate().for_each(|(index, slot)| {
         let pixel = rgb.get_pixel((index % w) as u32, (index / w) as u32);
         let a = matte[index];
         let wsum = mean_w[index];
-        if a >= CEIL || a <= 0.0 || wsum < BG_PRESENCE_MIN {
+        if a >= CEIL || a <= 0.0 || (wsum as f64) < BG_PRESENCE_MIN {
             *slot = [pixel[0], pixel[1], pixel[2]];
             return;
         }
         let aa = (a as f64).max(FLOOR_A as f64);
         let mut color = [0u8; 3];
         for ch in 0..3 {
-            let bg = mean_c[ch][index] / wsum;
+            let bg = (mean_c[ch][index] / wsum) as f64;
             // Use the same regularized alpha on both sides of the equation;
             // mixing a with max(a, floor) darkens very fine, low-alpha edges.
             let foreground = (pixel[ch] as f64 - (1.0 - aa) * bg) / aa;
@@ -505,8 +499,22 @@ pub(crate) fn box_mean_f64_into(
 /// O(n) 积分图盒均值（f32 版）：引导滤波要用约 17 路均值，f64 版会带来
 /// 数百 MB 瞬时内存；累加仍走 f64 积分图保证精度，输入输出用 f32。
 pub(crate) fn box_mean_f32(values: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
+    let mut sat = Vec::new();
+    box_mean_f32_into(values, w, h, radius, &mut sat)
+}
+
+/// 同 `box_mean_f64_into`：`sat` 由调用方复用容量，引导滤波/整定一次要连续
+/// 求十余路均值，免去每次数百 MB 积分图的分配与清零；逐元素结果一致。
+pub(crate) fn box_mean_f32_into(
+    values: &[f32],
+    w: usize,
+    h: usize,
+    radius: usize,
+    sat: &mut Vec<f64>,
+) -> Vec<f32> {
     let stride = w + 1;
-    let mut sat = vec![0f64; stride * (h + 1)];
+    sat.clear();
+    sat.resize(stride * (h + 1), 0.0);
     for y in 0..h {
         let mut row_sum = 0f64;
         for x in 0..w {
@@ -556,75 +564,90 @@ pub(crate) fn guided_filter_matte(rgb: &RgbImage, p: &[f32], radius: usize, eps:
         b[i] = pixel[2] as f32 / 255.0;
     }
 
-    let mean = |v: &[f32]| box_mean_f32(v, w, h, radius);
-    let mr = mean(&r);
-    let mg = mean(&g);
-    let mb = mean(&b);
-    let mp = mean(p);
+    // 积分图缓冲跨全部均值调用复用：4K 下每次分配+清零约 134MB，13 路均值
+    // 连续求时只留一份容量。
+    let mut sat = Vec::new();
+    let mean = |v: &[f32], sat: &mut Vec<f64>| box_mean_f32_into(v, w, h, radius, sat);
+    let mr = mean(&r, &mut sat);
+    let mg = mean(&g, &mut sat);
+    let mb = mean(&b, &mut sat);
+    let mp = mean(p, &mut sat);
 
     // 协方差所需的二次项均值；逐项生成乘积数组，用完即弃控制内存。
     let mut prod = vec![0f32; n];
-    let mut pair_mean = |a: &[f32], bch: &[f32]| -> Vec<f32> {
-        for i in 0..n {
-            prod[i] = a[i] * bch[i];
-        }
-        box_mean_f32(&prod, w, h, radius)
+    let mut pair_mean = |a: &[f32], bch: &[f32], sat: &mut Vec<f64>| -> Vec<f32> {
+        a.par_iter()
+            .zip(bch)
+            .zip(prod.par_iter_mut())
+            .for_each(|((ai, bi), pi)| *pi = ai * bi);
+        box_mean_f32_into(&prod, w, h, radius, sat)
     };
-    let mrr = pair_mean(&r, &r);
-    let mrg = pair_mean(&r, &g);
-    let mrb = pair_mean(&r, &b);
-    let mgg = pair_mean(&g, &g);
-    let mgb = pair_mean(&g, &b);
-    let mbb = pair_mean(&b, &b);
-    let mrp = pair_mean(&r, p);
-    let mgp = pair_mean(&g, p);
-    let mbp = pair_mean(&b, p);
+    let mrr = pair_mean(&r, &r, &mut sat);
+    let mrg = pair_mean(&r, &g, &mut sat);
+    let mrb = pair_mean(&r, &b, &mut sat);
+    let mgg = pair_mean(&g, &g, &mut sat);
+    let mgb = pair_mean(&g, &b, &mut sat);
+    let mbb = pair_mean(&b, &b, &mut sat);
+    let mrp = pair_mean(&r, p, &mut sat);
+    let mgp = pair_mean(&g, p, &mut sat);
+    let mbp = pair_mean(&b, p, &mut sat);
 
     // 逐像素解 3×3 线性方程 (cov_II + eps·I)·a = cov_Ip，再 b = p̄ − a·Ī。
+    // 每像素只读自己的下标，map 并行求出后按序写回，输出与串行逐字节一致。
     let mut a1 = vec![0f32; n];
     let mut a2 = vec![0f32; n];
     let mut a3 = vec![0f32; n];
     let mut bb = vec![0f32; n];
-    for i in 0..n {
-        let vr = (mrr[i] - mr[i] * mr[i]) as f64 + eps;
-        let vg = (mgg[i] - mg[i] * mg[i]) as f64 + eps;
-        let vb = (mbb[i] - mb[i] * mb[i]) as f64 + eps;
-        let vrg = (mrg[i] - mr[i] * mg[i]) as f64;
-        let vrb = (mrb[i] - mr[i] * mb[i]) as f64;
-        let vgb = (mgb[i] - mg[i] * mb[i]) as f64;
-        let crp = (mrp[i] - mr[i] * mp[i]) as f64;
-        let cgp = (mgp[i] - mg[i] * mp[i]) as f64;
-        let cbp = (mbp[i] - mb[i] * mp[i]) as f64;
-        // 余因子法求逆（对称矩阵，C 与其转置相同）
-        let c00 = vg * vb - vgb * vgb;
-        let c01 = vrb * vgb - vrg * vb;
-        let c02 = vrg * vgb - vg * vrb;
-        let c11 = vr * vb - vrb * vrb;
-        let c12 = vrg * vrb - vr * vgb;
-        let c22 = vr * vg - vrg * vrg;
-        let det = vr * c00 + vrg * c01 + vrb * c02;
-        if det.abs() < 1e-20 {
-            a1[i] = 0.0;
-            a2[i] = 0.0;
-            a3[i] = 0.0;
-        } else {
-            let inv = 1.0 / det;
-            a1[i] = ((c00 * crp + c01 * cgp + c02 * cbp) * inv) as f32;
-            a2[i] = ((c01 * crp + c11 * cgp + c12 * cbp) * inv) as f32;
-            a3[i] = ((c02 * crp + c12 * cgp + c22 * cbp) * inv) as f32;
-        }
-        bb[i] = mp[i] - a1[i] * mr[i] - a2[i] * mg[i] - a3[i] * mb[i];
+    let solved: Vec<(f32, f32, f32, f32)> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let vr = (mrr[i] - mr[i] * mr[i]) as f64 + eps;
+            let vg = (mgg[i] - mg[i] * mg[i]) as f64 + eps;
+            let vb = (mbb[i] - mb[i] * mb[i]) as f64 + eps;
+            let vrg = (mrg[i] - mr[i] * mg[i]) as f64;
+            let vrb = (mrb[i] - mr[i] * mb[i]) as f64;
+            let vgb = (mgb[i] - mg[i] * mb[i]) as f64;
+            let crp = (mrp[i] - mr[i] * mp[i]) as f64;
+            let cgp = (mgp[i] - mg[i] * mp[i]) as f64;
+            let cbp = (mbp[i] - mb[i] * mp[i]) as f64;
+            // 余因子法求逆（对称矩阵，C 与其转置相同）
+            let c00 = vg * vb - vgb * vgb;
+            let c01 = vrb * vgb - vrg * vb;
+            let c02 = vrg * vgb - vg * vrb;
+            let c11 = vr * vb - vrb * vrb;
+            let c12 = vrg * vrb - vr * vgb;
+            let c22 = vr * vg - vrg * vrg;
+            let det = vr * c00 + vrg * c01 + vrb * c02;
+            let (a1_v, a2_v, a3_v) = if det.abs() < 1e-20 {
+                (0.0, 0.0, 0.0)
+            } else {
+                let inv = 1.0 / det;
+                (
+                    ((c00 * crp + c01 * cgp + c02 * cbp) * inv) as f32,
+                    ((c01 * crp + c11 * cgp + c12 * cbp) * inv) as f32,
+                    ((c02 * crp + c12 * cgp + c22 * cbp) * inv) as f32,
+                )
+            };
+            let bb_v = mp[i] - a1_v * mr[i] - a2_v * mg[i] - a3_v * mb[i];
+            (a1_v, a2_v, a3_v, bb_v)
+        })
+        .collect();
+    for (i, (a1_v, a2_v, a3_v, bb_v)) in solved.into_iter().enumerate() {
+        a1[i] = a1_v;
+        a2[i] = a2_v;
+        a3[i] = a3_v;
+        bb[i] = bb_v;
     }
 
     // 标准 fast guided filter 第二步：对 a、b 做盒均值后再合成，避免贴边振铃。
-    let ma1 = mean(&a1);
-    let ma2 = mean(&a2);
-    let ma3 = mean(&a3);
-    let mb2 = mean(&bb);
-    let mut q = vec![0f32; n];
-    for i in 0..n {
-        q[i] = (ma1[i] * r[i] + ma2[i] * g[i] + ma3[i] * b[i] + mb2[i]).clamp(0.0, 1.0);
-    }
+    let ma1 = mean(&a1, &mut sat);
+    let ma2 = mean(&a2, &mut sat);
+    let ma3 = mean(&a3, &mut sat);
+    let mb2 = mean(&bb, &mut sat);
+    let q: Vec<f32> = (0..n)
+        .into_par_iter()
+        .map(|i| (ma1[i] * r[i] + ma2[i] * g[i] + ma3[i] * b[i] + mb2[i]).clamp(0.0, 1.0))
+        .collect();
     q
 }
 
@@ -649,13 +672,17 @@ pub(crate) fn solidify_subject(rgb: &RgbImage, mask: &mut [f32], w: u32, h: u32)
     let weight_bg: Vec<f32> = mask.iter().map(|a| (1.0 - a) * (1.0 - a)).collect();
 
     let mut product = vec![0f32; n];
-    let mut weighted_mean = |weight: &[f32], channel: &[f32]| -> Vec<f32> {
+    // 积分图缓冲复用同 guided_filter_matte：8 路均值只留一份 SAT 容量。
+    let mut sat = Vec::new();
+    let mut weighted_mean = |weight: &[f32], channel: &[f32], sat: &mut Vec<f64>| -> Vec<f32> {
         for i in 0..n {
             product[i] = weight[i] * channel[i];
         }
-        box_mean_f32(&product, w, h, RADIUS)
+        box_mean_f32_into(&product, w, h, RADIUS, sat)
     };
-    let sum = |weight: &[f32]| -> Vec<f32> { box_mean_f32(weight, w, h, RADIUS) };
+    let sum = |weight: &[f32], sat: &mut Vec<f64>| -> Vec<f32> {
+        box_mean_f32_into(weight, w, h, RADIUS, sat)
+    };
 
     let mut channels = [vec![0f32; n], vec![0f32; n], vec![0f32; n]];
     for (i, pixel) in rgb.pixels().enumerate() {
@@ -664,13 +691,13 @@ pub(crate) fn solidify_subject(rgb: &RgbImage, mask: &mut [f32], w: u32, h: u32)
         channels[2][i] = pixel[2] as f32;
     }
 
-    let wsum_fg = sum(&weight_fg);
-    let wsum_bg = sum(&weight_bg);
+    let wsum_fg = sum(&weight_fg, &mut sat);
+    let wsum_bg = sum(&weight_bg, &mut sat);
     let mut fg: [Vec<f32>; 3] = Default::default();
     let mut bg: [Vec<f32>; 3] = Default::default();
     for ch in 0..3 {
-        fg[ch] = weighted_mean(&weight_fg, &channels[ch]);
-        bg[ch] = weighted_mean(&weight_bg, &channels[ch]);
+        fg[ch] = weighted_mean(&weight_fg, &channels[ch], &mut sat);
+        bg[ch] = weighted_mean(&weight_bg, &channels[ch], &mut sat);
     }
 
     // 判定逐像素独立，可并行；写回按索引顺序串行执行，保证与旧串行实现
@@ -1027,8 +1054,10 @@ fn cf_solve_tile(
             ];
         }
     }
-    let mut rows: Vec<HashMap<usize, f64>> = (0..unknown_count)
-        .map(|_| HashMap::with_capacity(32))
+    // 每个未知像素一“行”；一行实际只收 3×3 窗口去重后约 ≤30 个不同列，
+    // 线性查插的定长 Vec 比每像素一个 HashMap 省 10⁵ 量级的堆分配与哈希。
+    let mut rows: Vec<Vec<(usize, f64)>> = (0..unknown_count)
+        .map(|_| Vec::with_capacity(32))
         .collect();
     let mut b = vec![0.0f64; unknown_count];
 
@@ -1113,7 +1142,14 @@ fn cf_solve_tile(
                                 let alpha = if foreground_known[global_j] { 1.0 } else { 0.0 };
                                 b[row_id] -= value * alpha;
                             } else {
-                                *rows[row_id].entry(column_id).or_insert(0.0) += value;
+                                let row = &mut rows[row_id];
+                                if let Some((_, accumulated)) =
+                                    row.iter_mut().find(|(column, _)| *column == column_id)
+                                {
+                                    *accumulated += value;
+                                } else {
+                                    row.push((column_id, value));
+                                }
                             }
                         }
                     }
@@ -1124,15 +1160,12 @@ fn cf_solve_tile(
 
     let mut sparse_rows: Vec<Vec<(usize, f64)>> = rows
         .into_iter()
-        .map(|row| {
-            let mut entries: Vec<_> = row
-                .into_iter()
-                .filter(|(_, value)| value.is_finite() && value.abs() > 1e-14)
-                .collect();
-            // HashMap 仅用于累计窗口贡献；求解时固定列顺序，避免不同进程的哈希
-            // 随机种子令同一张图出现不必要的浮点累加差异。
-            entries.sort_unstable_by_key(|(column, _)| *column);
-            entries
+        .map(|mut row| {
+            row.retain(|(_, value)| value.is_finite() && value.abs() > 1e-14);
+            // 累加顺序与旧 HashMap 一致（同列按到达顺序累加）；求解时固定列
+            // 顺序，避免同一张图出现不必要的浮点累加差异。
+            row.sort_unstable_by_key(|(column, _)| *column);
+            row
         })
         .collect();
     let mut diagonal = vec![0.0f64; unknown_count];

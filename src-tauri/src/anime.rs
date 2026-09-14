@@ -491,7 +491,12 @@ pub fn cutout_with_options(
     timed("7 save-png", || {
         use image::ImageEncoder as _;
         crate::safety::atomic_write(output, |writer| {
-        let mut encoder = image::codecs::png::PngEncoder::new(writer);
+        // fdeflate 快速档：比默认 zlib-6 快一个量级，4K 保存从秒级降到亚秒。
+        let mut encoder = image::codecs::png::PngEncoder::new_with_quality(
+            writer,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::Adaptive,
+        );
         if let Some(profile) = icc_profile {
             encoder.set_icc_profile(profile).map_err(to_string_error)?;
         }

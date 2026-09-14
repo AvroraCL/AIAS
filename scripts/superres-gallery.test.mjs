@@ -18,6 +18,7 @@ function fixture({ scale = '4' } = {}) {
     'superres-output': { value: 'C:/output' }
   };
   const state = { superresFiles: ['C:/input/hero.png'], superresResults: new Map(), superresProbed: new Set() };
+  const calls = { rebuilds: 0 };
   const context = vm.createContext({
     state, Image: ImageIcon,
     api: {
@@ -31,11 +32,13 @@ function fixture({ scale = '4' } = {}) {
     basename: path => path.split(/[\\/]/).pop(),
     $: id => controls[id], isTauriRuntime: true, convertFileSrc: path => path,
     setText: (id, value) => { controls[id].textContent = value; },
-    renderSuperresGallery() {}
+    // 探测命中应走增量更新：全量重建只计数，供断言使用
+    renderSuperresGallery() { calls.rebuilds += 1; },
+    refreshIcons() {}
   });
   vm.runInContext(helpers, context);
   const flush = () => new Promise(resolve => setTimeout(resolve, 0));
-  return { context, state, filesExistCalls, resolvers, flush, controls, file: state.superresFiles[0] };
+  return { context, state, filesExistCalls, resolvers, flush, controls, file: state.superresFiles[0], calls };
 }
 
 test('slider label tracks the selected scale between 2 and 4', () => {
@@ -109,6 +112,38 @@ test('an existing result file is stored under its key', async () => {
   resolvers[0].resolve([true]);
   await flush();
   assert.equal(state.superresResults.get(context.superresResultKey(file, 'anime')), 'C:/output/hero_4x_anime.png');
+});
+
+test('a probe hit flips the model badge in place without rebuilding the grid', async () => {
+  const { context, state, resolvers, flush, controls, file, calls } = fixture();
+  const badge = { className: 'thumb-badge pending', title: '待处理', textContent: '' };
+  const img = { title: '原图 · 当前模型和倍率尚无结果' };
+  const card = {
+    dataset: { path: file },
+    querySelector: selector => {
+      if (selector === '.thumb-badge[data-model="anime"]') return badge;
+      if (selector === 'img') return img;
+      return null;
+    }
+  };
+  controls['superres-grid'] = { children: [card] };
+  context.probeSuperresResult(file, 'anime');
+  resolvers[0].resolve([true]);
+  await flush();
+  assert.equal(state.superresResults.get(context.superresResultKey(file, 'anime')), 'C:/output/hero_4x_anime.png');
+  assert.equal(badge.className, 'thumb-badge done');
+  assert.equal(badge.title, '已生成 4x 结果');
+  assert.equal(img.title, '4x 动漫超分结果');
+  assert.equal(calls.rebuilds, 0);
+});
+
+test('a probe hit without a rendered card skips the incremental update entirely', async () => {
+  const { context, state, resolvers, flush, file, calls } = fixture();
+  context.probeSuperresResult(file, 'anime');
+  resolvers[0].resolve([true]);
+  await flush();
+  assert.equal(state.superresResults.size, 1);
+  assert.equal(calls.rebuilds, 0);
 });
 
 test('missing results unmark the probe so later renders can retry', async () => {

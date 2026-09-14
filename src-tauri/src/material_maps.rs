@@ -216,7 +216,22 @@ fn output_plan(options: &RunOptions) -> Result<Vec<Vec<PathBuf>>, String> {
 }
 
 fn save(image: &DynamicImage, path: &Path) -> Result<(), String> {
-    crate::safety::atomic_write(path, |writer| image.write_to(writer, image::ImageFormat::Png).map_err(crate::to_string_error))
+    use image::ImageEncoder;
+    crate::safety::atomic_write(path, |writer| {
+        // fdeflate 快速档替代默认 zlib-6，导出大贴图不再在编码上停顿。
+        image::codecs::png::PngEncoder::new_with_quality(
+            writer,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::Adaptive,
+        )
+        .write_image(
+            image.as_bytes(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::from(image.color()),
+        )
+        .map_err(crate::to_string_error)
+    })
 }
 fn generate(app: Option<&AppHandle>, options: RunOptions) -> Result<crate::TaskResult, String> {
     if options.output_path.trim().is_empty() { return Err("请选择输出目录。".into()); }

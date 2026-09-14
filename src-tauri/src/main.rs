@@ -1907,8 +1907,26 @@ fn save_luma_image(
 }
 
 fn save_dynamic_image(image: &DynamicImage, output: PathBuf, format: &str) -> Result<(), String> {
-    let format = if format.eq_ignore_ascii_case("tga") { image::ImageFormat::Tga } else { image::ImageFormat::Png };
-    safety::atomic_write(&output, |writer| image.write_to(writer, format).map_err(to_string_error))
+    use image::ImageEncoder;
+    safety::atomic_write(&output, |writer| {
+        if format.eq_ignore_ascii_case("tga") {
+            image.write_to(writer, image::ImageFormat::Tga).map_err(to_string_error)
+        } else {
+            // fdeflate 快速档替代默认 zlib-6：4K 级贴图导出不再卡在编码上。
+            image::codecs::png::PngEncoder::new_with_quality(
+                writer,
+                image::codecs::png::CompressionType::Fast,
+                image::codecs::png::FilterType::Adaptive,
+            )
+            .write_image(
+                image.as_bytes(),
+                image.width(),
+                image.height(),
+                image::ExtendedColorType::from(image.color()),
+            )
+            .map_err(to_string_error)
+        }
+    })
 }
 
 fn find_steam_path() -> Result<Option<PathBuf>, String> {

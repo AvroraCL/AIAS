@@ -271,6 +271,7 @@ const state = {
   superresRunning: false,
   superresResults: new Map(),
   superresProbed: new Set(),
+  skinsCache: [],
   activeMode: "merge",
   activityCount: 0,
   lastOutputPath: "",
@@ -1009,7 +1010,14 @@ function startSystemMonitor() {
     }
   };
   poll();
-  window.setInterval(poll, 2000);
+  // 降频到 4s；窗口隐藏时跳过后端调用，恢复可见时立即补一次
+  window.setInterval(() => {
+    if (document.hidden) return;
+    poll();
+  }, 4000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) poll();
+  });
 }
 
 function animeModelById(id) {
@@ -1229,17 +1237,51 @@ function animeLocalSrc(path) {
   return isTauriRuntime && path ? convertFileSrc(path) : "";
 }
 
-// 后端用全局锁串行化解码全图；这里也逐个排队 invoke，批量渲染时不会一次性
-// 提交全部请求。生成失败时回退全图 src，由 WebView 自行解码（不比现状差）。
-let galleryThumbQueue = Promise.resolve();
+// 后端用全局锁串行化解码全图，JS 侧的小并发池是安全的，只是省掉 IPC 往返
+// 的排队时间。缩略图按路径记忆：成功缓存 Promise，失败不缓存（下次画廊渲染
+// 可重试）。生成失败时回退全图 src，由 WebView 自行解码（不比现状差）。
+const THUMB_QUEUE_CONCURRENCY = 3;
+const thumbCache = new Map();
+const thumbWaiters = [];
+let thumbRunning = 0;
+
+function pumpThumbQueue() {
+  while (thumbRunning < THUMB_QUEUE_CONCURRENCY && thumbWaiters.length) {
+    thumbRunning += 1;
+    thumbWaiters.shift()();
+  }
+}
+
+function fetchGalleryThumbnail(path) {
+  const cached = thumbCache.get(path);
+  if (cached) return cached;
+  const request = new Promise((resolve, reject) => {
+    thumbWaiters.push(() => {
+      api.galleryThumbnail(path).then(
+        (thumb) => {
+          thumbRunning -= 1;
+          pumpThumbQueue();
+          resolve(thumb ? convertFileSrc(thumb) : "");
+        },
+        (error) => {
+          thumbRunning -= 1;
+          pumpThumbQueue();
+          reject(error);
+        }
+      );
+    });
+    pumpThumbQueue();
+  });
+  request.catch(() => thumbCache.delete(path));
+  thumbCache.set(path, request);
+  return request;
+}
 
 function requestGalleryThumbnail(img, container, path, fallbackSrc) {
   if (!isTauriRuntime || !path) return;
   container.classList.add("placeholder");
-  galleryThumbQueue = galleryThumbQueue
-    .then(() => api.galleryThumbnail(path))
-    .then((thumb) => {
-      const src = thumb ? convertFileSrc(thumb) : "";
+  fetchGalleryThumbnail(path)
+    .then((src) => {
       if (!src && fallbackSrc) {
         img.src = fallbackSrc;
       } else if (src) {
@@ -1306,11 +1348,33 @@ function probeAnimeResult(file) {
     const index = flags.findIndex(Boolean);
     if (index < 0) return;
     state.animeResults.set(key, paths[index]);
-    renderAnimeGallery();
+    markAnimeResultFound(file);
   }).catch(() => {
     // 探测调用本身失败（而非文件不存在）时允许下次渲染重试。
     state.animeProbed.delete(key);
   });
+}
+
+// 卡片结果态角标：全量渲染与探测命中后的增量更新共用同一套标记逻辑
+function markAnimeBadge(badge, done) {
+  badge.className = `thumb-badge ${done ? "done" : "pending"}`;
+  badge.title = done ? "已有抠图结果" : "待处理";
+  badge.innerHTML = done ? '<i data-lucide="check"></i>' : "";
+}
+
+// 探测命中后的增量更新：只翻对应卡片角标，不整画廊重建（N 张图 K 个命中时
+// 全量重建是 O(N×K) 的 DOM 抖动，缩略图也会闪）。卡片不在 DOM 时跳过，
+// 下次全量渲染自会补上；活动项命中时同步刷新对比图。
+function markAnimeResultFound(file) {
+  const strip = $("anime-thumbs");
+  const card = strip ? [...strip.children].find((item) => item?.dataset?.path === file) : null;
+  if (card) {
+    const badge = card.querySelector(".thumb-badge");
+    if (badge) markAnimeBadge(badge, state.animeResults.has(animeResultKey(file)));
+    card.title = file;
+    refreshIcons(card);
+  }
+  if (state.animeFiles[state.animeActiveIndex] === file) renderAnimeCompare(file);
 }
 
 function renderAnimeGallery() {
@@ -1337,6 +1401,7 @@ function renderAnimeThumbs(files) {
     thumb.className = "anime-thumb";
     thumb.classList.toggle("active", index === state.animeActiveIndex);
     thumb.title = file;
+    thumb.dataset.path = file;
 
     const img = document.createElement("img");
     img.alt = basename(file);
@@ -1350,9 +1415,7 @@ function renderAnimeThumbs(files) {
 
     const done = state.animeResults.has(animeResultKey(file));
     const badge = document.createElement("span");
-    badge.className = `thumb-badge ${done ? "done" : "pending"}`;
-    badge.title = done ? "已有抠图结果" : "待处理";
-    badge.innerHTML = done ? '<i data-lucide="check"></i>' : "";
+    markAnimeBadge(badge, done);
 
     const remove = document.createElement("span");
     remove.className = "thumb-remove";
@@ -1645,7 +1708,7 @@ function probeSuperresResult(file, modelId) {
     if ((state.superresPreviewRevision || 0) !== revision || $("superres-output")?.value?.trim() !== dir || !state.superresFiles.includes(file) || state.superresResults.has(key)) return;
     if (flags[0]) {
       state.superresResults.set(key, candidate);
-      renderSuperresGallery();
+      markSuperresResultFound(file, modelId);
     } else {
       // 结果文件还没出现（任务可能正在运行），允许之后的渲染重新探测。
       state.superresProbed.delete(key);
@@ -1653,6 +1716,25 @@ function probeSuperresResult(file, modelId) {
   }).catch(() => {
     if ((state.superresPreviewRevision || 0) === revision) state.superresProbed.delete(key);
   });
+}
+
+// 卡片结果态角标：全量渲染与探测命中后的增量更新共用同一套标记逻辑
+function markSuperresBadge(badge, modelId, done) {
+  badge.className = `thumb-badge ${done ? "done" : "pending"}`;
+  badge.textContent = superresLabels[modelId].replace("超分", "");
+  badge.title = done ? `已生成 ${superresScale()}x 结果` : "待处理";
+}
+
+// 探测命中后的增量更新：只翻对应模型角标与缩略图提示，不重建整片网格
+// （理由同动漫画廊）。卡片或角标不在 DOM 时跳过，下次全量渲染自会补上。
+function markSuperresResultFound(file, modelId) {
+  const grid = $("superres-grid");
+  const card = grid ? [...grid.children].find((item) => item?.dataset?.path === file) : null;
+  const badge = card?.querySelector(`.thumb-badge[data-model="${modelId}"]`);
+  if (!badge) return;
+  markSuperresBadge(badge, modelId, Boolean(state.superresResults.get(superresResultKey(file, modelId))));
+  const img = card.querySelector("img");
+  if (img) img.title = `${superresScale()}x ${superresLabels[modelId]}结果`;
 }
 
 function renderSuperresGallery() {
@@ -1678,6 +1760,7 @@ function renderSuperresGrid(files) {
     const card = document.createElement("div");
     card.className = "superres-card";
     card.title = file;
+    card.dataset.path = file;
 
     const img = document.createElement("img");
     img.alt = basename(file);
@@ -1704,9 +1787,8 @@ function renderSuperresGrid(files) {
     for (const modelId of ["anime", "general"]) {
       const done = Boolean(state.superresResults.get(superresResultKey(file, modelId)));
       const badge = document.createElement("span");
-      badge.className = `thumb-badge ${done ? "done" : "pending"}`;
-      badge.textContent = superresLabels[modelId].replace("超分", "");
-      badge.title = done ? `已生成 ${superresScale()}x 结果` : "待处理";
+      markSuperresBadge(badge, modelId, done);
+      badge.dataset.model = modelId;
       badges.appendChild(badge);
     }
     info.append(name, badges);
@@ -2259,6 +2341,8 @@ function applyMode(mode) {
   const inspector = document.querySelector(".inspector");
   if (inspector) inspector.classList.toggle("hidden", isFull);
   if (mode === "settings") syncSettingsView();
+  if (mode === "skins" && !state.skinsCache.length) refreshSkins();
+  if (mode === "model-bake") modelBakeUI?.refreshCapabilities?.();
   if (mode === "anime-cutout") {
     refreshAnimeModelStatus();
     refreshGpuRuntime();
@@ -2736,9 +2820,8 @@ function bindRunActions() {
   });
 
   $("superres-scale")?.addEventListener("input", () => {
+    // 拖动中只更新滑点与文案；完成提交（change）才清结果并重新探测
     updateSuperresScaleControl();
-    resetSuperresResults();
-    renderSuperresGallery();
   });
   $("superres-scale")?.addEventListener("change", async () => {
     updateSuperresScaleControl();
@@ -2790,13 +2873,15 @@ function bindSkinActions() {
   });
 
   $("skin-sort")?.addEventListener("change", () => {
-    refreshSkins();
+    // 排序是纯前端逻辑：对缓存条目本地重排重渲染，不再全树重扫目录
+    renderSkinList(state.skinsCache);
   });
 }
 
 async function refreshSkins({ notify = false } = {}) {
   const directory = $("skin-path")?.value;
   if (!directory) {
+    state.skinsCache = [];
     renderSkinList([]);
     updateStatus();
     return;
@@ -2804,6 +2889,7 @@ async function refreshSkins({ notify = false } = {}) {
 
   try {
     const entries = await api.skin.list(directory);
+    state.skinsCache = entries;
     renderSkinList(entries);
     if (notify) addActivity("已刷新", `${entries.length} 个涂装`, "success");
   } catch (error) {
@@ -2952,7 +3038,7 @@ async function boot() {
   renderAnimeGallery();
   renderSuperresGallery();
   refreshSuperresModelStatus();
-  await refreshSkins();
+  // 涂装列表不再阻塞启动：首次进入涂装模式且缓存为空时再拉取
   syncPathChips();
   const savedMode = localStorage.getItem("aias-active-mode");
   applyMode(modeMeta[savedMode] ? savedMode : "merge");

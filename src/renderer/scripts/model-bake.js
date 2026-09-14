@@ -12,6 +12,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let narrowPanel = 'settings';
   const aoTextures = new Map();
   let resultChannels = {};
+  let capabilitiesRequested = false;
   let saveTimer, renderFrame, unlisten, outputDirectory = '', reportRevision = 0, orthographicHeight = 2, renderWidth = 0, renderHeight = 0;
 
   const section = (name, html) => `<section class="bake-control-section"><h3>${name}</h3>${html}</section>`;
@@ -827,11 +828,19 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   updatePanelState('settings');
   syncDisplayControls();
   setView('model');
-  capabilities();
+
+  // 构造时不再无条件探测 DXR 能力（会拉起 worker 子进程拖慢启动）；
+  // 首次激活烘焙模式时由 app.js 调用，已拉取过或正在拉取则跳过。
+  function refreshCapabilities() {
+    if (capabilitiesRequested) return;
+    capabilitiesRequested = true;
+    capabilities();
+  }
 
   return {
     blocker,
     importModel,
+    refreshCapabilities,
     activate(mode) {
       active = mode === 'model-bake';
       if (active) {

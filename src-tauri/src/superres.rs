@@ -8,6 +8,7 @@ use crate::anime::{
 use image::RgbaImage;
 use ort::session::Session;
 use ort::value::Tensor;
+use rayon::prelude::*;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -293,23 +294,21 @@ fn try_upscale_with(
     // RGB 通道
     run_pass(&cache_key, image, tile_size, |pixel| {
         [pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0]
-    }, |tile_out, tile_w, x0, y0| {
-        for (row, pixels) in tile_out.chunks_exact(tile_w * 3).enumerate() {
-            let dst_y = y0 + row;
-            if dst_y >= out_h {
-                break;
+    }, |tile| {
+        // 输出行互不重叠，逐行并行写回；每槽位算术与串行版一致。
+        let cols = tile.core_w.min(out_w - tile.dst_x);
+        let rows = tile.core_h.min(out_h - tile.dst_y);
+        let band = &mut result[tile.dst_y * out_w * 4..][..rows * out_w * 4];
+        band.par_chunks_mut(out_w * 4).enumerate().for_each(|(row, line)| {
+            let src_row = (row + tile.crop_t) * tile.stride + tile.crop_l;
+            for col in 0..cols {
+                let src = src_row + col;
+                let slot = (tile.dst_x + col) * 4;
+                line[slot] = (tile.data[src] * 255.0).round().clamp(0.0, 255.0) as u8;
+                line[slot + 1] = (tile.data[tile.plane + src] * 255.0).round().clamp(0.0, 255.0) as u8;
+                line[slot + 2] = (tile.data[2 * tile.plane + src] * 255.0).round().clamp(0.0, 255.0) as u8;
             }
-            for (col, pixel) in pixels.chunks_exact(3).enumerate() {
-                let dst_x = x0 + col;
-                if dst_x >= out_w {
-                    break;
-                }
-                let slot = (dst_y * out_w + dst_x) * 4;
-                result[slot] = (pixel[0] * 255.0).round().clamp(0.0, 255.0) as u8;
-                result[slot + 1] = (pixel[1] * 255.0).round().clamp(0.0, 255.0) as u8;
-                result[slot + 2] = (pixel[2] * 255.0).round().clamp(0.0, 255.0) as u8;
-            }
-        }
+        });
     }, &report)?;
 
     // Alpha 通道（仅当存在透明像素）
@@ -317,21 +316,18 @@ fn try_upscale_with(
         run_pass(&cache_key, image, tile_size, |pixel| {
             let alpha = pixel[3] as f32 / 255.0;
             [alpha, alpha, alpha]
-        }, |tile_out, tile_w, x0, y0| {
-            for (row, pixels) in tile_out.chunks_exact(tile_w * 3).enumerate() {
-                let dst_y = y0 + row;
-                if dst_y >= out_h {
-                    break;
+        }, |tile| {
+            let cols = tile.core_w.min(out_w - tile.dst_x);
+            let rows = tile.core_h.min(out_h - tile.dst_y);
+            let band = &mut result[tile.dst_y * out_w * 4..][..rows * out_w * 4];
+            band.par_chunks_mut(out_w * 4).enumerate().for_each(|(row, line)| {
+                let src_row = (row + tile.crop_t) * tile.stride + tile.crop_l;
+                for col in 0..cols {
+                    let src = src_row + col;
+                    line[(tile.dst_x + col) * 4 + 3] =
+                        (tile.data[src] * 255.0).round().clamp(0.0, 255.0) as u8;
                 }
-                for (col, pixel) in pixels.chunks_exact(3).enumerate() {
-                    let dst_x = x0 + col;
-                    if dst_x >= out_w {
-                        break;
-                    }
-                    result[(dst_y * out_w + dst_x) * 4 + 3] =
-                        (pixel[0] * 255.0).round().clamp(0.0, 255.0) as u8;
-                }
-            }
+            });
         }, &|done| report(tile_count + done))?;
     }
 
@@ -346,21 +342,45 @@ fn try_upscale_with(
     report(total_units - 1);
     crate::safety::atomic_write(output, |writer| {
         use image::ImageEncoder;
-        image::codecs::png::PngEncoder::new(writer).write_image(final_image.as_raw(), final_image.width(), final_image.height(), image::ExtendedColorType::Rgba8).map_err(crate::anime::to_string_error)
+        // 超分输出可达 16384²，默认 zlib-6 保存要数十秒；fdeflate 快速档降到秒级。
+        image::codecs::png::PngEncoder::new_with_quality(
+            writer,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::Adaptive,
+        )
+        .write_image(final_image.as_raw(), final_image.width(), final_image.height(), image::ExtendedColorType::Rgba8).map_err(crate::anime::to_string_error)
     })?;
     report(total_units);
     Ok(())
 }
 
 /// 分块推理：每个 256px 输入块带 16px 上下文（避免接缝），输出裁掉边缘后
-/// 按 4x 写回调用方给定的通道写回器。`sink(tile_out_flat_hwc_rgb, tile_out_w, x0, y0)`
-/// 收到的是该块输出左上角对应的全图输出坐标。
+/// 把模型原始 NCHW 平面数据连同裁剪几何交给调用方的通道写回器（不再中转
+/// HWC 拷贝）。`TileOutput` 的坐标均为输出分辨率像素。
+struct TileOutput<'a> {
+    /// 模型输出，NCHW 平面布局：R/G/B（或灰度三份）依次各 `plane` 个 f32。
+    data: &'a [f32],
+    /// 单通道平面长度。
+    plane: usize,
+    /// 模型输出瓦片行宽。
+    stride: usize,
+    /// 裁掉上下文后的核心区在瓦片内的偏移（4x 像素）。
+    crop_l: usize,
+    crop_t: usize,
+    /// 核心区宽高（4x 像素）。
+    core_w: usize,
+    core_h: usize,
+    /// 核心区在最终输出图上的左上角。
+    dst_x: usize,
+    dst_y: usize,
+}
+
 fn run_pass(
     cache_key: &str,
     image: &RgbaImage,
     tile_size: u32,
     sample: impl Fn(&image::Rgba<u8>) -> [f32; 3],
-    mut sink: impl FnMut(&[f32], usize, usize, usize),
+    mut sink: impl FnMut(TileOutput<'_>),
     on_tile: &dyn Fn(usize),
 ) -> Result<(), String> {
     const OVERLAP: u32 = 16;
@@ -419,20 +439,18 @@ fn run_pass(
             let crop_t = (y0 - pad_y0) as usize * 4;
             let core_w = (x1 - x0) as usize * 4;
             let core_h = (y1 - y0) as usize * 4;
-            let mut core = vec![0_f32; core_w * core_h * 3];
-            // 模型输出是 NCHW 平面布局，按通道平面取值后转成 HWC 交错。
             let plane = out_w_tile * out_h_tile;
-            for row in 0..core_h {
-                let src_row = (row + crop_t) * out_w_tile + crop_l;
-                let dst_row = row * core_w * 3;
-                for col in 0..core_w {
-                    let src = src_row + col;
-                    core[dst_row + col * 3] = data[src];
-                    core[dst_row + col * 3 + 1] = data[plane + src];
-                    core[dst_row + col * 3 + 2] = data[2 * plane + src];
-                }
-            }
-            sink(&core, core_w, x0 as usize * 4, y0 as usize * 4);
+            sink(TileOutput {
+                data,
+                plane,
+                stride: out_w_tile,
+                crop_l,
+                crop_t,
+                core_w,
+                core_h,
+                dst_x: x0 as usize * 4,
+                dst_y: y0 as usize * 4,
+            });
             tiles_done += 1;
             on_tile(tiles_done);
             x = x1;

@@ -13,6 +13,7 @@ function fixture() {
   const resolvers = [];
   const controls = { 'anime-model': { value: 'anime-specialist' }, 'anime-output': { value: 'C:/output' } };
   const state = { animeFiles: ['C:/input/hero.png', 'C:/input/hero_pose.png'], animeResults: new Map(), animeProbed: new Set() };
+  const calls = { rebuilds: 0, compareRefreshes: 0 };
   const context = vm.createContext({
     state, Image: ImageIcon,
     api: {
@@ -26,11 +27,14 @@ function fixture() {
     basename: path => path.split(/[\\/]/).pop(),
     $: id => controls[id], isTauriRuntime: true, convertFileSrc: path => path,
     wantsDetailRecovery: () => false, wantsHairRefiner: () => false,
-    renderAnimeGallery() {},
+    // 探测命中应走增量更新：全量重建与对比图刷新只计数，供断言使用
+    renderAnimeGallery() { calls.rebuilds += 1; },
+    renderAnimeCompare() { calls.compareRefreshes += 1; },
+    refreshIcons() {},
   });
   vm.runInContext(gallery, context);
   const flush = () => new Promise(resolve => setTimeout(resolve, 0));
-  return { context, state, filesExistCalls, resolvers, flush, controls };
+  return { context, state, filesExistCalls, resolvers, flush, controls, calls };
 }
 
 test('probe stores the first candidate reported existing by files_exist', async () => {
@@ -41,6 +45,49 @@ test('probe stores the first candidate reported existing by files_exist', async 
   resolvers[0].resolve([true]);
   await flush();
   assert.equal(state.animeResults.get('hero_anime-specialist'), 'C:/output/hero_anime-specialist.png');
+});
+
+test('a probe hit flips the card badge in place instead of rebuilding the gallery', async () => {
+  const { context, state, resolvers, flush, controls, calls } = fixture();
+  const badge = { className: 'thumb-badge pending', title: '待处理', innerHTML: '' };
+  const card = {
+    dataset: { path: 'C:/input/hero.png' },
+    title: 'C:/input/hero.png',
+    querySelector: selector => (selector === '.thumb-badge' ? badge : null),
+  };
+  controls['anime-thumbs'] = { children: [card] };
+  context.probeAnimeResult('C:/input/hero.png');
+  resolvers[0].resolve([true]);
+  await flush();
+  assert.equal(state.animeResults.get('hero_anime-specialist'), 'C:/output/hero_anime-specialist.png');
+  assert.equal(badge.className, 'thumb-badge done');
+  assert.equal(badge.title, '已有抠图结果');
+  assert.match(badge.innerHTML, /data-lucide="check"/);
+  assert.equal(calls.rebuilds, 0);
+});
+
+test('a probe hit without a rendered card skips the incremental update entirely', async () => {
+  const { context, state, resolvers, flush, calls } = fixture();
+  context.probeAnimeResult('C:/input/hero.png');
+  resolvers[0].resolve([true]);
+  await flush();
+  assert.equal(state.animeResults.size, 1);
+  assert.equal(calls.rebuilds, 0);
+  assert.equal(calls.compareRefreshes, 0);
+});
+
+test('only a probe hit on the active item refreshes the compare view', async () => {
+  const { context, state, resolvers, flush, calls } = fixture();
+  state.animeActiveIndex = 1; // 活动项是 hero_pose，先命中 hero 不应刷新对比图
+  context.probeAnimeResult('C:/input/hero.png');
+  resolvers[0].resolve([true]);
+  await flush();
+  assert.equal(calls.compareRefreshes, 0);
+  context.probeAnimeResult('C:/input/hero_pose.png');
+  resolvers[1].resolve([true]);
+  await flush();
+  assert.equal(calls.compareRefreshes, 1);
+  assert.equal(calls.rebuilds, 0);
 });
 
 test('similar file prefixes map to the exact input, including model fallback', () => {
