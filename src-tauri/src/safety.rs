@@ -5,7 +5,7 @@ pub(crate) fn task_guard() -> Result<MutexGuard<'static, ()>, String> {
     match TASK.try_lock() {
         Ok(guard) => Ok(guard),
         Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
-        Err(std::sync::TryLockError::WouldBlock) => Err("另一个图片任务正在运行，请等待完成后重试。".into()),
+        Err(std::sync::TryLockError::WouldBlock) => Err("另一个任务正在运行，请等待完成后重试。".into()),
     }
 }
 

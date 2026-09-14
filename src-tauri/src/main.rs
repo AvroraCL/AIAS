@@ -521,6 +521,8 @@ unsafe fn apply_dark_titlebar(hwnd: *mut std::ffi::c_void) {
 #[tauri::command]
 fn task_cancel() {
     safety::request_task_cancel();
+    // 全局停止同时桥接到烘焙自己的取消文件机制（烘焙不消费图片任务取消位）。
+    model_bake::cancel_active_bake();
 }
 
 #[tauri::command]

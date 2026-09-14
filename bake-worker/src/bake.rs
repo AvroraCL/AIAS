@@ -160,7 +160,7 @@ pub fn run(
         || options.materials.is_empty()
         || !(options.ao || options.uv || options.id)
     {
-        return Err("请选择对象、材质和输出类型".into());
+        return Err("请选择材质和输出类型".into());
     }
     let file = std::fs::File::open(&options.model_path).map_err(|e| e.to_string())?;
     let model: Model =
@@ -202,6 +202,11 @@ pub fn run(
         let channel = options.channels.get(&material).copied().unwrap_or(0);
         let report = inspect(&model, material, channel, &options.objects);
         let prefix = stems[material].clone();
+        let material_label = format!(
+            "材质 {} · {}",
+            material,
+            model.materials[material].name.trim()
+        );
         let attempt = (|| -> Result<(), String> {
             let (surfaces, covered, wire) = raster(
                 &model,
@@ -225,6 +230,9 @@ pub fn run(
                     kind: "uv".into(),
                     path,
                 });
+                // UV/ID-only 烘焙没有 GPU AO 阶段的事件，进度条会恒为 0：
+                // 按材质边界补发阶段进度。
+                progress(serde_json::json!({"phase":format!("{material_label} · UV 线框"),"material":material,"progress":(position as f64+0.34)/options.materials.len() as f64}));
                 atomic_json(&options.output.join("result.json"), &result)?;
             }
             if !report.valid && (options.ao || options.id) {
@@ -269,6 +277,7 @@ pub fn run(
                     kind: "id".into(),
                     path,
                 });
+                progress(serde_json::json!({"phase":format!("{material_label} · 材质 ID"),"material":material,"progress":(position as f64+0.67)/options.materials.len() as f64}));
                 atomic_json(&options.output.join("result.json"), &result)?;
             }
             if options.ao {
@@ -313,12 +322,12 @@ pub fn run(
                         last_emit = Instant::now();
                         last_percent = percent;
                         progress(
-                            serde_json::json!({"phase":format!("材质 {} · GPU AO",material),"material":material,"progress":(position as f64+done)/options.materials.len() as f64,"blockSize":block}),
+                            serde_json::json!({"phase":format!("{material_label} · GPU AO"),"material":material,"progress":(position as f64+done)/options.materials.len() as f64,"blockSize":block}),
                         );
                     }
                 }
                 progress(
-                    serde_json::json!({"phase":format!("材质 {} · GPU AO",material),"material":material,"progress":(position as f64+1.0)/options.materials.len() as f64,"blockSize":block}),
+                    serde_json::json!({"phase":format!("{material_label} · GPU AO"),"material":material,"progress":(position as f64+1.0)/options.materials.len() as f64,"blockSize":block}),
                 );
                 let path = options.output.join(format!("{prefix}_ao.png"));
                 if options.bits == 16 {
@@ -370,7 +379,7 @@ pub fn run(
             Ok(())
         })();
         if let Err(e) = attempt {
-            result.failures.push(format!("材质 {material}：{e}"));
+            result.failures.push(format!("{material_label}：{e}"));
             if options.cancel_path.exists() {
                 result.cancelled = true;
             }
@@ -403,7 +412,7 @@ pub fn run(
             .collect();
         for m in &options.materials {
             if !complete.contains(m) {
-                result.failures.push(format!("材质 {m} 未完成（取消）"));
+                result.failures.push(format!("{} 未完成（取消）", model.materials[*m].name));
             }
         }
     }

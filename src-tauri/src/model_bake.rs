@@ -16,6 +16,9 @@ static JOBS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static CANCEL_REQUESTS: LazyLock<Mutex<std::collections::HashSet<String>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+/// 当前正在执行的烘焙任务 id：让全局"停止"按钮（task_cancel）能桥接到
+/// 烘焙自己的取消文件机制。
+static ACTIVE_BAKE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 #[cfg(feature = "bake-validation")]
 static WORKER_IDS: LazyLock<Mutex<HashMap<String, u32>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -271,6 +274,9 @@ pub async fn bake_start(
         JOBS.lock()
             .map_err(|_| "任务状态锁损坏")?
             .insert(job_id.clone(), cancel.clone());
+        if let Ok(mut active) = ACTIVE_BAKE.lock() {
+            *active = Some(job_id.clone());
+        }
         if CANCEL_REQUESTS
             .lock()
             .map_err(|_| "任务状态锁损坏")?
@@ -286,6 +292,9 @@ pub async fn bake_start(
             STALL_BAKE,
         );
         JOBS.lock().map_err(|_| "任务状态锁损坏")?.remove(&job_id);
+        if let Ok(mut active) = ACTIVE_BAKE.lock() {
+            *active = None;
+        }
         CANCEL_REQUESTS
             .lock()
             .map_err(|_| "任务状态锁损坏")?
@@ -387,6 +396,19 @@ pub async fn bake_inspect(
     .await
     .map_err(|e| e.to_string())?
 }
+/// 全局停止按钮的烘焙桥接：有活动烘焙时向其写入取消文件。
+/// 返回是否存在活动烘焙（供日志/测试判断）。
+pub(crate) fn cancel_active_bake() -> bool {
+    let job = ACTIVE_BAKE.lock().ok().and_then(|guard| guard.clone());
+    match job {
+        Some(job_id) => {
+            let _ = bake_cancel(job_id);
+            true
+        }
+        None => false,
+    }
+}
+
 #[tauri::command]
 pub fn bake_cancel(job_id: String) -> Result<(), String> {
     if job_id.is_empty() || job_id.len() > 100 {
@@ -420,6 +442,21 @@ fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// 把缓存目录内的贴图复制到用户选择的目标文件夹。源必须位于缓存目录内，
 /// 防止任意路径读取；同名文件直接覆盖（重复导出同目录是常态）。
+/// ID 贴图的颜色图例与贴图同目录生成；导出时自动附带，否则 ID 贴图
+/// 离开缓存目录后无法解读颜色对应的材质。
+fn with_legend(files: &[String]) -> Vec<String> {
+    let mut all = files.to_vec();
+    if let Some(first) = files.first() {
+        if let Some(parent) = Path::new(first).parent() {
+            let legend = parent.join("material-colors.json");
+            if legend.is_file() && !all.iter().any(|f| Path::new(f) == legend) {
+                all.push(legend.display().to_string());
+            }
+        }
+    }
+    all
+}
+
 fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result<usize, String> {
     let root = std::fs::canonicalize(cache_root)
         .map_err(|error| format!("烘焙缓存目录不可用：{error}"))?;
@@ -458,6 +495,7 @@ pub async fn bake_export(
             return Err("没有可导出的贴图。".into());
         }
         let root = bake_cache_root(&app)?;
+        let files = with_legend(&files);
         let exported = export_files(&root, &files, Path::new(&directory))?;
         Ok(json!({ "exported": exported, "directory": directory }))
     })
@@ -543,6 +581,24 @@ mod tests {
         );
         assert!(rejected.unwrap_err().contains("缓存目录之外"));
         let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn with_legend_appends_material_colors_from_same_directory() {
+        let cache = tempfile::tempdir().unwrap();
+        let png = cache.path().join("3_ao.png");
+        let legend = cache.path().join("material-colors.json");
+        std::fs::write(&png, b"png").unwrap();
+        std::fs::write(&legend, b"[]").unwrap();
+        let files = vec![png.display().to_string()];
+        let with = with_legend(&files);
+        assert_eq!(with.len(), 2, "legend in same directory is appended");
+        assert!(with.last().unwrap().ends_with("material-colors.json"));
+
+        let no_legend_dir = tempfile::tempdir().unwrap();
+        let lone = no_legend_dir.path().join("4_ao.png");
+        std::fs::write(&lone, b"png").unwrap();
+        assert_eq!(with_legend(&[lone.display().to_string()]).len(), 1);
     }
 
     #[test]

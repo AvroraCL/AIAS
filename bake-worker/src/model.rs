@@ -136,12 +136,18 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
     let mut source_faces = Vec::new();
     let mut source_object = 0usize;
     let mut object_names = vec!["默认对象".to_string()];
+    let mut mtllibs: Vec<String> = Vec::new();
     for line in
         std::io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?).lines()
     {
         let line = line.map_err(|e| e.to_string())?;
         let mut parts = line.split('#').next().unwrap_or("").split_whitespace();
         match parts.next() {
+            Some("mtllib") => {
+                if let Some(name) = parts.next() {
+                    mtllibs.push(name.to_string());
+                }
+            }
             Some("o" | "g") => {
                 object_names.push(parts.collect::<Vec<_>>().join(" "));
                 source_object = object_names.len() - 1;
@@ -184,6 +190,15 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
         }
     }
     let mut source_index = 0;
+    // mtllib 引用的 MTL 缺失时 tobj 只报英文 io 错误；提前给出可行动提示。
+    for name in &mtllibs {
+        let mtl = path.parent().unwrap_or(Path::new(".")).join(name);
+        if !mtl.is_file() {
+            return Err(format!(
+                "找不到 OBJ 引用的材质文件 {name}：请把它与 OBJ 放在同一目录后重新导入。"
+            ));
+        }
+    }
     let (models, materials) = tobj::load_obj(
         path,
         &tobj::LoadOptions {

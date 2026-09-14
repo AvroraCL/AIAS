@@ -601,6 +601,11 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         button.onclick = () => { setView('uv'); drawUv(issue.triangle); };
         issues.append(button);
       }
+      if (report.issueCount > report.issues.length) {
+        const truncation = document.createElement('small');
+        truncation.textContent = `明细仅显示前 ${report.issues.length} 条，共 ${report.issueCount} 处。`;
+        issues.append(truncation);
+      }
     } else {
       issues.textContent = report ? '当前材质 UV 检查通过。' : 'UV 检查中…';
     }
@@ -620,7 +625,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('empty').hidden = Boolean(model) || next !== 'model';
     $('issues').hidden = next !== 'uv';
     root.querySelector('.bake-workspace').dataset.view = next;
-    if (next === 'uv' && model) { stored.workspace.outlinerOpen = true; narrowPanel = 'outliner'; }
+    if (next === 'uv' && model) { stored.workspace.outlinerOpen = true; narrowPanel = 'outliner'; persist(); }
     updatePanelState('outliner'); updatePanelState('settings');
     $('viewport-note').hidden = !model || next !== 'model';
     root.querySelector('.bake-display-tools').hidden = !model || next !== 'model';
@@ -690,6 +695,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         $('ao').checked = false;
       }
     } catch (error) {
+      capabilitiesRequested = false;
       status(String(error));
       $('device').replaceChildren(new Option('设备检测失败', '0'));
       stored.ao = false;
@@ -740,7 +746,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       buildMeshes();
       resizeRenderer(); reset();
       $('distance').value = String(selectedBounds() * stored.distanceRatio);
-      $('distance-note').textContent = `单位：${model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
+      $('distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
       focusMaterial(model.materials[0].id);
       setView('model');
       status('模型已导入。检查材质 UV 后开始烘焙。');
@@ -870,6 +876,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         return {
           completed: data.files?.length || 0,
           total: materials.size * types.length,
+          cancelled: Boolean(data.cancelled),
           logs: [...(data.files || []).map(file => file.path), ...(data.failures || []), ...(data.cancelled ? ['任务已取消，已完成文件保留。'] : [])],
         };
       }, '模型烘焙');
@@ -925,7 +932,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       const diagonal = selectedBounds();
       if (!diagonal) return;
       stored.distanceRatio = value / diagonal;
-      $('distance-note').textContent = `单位：${model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
+      $('distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
       persist();
     }
     refresh();
