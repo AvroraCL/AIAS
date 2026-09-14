@@ -1,12 +1,20 @@
 export const STANDARD = ' .:-=+*#%@';
 export const DETAILED = ' .\'`^",:;Il!i~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$';
-export const DEFAULTS = { color: false, columns: 120, charset: 'standard', custom: STANDARD, brightness: 0, contrast: 1, invert: false, background: 'black', format: 'png', style: 'ascii', shapeSize: 92, shapeRatio: 100, dither: 'none', hatchAngle: 45, hatchRounds: 3 };
+export const DEFAULTS = { color: false, columns: 120, charset: 'standard', custom: STANDARD, brightness: 0, contrast: 1, invert: false, background: 'black', format: 'png', style: 'ascii', shapeSize: 92, shapeRatio: 100, dither: 'none', hatchAngle: 45, hatchRounds: 3, exportScale: 1, customPresets: [] };
 export function restoreAsciiSettings(value = {}) {
   value = value && typeof value === 'object' ? value : {};
   const result = { ...DEFAULTS };
   for (const key of ['color', 'invert']) if (typeof value[key] === 'boolean') result[key] = value[key];
   for (const [key, min, max] of [['columns',40,240],['brightness',-1,1],['contrast',0,3],['shapeSize',20,100],['shapeRatio',50,200],['hatchAngle',0,180],['hatchRounds',1,4]]) {
     if (Number.isFinite(value[key]) && value[key] >= min && value[key] <= max) result[key] = ['columns','shapeSize','shapeRatio','hatchAngle','hatchRounds'].includes(key) ? Math.round(value[key]) : value[key];
+  }
+  if ([1,2,4].includes(value.exportScale)) result.exportScale = value.exportScale;
+  // 自定义预设：只保留结构完整的条目，上限 10 个。
+  if (Array.isArray(value.customPresets)) {
+    result.customPresets = value.customPresets
+      .filter(p => p && typeof p.name === 'string' && p.name.trim() && p.settings && typeof p.settings === 'object')
+      .slice(0, 10)
+      .map(p => ({ name: p.name.slice(0, 20), settings: { ...p.settings } }));
   }
   for (const [key, allowed] of [['charset',['standard','detailed','custom']],['background',['black','white','transparent']],['format',['txt','png']],['style',['ascii','block','dot','hatch']],['dither',['none','ordered','diffusion']]]) if (allowed.includes(value[key])) result[key] = value[key];
   if (typeof value.custom === 'string' && /^[\x20-\x7e]{2,95}$/.test(value.custom)) result.custom = value.custom;
@@ -88,6 +96,36 @@ export function convertAscii({ pixels, columns, rows, settings }) {
     if (settings.invert) light = 1 - light;
     lights[i] = Math.round(light * 255);
     lightValues[i] = light;
+  }
+  if (graphic && settings.dither && settings.dither !== 'none') {
+    // 图形风格的抖动作用于每格尺寸：有序 = Bayer 阈值微扰；扩散 = 量化到
+    // 8 级并做 Floyd–Steinberg 误差扩散，半调纹理更接近印刷网点。
+    const adjusted = new Float32Array(columns * rows);
+    if (settings.dither === 'ordered') {
+      for (let i = 0; i < adjusted.length; i++) {
+        const x = i % columns, y = (i / columns) | 0;
+        adjusted[i] = Math.max(0, Math.min(1, lightValues[i] + (BAYER4[(y % 4) * 4 + (x % 4)] - 0.5) * 0.15));
+      }
+    } else {
+      const work = Float32Array.from(lightValues);
+      const LEVELS = 8;
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < columns; x++) {
+          const i = y * columns + x;
+          const q = Math.max(0, Math.min(1, Math.round(work[i] * (LEVELS - 1)) / (LEVELS - 1)));
+          adjusted[i] = q;
+          const error = work[i] - q;
+          const spread = (j, weight) => { if (j < work.length) work[j] += error * weight; };
+          if (x + 1 < columns) spread(i + 1, 7 / 16);
+          if (y + 1 < rows) {
+            if (x > 0) spread(i + columns - 1, 3 / 16);
+            spread(i + columns, 5 / 16);
+            if (x + 1 < columns) spread(i + columns + 1, 1 / 16);
+          }
+        }
+      }
+    }
+    for (let i = 0; i < lights.length; i++) lights[i] = Math.round(adjusted[i] * 255);
   }
   let chars;
   if (graphic) chars = Array.from({length: columns * rows}, () => ' ');

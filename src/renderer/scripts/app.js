@@ -3217,6 +3217,7 @@ async function boot() {
   asciiUI = createAscii({
     root: $("view-ascii"), inspector: document.querySelector(".inspector-scroll"), runArea: document.querySelector(".run-area"),
     desktop: isTauriRuntime, open, saveDialog, convertFileSrc, invoke, settings: state.settings.ascii,
+    navigate: mode => applyMode(mode),
     save: async ascii => { state.settings = await api.settings.set({ ascii }); },
     setBusy, syncSelect: syncCustomSelect, busy: () => state.taskProgressActive, changed: updateStatus,
     notify: (message, tone) => addActivity("图片转 ASCII", message, tone),

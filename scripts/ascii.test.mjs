@@ -141,3 +141,27 @@ test('stage wires wheel zoom and drag pan with pointer capture', async () => {
   assert.match(script, /classList\.add\('ascii-dragging'\)/);
   assert.match(script, /scrollLeft = drag\.left - \(event\.clientX - drag\.x\)/);
 });
+
+test('export scale and custom presets persist with validation', () => {
+  assert.equal(DEFAULTS.exportScale, 1);
+  assert.equal(restoreAsciiSettings({version:2, exportScale:4}).exportScale, 4);
+  assert.equal(restoreAsciiSettings({version:2, exportScale:3}).exportScale, 1);
+  const kept = restoreAsciiSettings({version:2, customPresets:[
+    {name:'我的', settings:{columns:200}},
+    {settings:{columns:200}},
+    'junk',
+  ]});
+  assert.equal(kept.customPresets.length, 1);
+  assert.equal(kept.customPresets[0].name, '我的');
+  assert.equal(restoreAsciiSettings(null).customPresets.length, 0);
+});
+
+test('ordered dither modulates block/dot sizes on flat gray', () => {
+  const pixels = new Array(16 * 4).fill(0).map((_, i) => i % 4 === 3 ? 255 : 128);
+  const plain = convertAscii({pixels, columns: 4, rows: 4, settings: {...DEFAULTS, style: 'block', dither: 'none'}});
+  const ordered = convertAscii({pixels, columns: 4, rows: 4, settings: {...DEFAULTS, style: 'block', dither: 'ordered'}});
+  assert.equal(new Set(plain.lights).size, 1, '无抖动时平场尺寸一致');
+  assert.ok(new Set(ordered.lights).size >= 2, '有序抖动让网点尺寸出现疏密变化');
+  const diffusion = convertAscii({pixels, columns: 4, rows: 4, settings: {...DEFAULTS, style: 'dot', dither: 'diffusion'}});
+  assert.ok(new Set(diffusion.lights).size <= 8, '扩散量化上限 8 级');
+});

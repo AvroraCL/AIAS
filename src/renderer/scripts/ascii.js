@@ -1,7 +1,7 @@
 import { DEFAULTS, restoreAsciiSettings, characterRamp, gridSize, detectTransparency } from './ascii-state.mjs';
 import './ascii.css';
 
-export function createAscii({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, syncSelect, busy, changed, notify }) {
+export function createAscii({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, syncSelect, busy, changed, notify, navigate }) {
   let config = restoreAsciiSettings(settings), source = null, sourceName = '', result = null;
   let active = false, exporting = false, importing = false, computing = false, revision = 0, importRevision = 0, alphaAutoSwitch = false;
   let worker, timer, saveTimer, disposed = false, view = 'ascii', zoom = 1, saveChain = Promise.resolve();
@@ -15,7 +15,11 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     <div id="ascii-stage" class="ascii-stage" aria-label="ASCII 图片预览及拖放区域"><div id="ascii-empty"><strong>让图片变成字符画</strong><p>选择或拖入一张图片，实时调整字符与色彩。</p><button id="ascii-empty-import" class="secondary-action" type="button">选择图片</button></div><canvas id="ascii-canvas" hidden aria-label="ASCII 预览"></canvas></div>
     <div class="ascii-toolbar ascii-bottom"><button id="ascii-copy" class="secondary-action" type="button" disabled>复制字符</button><span id="ascii-size"></span></div><p id="ascii-status" role="status"></p>`;
   const controls = document.createElement('div'); controls.className = 'ascii-controls'; controls.hidden = true;
-  controls.innerHTML = `<section class="inspector-group" data-modes="ascii ascii-block ascii-dot ascii-hatch"><button class="group-toggle" type="button" aria-expanded="true"><span>字符效果</span><i data-lucide="chevron-down"></i></button><div class="group-content">
+  controls.innerHTML = `<section class="inspector-group" data-modes="ascii ascii-block ascii-dot ascii-hatch"><button class="group-toggle" type="button" aria-expanded="true"><span>预设</span><i data-lucide="chevron-down"></i></button><div class="group-content">
+    <div id="ascii-presets" class="ascii-presets"></div>
+    <div class="ascii-preset-save"><input id="ascii-preset-name" type="text" maxlength="20" placeholder="预设名称" aria-label="预设名称"><button id="ascii-preset-save" class="secondary-action" type="button">保存当前</button></div>
+    </div></section>
+    <section class="inspector-group" data-modes="ascii ascii-block ascii-dot ascii-hatch"><button class="group-toggle" type="button" aria-expanded="true"><span>字符效果</span><i data-lucide="chevron-down"></i></button><div class="group-content">
     <label id="ascii-shape-label" hidden>图形大小 <output id="ascii-shapeSize-value"></output><input id="ascii-shapeSize" type="range" min="20" max="100" step="1"></label>
     <label id="ascii-ratio-label" hidden>长宽比 <output id="ascii-shapeRatio-value"></output><input id="ascii-shapeRatio" type="range" min="50" max="200" step="5"></label>
     <label id="ascii-hatchAngle-label" hidden>排线角度 <output id="ascii-hatchAngle-value"></output><input id="ascii-hatchAngle" type="range" min="0" max="180" step="15"></label>
@@ -30,9 +34,14 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     <label class="ascii-check"><input id="ascii-invert" type="checkbox">反相</label>
     <label>背景<select id="ascii-background"><option value="black">黑底</option><option value="white">白底</option><option value="transparent">透明底（PNG）</option></select></label>
     <button id="ascii-reset" class="secondary-action" type="button">恢复默认</button></div></section>
-    <section class="inspector-group" data-modes="ascii ascii-block ascii-dot ascii-hatch"><button class="group-toggle" type="button" aria-expanded="true"><span>导出设置</span><i data-lucide="chevron-down"></i></button><div class="group-content"><label>文件格式<select id="ascii-format"><option value="txt">TXT · 纯文本</option><option value="png">PNG · 字符图片</option></select></label><small id="ascii-color-note">TXT 保留字符、空格与换行。</small><small>导出使用完整字符网格，不受预览缩放影响。</small></div></section>`;
+    <section class="inspector-group" data-modes="ascii ascii-block ascii-dot ascii-hatch"><button class="group-toggle" type="button" aria-expanded="true"><span>导出设置</span><i data-lucide="chevron-down"></i></button><div class="group-content"><label>文件格式<select id="ascii-format"><option value="txt">TXT · 纯文本</option><option value="png">PNG · 字符图片</option></select></label><label>导出倍率（PNG）<select id="ascii-exportScale"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label><small id="ascii-color-note">TXT 保留字符、空格与换行。</small><small>导出使用完整字符网格，不受预览缩放影响。</small></div></section>`;
   inspector.append(controls);
-  for (const el of controls.querySelectorAll('select,input')) el.setAttribute('aria-label', el.type === 'checkbox' ? '反相' : el.closest('label').firstChild.textContent.trim());
+  for (const el of controls.querySelectorAll('select,input')) {
+    // 独立控件（如预设名称输入框）自带 aria-label，不依赖 label 文案。
+    const label = el.closest('label');
+    if (!label) continue;
+    el.setAttribute('aria-label', el.type === 'checkbox' ? '反相' : label.firstChild.textContent.trim());
+  }
   const run = document.createElement('button'); run.id = 'ascii-run'; run.type = 'button'; run.className = 'run-button hidden'; run.innerHTML = '<span>导出 TXT</span>'; runArea.append(run);
   const elements = new Map([...root.querySelectorAll('[id]'), ...controls.querySelectorAll('[id]'), run].map(el => [el.id, el]));
   const $ = key => elements.get(`ascii-${key}`);
@@ -41,6 +50,48 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   exportActions.append($('copy'), run); runArea.append(exportActions);
   for (const key of ['columns', 'brightness', 'contrast', 'shapeSize', 'shapeRatio', 'hatchAngle', 'hatchRounds']) $(key).closest('label').classList.add('ascii-range');
   const status = text => { $('status').textContent = text; };
+  // 内置预设：settings 为对当前配置的覆盖项（含 style，应用时自动切换模式）。
+  const BUILTIN_PRESETS = [
+    { name: '清晰字符', settings: { style: 'ascii', charset: 'standard', dither: 'ordered', columns: 160, contrast: 1.3, background: 'black' } },
+    { name: '细腻渐变', settings: { style: 'ascii', charset: 'detailed', dither: 'diffusion', columns: 220, contrast: 1.15 } },
+    { name: '报纸半调', settings: { style: 'dot', dither: 'diffusion', columns: 180, shapeSize: 85 } },
+    { name: '像素方块', settings: { style: 'block', columns: 60, shapeSize: 100, contrast: 1.5, dither: 'none' } },
+    { name: '铜版画', settings: { style: 'hatch', hatchRounds: 4, hatchAngle: 45, columns: 140 } },
+  ];
+  const STYLE_MODE = { ascii: 'ascii', block: 'ascii-block', dot: 'ascii-dot', hatch: 'ascii-hatch' };
+  function applyPreset(preset) {
+    config = restoreAsciiSettings({ ...config, ...preset.settings, version: 2 });
+    persist();
+    sync();
+    if (navigate && STYLE_MODE[config.style]) navigate(STYLE_MODE[config.style]);
+    // 预设可能改变抖动/密度/风格，重新计算字符网格；activate 已同步模式。
+    if (source && active) request(); else refresh();
+  }
+  function renderPresets() {
+    const wrap = $('presets'); if (!wrap) return;
+    wrap.replaceChildren();
+    const chip = (label, onClick, removable) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'ascii-preset-chip'; button.textContent = label;
+      button.onclick = onClick;
+      if (removable) {
+        const cross = document.createElement('span'); cross.className = 'ascii-preset-remove'; cross.textContent = '×';
+        cross.onclick = event => { event.stopPropagation(); onClick({ name: label }); };
+        button.append(cross);
+      }
+      return button;
+    };
+    for (const preset of BUILTIN_PRESETS) wrap.append(chip(preset.name, () => applyPreset(preset), false));
+    (config.customPresets || []).forEach(preset =>
+      wrap.append(chip(preset.name, () => applyPreset(preset), true)));
+  }
+  function savePreset() {
+    const name = ($('preset-name').value || '').trim();
+    if (!name) { status('请先输入预设名称。'); return; }
+    config.customPresets = [{ name: name.slice(0, 20), settings: { ...config } }, ...(config.customPresets || [])].slice(0, 10);
+    $('preset-name').value = '';
+    persist(); renderPresets(); status(`预设「${name}」已保存。`);
+  }
   function blocker() { return exporting ? '正在导出…' : importing ? '正在读取图片…' : computing ? '正在生成字符画…' : !result ? '请导入图片并生成有效预览。' : null; }
   function refresh() {
     const locked = exporting || importing;
@@ -61,8 +112,8 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     $('ratio-label').hidden = !graphic || hatch;
     $('hatchAngle-label').hidden = !hatch;
     $('hatchRounds-label').hidden = !hatch;
-    $('dither-label').hidden = graphic;
-    $('dither').disabled = locked || graphic;
+    $('dither').disabled = locked;
+    $('exportScale').disabled = locked || config.format !== 'png';
     if (graphic) $('color-note').textContent = '图形风格（方块 / 波点 / 线条款描）仅支持导出 PNG；字符复制不可用。';
     else $('color-note').textContent = config.color ? '复制或导出 TXT 只保留字符，不包含颜色；请用 PNG 保存彩色效果。' : 'TXT 保留字符、空格与换行。';
     if (config.background === 'transparent') $('color-note').textContent += ' 透明背景仅保存在 PNG 中；棋盘格不会导出。';
@@ -84,13 +135,16 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     }, 250);
   }
   function cancelCompute() { ++revision; clearTimeout(timer); worker?.terminate(); worker = null; computing = false; }
-  function sizeCanvas(canvas, data) {
-    canvas.width = Math.ceil(data.columns * cellWidth); canvas.height = data.rows * lineHeight;
+  function sizeCanvas(canvas, data, scale = 1) {
+    canvas.width = Math.ceil(data.columns * cellWidth * scale); canvas.height = Math.ceil(data.rows * lineHeight * scale);
   }
-  function paint(canvas, data) {
-    sizeCanvas(canvas, data);
+  // scale 仅用于导出：经 ctx.scale 矢量重绘，倍率越高成品越清晰。
+  function paint(canvas, data, scale = 1) {
+    sizeCanvas(canvas, data, scale);
     const ctx = canvas.getContext('2d');
-    if (data.settings.background !== 'transparent') { ctx.fillStyle = data.settings.background; ctx.fillRect(0,0,canvas.width,canvas.height); }
+    if (scale !== 1) ctx.scale(scale, scale);
+    const plainWidth = canvas.width / scale, plainHeight = canvas.height / scale;
+    if (data.settings.background !== 'transparent') { ctx.fillStyle = data.settings.background; ctx.fillRect(0,0,plainWidth,plainHeight); }
     if (data.settings.style !== 'ascii') { paintShapes(ctx, data); return; }
     ctx.font = font; ctx.textBaseline = 'top';
     if (!data.settings.color && data.settings.background !== 'transparent') {
@@ -246,7 +300,11 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
       }
       $('name').textContent = sourceName; $('import').textContent = '替换图片'; zoom = 1; $('zoom').value = 1;
       request();
-    } catch (e) { status(`读取失败：${e.message || e}`); }
+    } catch (e) {
+      status(`读取失败：${e.message || e}`);
+      // 旧图仍在：重新生成结果恢复预览，避免替换失败后台面空白。
+      if (source && active) request();
+    }
     finally { importing = false; refresh(); draw(); }
   }
   async function pick() {
@@ -264,15 +322,16 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     const el = $(key);
     if (!el) continue; // style 由所在功能模式决定，不在检查器中
     el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', () => {
-      config[key] = el.type === 'checkbox' ? el.checked : key === 'color' ? el.value === 'true' : ['columns','brightness','contrast','hatchAngle','hatchRounds'].includes(key) ? Number(el.value) : el.value;
+      config[key] = el.type === 'checkbox' ? el.checked : key === 'color' ? el.value === 'true' : ['columns','brightness','contrast','hatchAngle','hatchRounds','exportScale'].includes(key) ? Number(el.value) : el.value;
       if ($(`${key}-value`)) $(`${key}-value`).textContent = config[key];
       persist();
       // 图形大小/长宽比只影响绘制，直接重绘无需重新计算字符网格。
-      if (['shapeSize', 'shapeRatio', 'hatchAngle', 'hatchRounds'].includes(key)) { if (result) result.settings = { ...config }; draw(); refresh(); return; }
+      if (['shapeSize', 'shapeRatio', 'hatchAngle', 'hatchRounds', 'exportScale'].includes(key)) { if (result) result.settings = { ...config }; draw(); refresh(); return; }
       if (key !== 'format') request(); refresh();
     });
   }
-  $('reset').onclick = () => { config = { ...DEFAULTS }; sync(); persist(); request(); };
+  $('reset').onclick = () => { config = { ...DEFAULTS, customPresets: config.customPresets }; sync(); persist(); request(); renderPresets(); };
+  $('preset-save').onclick = savePreset;
   root.querySelectorAll('[data-ascii-view]').forEach(el => el.onclick = () => { view = el.dataset.asciiView; draw(); });
   $('zoom').oninput = () => { zoom = Number($('zoom').value); fit(); };
   $('fit').onclick = () => { zoom = 1; $('zoom').value = 1; fit(); };
@@ -334,7 +393,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
       if (!path) { status('已取消导出。'); return; }
       let content, blob;
       if (format === 'txt') { content = snapshot.text; blob = new Blob([content], {type:'text/plain;charset=utf-8'}); }
-      else { const canvas = document.createElement('canvas'); paint(canvas,snapshot); blob = await new Promise((resolve,reject) => canvas.toBlob(value => value ? resolve(value) : reject(Error('PNG 编码失败。')), 'image/png')); }
+      else { const canvas = document.createElement('canvas'); paint(canvas, snapshot, Number(config.exportScale) || 1); blob = await new Promise((resolve,reject) => canvas.toBlob(value => value ? resolve(value) : reject(Error('PNG 编码失败。')), 'image/png')); }
       if (desktop) {
         if (format === 'png') content = await new Promise((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = () => reject(Error('PNG 读取失败。')); reader.readAsDataURL(blob); });
         await invoke('ascii_export', { path, format, content });
@@ -348,6 +407,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   };
   const resize = new ResizeObserver(fit); resize.observe($('stage'));
   sync();
+  renderPresets();
   return {
     blocker,
     // 风格化四个入口（ascii/ascii-block/ascii-dot/ascii-hatch）共用本模块与素材，切换只改风格。

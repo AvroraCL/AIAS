@@ -31,3 +31,10 @@
 .ascii-bottom:has(#ascii-size:empty) { display: none; }
 #ascii-custom { font-family: Consolas, monospace; }
 #ascii-status { min-height: 20px; margin: 0; color: var(--text-dim); font-size: 12px; }
+.ascii-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+.ascii-preset-chip { position: relative; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-soft); background: transparent; font-size: 11px; }
+.ascii-preset-chip:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
+.ascii-preset-remove { margin-left: 5px; color: var(--text-dim); }
+.ascii-preset-remove:hover { color: #ff7a76; }
+.ascii-preset-save { display: flex; gap: 6px; margin-top: 8px; }
+.ascii-preset-save input { flex: 1; min-width: 0; }
