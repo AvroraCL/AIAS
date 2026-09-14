@@ -858,6 +858,10 @@ fn texture_create_mipmap_inner(
 
     let mut images = Vec::new();
     for (index, file) in files.iter().enumerate() {
+        if safety::take_task_cancel() {
+            cancelled = true;
+            break;
+        }
         let image = prepare_image(file, alpha, scale)?;
         validate_mipmap_dimensions(&image, images.first(), index as u32)?;
         images.push(image);
@@ -1279,7 +1283,7 @@ fn anime_cutout_inner(
         }
     }
 
-    if completed == 0 {
+    if completed == 0 && !cancelled {
         let detail = logs.last().cloned().unwrap_or_default();
         return Err(if detail.is_empty() {
             "没有图片被处理。".into()
@@ -1476,7 +1480,7 @@ fn superres_run_inner(
         }
     }
 
-    if completed == 0 {
+    if completed == 0 && !cancelled {
         let detail = logs.last().cloned().unwrap_or_default();
         return Err(if detail.is_empty() {
             "没有图片被处理。".into()

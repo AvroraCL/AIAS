@@ -236,6 +236,12 @@ fn curl_download_to(
                     if status.code() == Some(33) {
                         return Err(CurlDownloadError::RangeUnsupported);
                     }
+                    // 23/26 = 写入失败：目标目录无写权限或磁盘满，给出可行动的提示。
+                    if matches!(status.code(), Some(23) | Some(26)) {
+                        return Err(CurlDownloadError::Message(
+                            "下载失败：无法写入目标目录，请检查磁盘权限与剩余空间。".into(),
+                        ));
+                    }
                     return Err(CurlDownloadError::Message(format!(
                         "下载失败（curl 退出码 {}）",
                         status.code().unwrap_or(-1)

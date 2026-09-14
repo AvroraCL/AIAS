@@ -300,7 +300,8 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     if (canvas.hidden || event.button !== 0) return;
     drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: $('stage').scrollLeft, top: $('stage').scrollTop };
     $('stage').classList.add('ascii-dragging');
-    $('stage').setPointerCapture(event.pointerId);
+    // 窗口失焦等场景下 capture 可能失败；失败时靠 window blur 兜底结束拖拽。
+    try { $('stage').setPointerCapture(event.pointerId); } catch { /* noop */ }
     event.preventDefault();
   });
   $('stage').addEventListener('pointermove', event => {
@@ -308,13 +309,17 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     $('stage').scrollLeft = drag.left - (event.clientX - drag.x);
     $('stage').scrollTop = drag.top - (event.clientY - drag.y);
   });
-  const endDrag = event => {
-    if (!drag || event.pointerId !== drag.id) return;
+  const endDrag = () => {
+    if (!drag) return;
     drag = null;
     $('stage').classList.remove('ascii-dragging');
   };
   $('stage').addEventListener('pointerup', endDrag);
   $('stage').addEventListener('pointercancel', endDrag);
+  // Alt+Tab 等让窗口失去指针所有权时 pointerup 可能收不到：不收尾会导致
+  // 未按键状态下鼠标划过预览仍持续平移（拖拽"粘住"）。
+  $('stage').addEventListener('lostpointercapture', endDrag);
+  window.addEventListener('blur', endDrag);
   $('copy').onclick = async () => {
     if (blocker()) return;
     try { await navigator.clipboard.writeText(result.text); status(config.color ? '字符已复制（纯文本不包含颜色）。' : '字符已复制。'); }

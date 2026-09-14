@@ -1769,7 +1769,11 @@ function probeSuperresBatch(files) {
   // 先登记 probed 再请求，防止渲染期间重复入队
   for (const item of pending) state.superresProbed.add(item.key);
   api.filesExist(pending.map((item) => item.candidate)).then((flags) => {
-    if ((state.superresPreviewRevision || 0) !== revision || $("superres-output")?.value?.trim() !== dir) return;
+    if ((state.superresPreviewRevision || 0) !== revision || $("superres-output")?.value?.trim() !== dir) {
+      // 过期响应的登记一并撤销，保证未来新增的变更路径仍能重新探测。
+      for (const item of pending) state.superresProbed.delete(item.key);
+      return;
+    }
     pending.forEach((item, index) => {
       if (!state.superresFiles.includes(item.file) || state.superresResults.has(item.key)) return;
       if (flags[index]) {
