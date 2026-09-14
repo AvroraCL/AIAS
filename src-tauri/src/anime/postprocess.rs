@@ -496,8 +496,9 @@ pub(crate) fn box_mean_f64_into(
     });
 }
 
-/// O(n) 积分图盒均值（f32 版）：引导滤波要用约 17 路均值，f64 版会带来
-/// 数百 MB 瞬时内存；累加仍走 f64 积分图保证精度，输入输出用 f32。
+/// O(n) 积分图盒均值（f32 版）单次调用形态；生产路径一律走 `box_mean_f32_into`
+/// 复用积分图缓冲，此包装仅供测试直接调用。
+#[cfg(test)]
 pub(crate) fn box_mean_f32(values: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
     let mut sat = Vec::new();
     box_mean_f32_into(values, w, h, radius, &mut sat)
