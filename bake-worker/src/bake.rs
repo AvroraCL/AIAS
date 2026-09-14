@@ -64,6 +64,9 @@ fn clean_name(name: &str) -> String {
     s.trim_matches([' ', '.']).to_string()
 }
 
+/// 模型名清洗（空回退 "model"）；生产路径的材质命名走 material_stems，
+/// 此函数仅供测试断言历史契约。
+#[cfg(test)]
 pub fn safe_name(name: &str) -> String {
     let s = clean_name(name);
     if s.is_empty() {
