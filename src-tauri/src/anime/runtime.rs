@@ -695,11 +695,15 @@ pub fn install_gpu_ort(app: Option<&AppHandle>, base: &Path) -> Result<(), Strin
                         last_error = String::new();
                         break;
                     }
-                    actual => {
+                    Ok(actual) => {
                         let _ = fs::remove_file(&archive);
                         last_error = format!(
                             "SHA256 不匹配（期望 {GPU_ORT_WHEEL_SHA256}，实际 {actual}）"
                         );
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_file(&archive);
+                        last_error = format!("校验读取失败：{error}");
                     }
                 }
             }
