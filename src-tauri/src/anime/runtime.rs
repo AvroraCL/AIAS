@@ -23,10 +23,7 @@ pub fn ensure_ort_runtime(base: &Path) -> Result<(), String> {
 
 /// 同 `ensure_ort_runtime`，但把运行库下载的字节进度透出给调用方
 /// （首次使用且本机无种子时，CPU 运行库有几十 MB，静默下载看起来像卡死）。
-pub fn ensure_ort_runtime_with(
-    base: &Path,
-    on_progress: &dyn Fn(u64, u64),
-) -> Result<(), String> {
+pub fn ensure_ort_runtime_with(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Result<(), String> {
     fs::create_dir_all(base).map_err(to_string_error)?;
     // 进程内 ORT 只会加载一次 dll：优先使用完整 GPU 版运行库，其次才是种子/下载的 CPU 版。
     let dll = if gpu_ort_ready(base) {
@@ -165,10 +162,7 @@ pub(crate) fn curl_download(
     expected_size: Option<u64>,
     on_progress: &dyn Fn(u64, u64),
 ) -> Result<(), String> {
-    let mut part_name = dest
-        .file_name()
-        .ok_or("下载目标缺少文件名")?
-        .to_os_string();
+    let mut part_name = dest.file_name().ok_or("下载目标缺少文件名")?.to_os_string();
     part_name.push(".part");
     let part = dest.with_file_name(part_name);
     match curl_download_to(url, &part, expected_size, on_progress) {

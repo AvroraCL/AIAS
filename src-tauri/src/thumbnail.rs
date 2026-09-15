@@ -39,16 +39,22 @@ fn cache_key(source: &Path) -> Result<u64, String> {
 /// 缓存容量裁剪：按 mtime 从旧到新删除，直到总量 ≤ max_bytes 的 90%。
 /// 纯函数便于测试；目录不可读时静默返回（缓存属可重建数据）。
 pub(crate) fn prune_cache(cache_dir: &Path, max_bytes: u64) {
-    let Ok(entries) = fs::read_dir(cache_dir) else { return };
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
     let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
     let mut total: u64 = 0;
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else { continue };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
         if !metadata.is_file() {
             continue;
         }
-        let modified = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         total += metadata.len();
         files.push((modified, metadata.len(), path));
     }
@@ -141,9 +147,10 @@ mod tests {
         }
     }
     fn write_png(path: &Path, width: u32, height: u32, seed: u8) {
-        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(width, height, |x, y| {
-            image::Rgba([x as u8 ^ seed, y as u8 ^ seed, seed, 255])
-        }));
+        let image =
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([x as u8 ^ seed, y as u8 ^ seed, seed, 255])
+            }));
         image.save(path).unwrap();
     }
 

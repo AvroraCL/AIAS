@@ -2,11 +2,11 @@
 
 mod anime;
 mod ascii;
-mod safety;
-mod material_maps;
-mod model_bake;
 #[cfg(feature = "bake-validation")]
 mod bake_validation;
+mod material_maps;
+mod model_bake;
+mod safety;
 mod superres;
 mod thumbnail;
 mod updater;
@@ -406,8 +406,11 @@ fn main() {
                 .map_err(|error| format!("Cannot resolve app data directory: {error}"))?;
             let settings_path = app_data.join("settings.json");
             app.manage(AppState { settings_path });
+            model_bake::prune_stale_cache_on_startup(app.handle());
             #[cfg(feature = "bake-validation")]
-            if bake_validation::start(app.handle()) {return Ok(());}
+            if bake_validation::start(app.handle()) {
+                return Ok(());
+            }
 
             // Apply dark title bar on Windows 10/11
             #[cfg(target_os = "windows")]
@@ -440,6 +443,7 @@ fn main() {
             model_bake::bake_cancel,
             model_bake::bake_export,
             model_bake::bake_release,
+            model_bake::bake_result_release,
             model_bake::oidn_status,
             model_bake::oidn_install,
             task_cancel,
@@ -558,11 +562,16 @@ fn save_settings(path: &Path, settings: &Settings) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(to_string_error)?;
     }
-    let content = format!("{}\n", serde_json::to_string_pretty(settings).map_err(to_string_error)?);
+    let content = format!(
+        "{}\n",
+        serde_json::to_string_pretty(settings).map_err(to_string_error)?
+    );
     // 原子写：掉电/崩溃时不会把 settings.json 截断成半截 JSON。
     safety::atomic_write(path, |writer| {
         use std::io::Write;
-        writer.write_all(content.as_bytes()).map_err(to_string_error)
+        writer
+            .write_all(content.as_bytes())
+            .map_err(to_string_error)
     })
 }
 
@@ -616,7 +625,12 @@ fn texture_merge_pbr_inner(
     for group in &groups {
         if safety::take_task_cancel() {
             cancelled = true;
-            push_log(Some(app), &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            push_log(
+                Some(app),
+                &mut logs,
+                "warn",
+                "任务已停止，已完成文件保留。".into(),
+            );
             break;
         }
         let c_path = Path::new(&options.output_path).join(format!("{}_c.dds", group.prefix));
@@ -641,11 +655,21 @@ fn texture_merge_pbr_inner(
             Ok(())
         })();
         if let Err(error) = outcome {
-            push_log(Some(app), &mut logs, "error", format!("失败 {}：{error}", group.prefix));
+            push_log(
+                Some(app),
+                &mut logs,
+                "error",
+                format!("失败 {}：{error}", group.prefix),
+            );
             continue;
         }
         completed += 1;
-        push_log(Some(app), &mut logs, "success", format!("完成 {}", group.prefix));
+        push_log(
+            Some(app),
+            &mut logs,
+            "success",
+            format!("完成 {}", group.prefix),
+        );
         emit_task_progress(
             app,
             completed,
@@ -655,7 +679,10 @@ fn texture_merge_pbr_inner(
     }
 
     if completed == 0 && !cancelled {
-        return Err(format!("{} 组贴图全部处理失败，请查看运行日志。", groups.len()));
+        return Err(format!(
+            "{} 组贴图全部处理失败，请查看运行日志。",
+            groups.len()
+        ));
     }
     Ok(TaskResult {
         completed,
@@ -694,12 +721,22 @@ fn texture_split_pbr_inner(
     for file in &options.files {
         if safety::take_task_cancel() {
             cancelled = true;
-            push_log(Some(app), &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            push_log(
+                Some(app),
+                &mut logs,
+                "warn",
+                "任务已停止，已完成文件保留。".into(),
+            );
             break;
         }
         let file_path = Path::new(file);
         let Some(stem) = file_path.file_stem().and_then(|value| value.to_str()) else {
-            push_log(Some(app), &mut logs, "error", format!("失败 {file}：文件名无效"));
+            push_log(
+                Some(app),
+                &mut logs,
+                "error",
+                format!("失败 {file}：文件名无效"),
+            );
             continue;
         };
         // 逐文件捕获：单张坏图跳过并在日志里带文件名，不再中断整个批次。
@@ -782,7 +819,12 @@ fn texture_split_pbr_inner(
                 completed += 1;
                 emit_task_progress(app, completed, options.files.len(), format!("完成 {stem}"));
             }
-            Err(error) => push_log(Some(app), &mut logs, "error", format!("失败 {stem}：{error}")),
+            Err(error) => push_log(
+                Some(app),
+                &mut logs,
+                "error",
+                format!("失败 {stem}：{error}"),
+            ),
         }
     }
 
@@ -818,16 +860,34 @@ fn texture_create_mipmap_inner(
     let format = options.format.as_deref().unwrap_or("DXT5");
     let scale = options.scale.as_deref().unwrap_or("none");
     if options.intermediate {
-        let input = image_exts().iter().map(|ext| Path::new(&options.input_path).join(format!("p0{ext}")))
-            .find(|path| path.is_file()).ok_or("实验模式需要 p0 原图")?;
+        let input = image_exts()
+            .iter()
+            .map(|ext| Path::new(&options.input_path).join(format!("p0{ext}")))
+            .find(|path| path.is_file())
+            .ok_or("实验模式需要 p0 原图")?;
         let (w, h) = image::image_dimensions(&input).map_err(to_string_error)?;
         safety::memory_budget(w, h, 64)?;
         let base = prepare_image(&input, alpha, scale)?;
         let mut outputs = Vec::new();
         for (index, intermediate) in [false, true].into_iter().enumerate() {
-            emit_task_progress_percent(app, index, 2, if intermediate { "生成中间尺寸预滤波链" } else { "生成直接缩小对照链" }.into(), Some(index as f64 * 50.0));
+            emit_task_progress_percent(
+                app,
+                index,
+                2,
+                if intermediate {
+                    "生成中间尺寸预滤波链"
+                } else {
+                    "生成直接缩小对照链"
+                }
+                .into(),
+                Some(index as f64 * 50.0),
+            );
             let levels = generate_experimental_mips(&base, intermediate);
-            let name = if intermediate { "Mipmap_intermediate.dds" } else { "Mipmap_reference.dds" };
+            let name = if intermediate {
+                "Mipmap_intermediate.dds"
+            } else {
+                "Mipmap_reference.dds"
+            };
             let output = Path::new(&options.output_path).join(name);
             write_dds_with_mipmaps(&levels, &output, format)?;
             outputs.push(output.display().to_string());
@@ -932,7 +992,12 @@ fn texture_convert_images_to_dds_inner(
     for file in &options.files {
         if safety::take_task_cancel() {
             cancelled = true;
-            push_log(Some(app), &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            push_log(
+                Some(app),
+                &mut logs,
+                "warn",
+                "任务已停止，已完成文件保留。".into(),
+            );
             break;
         }
         let input = Path::new(file);
@@ -946,21 +1011,31 @@ fn texture_convert_images_to_dds_inner(
             .with_extension("dds");
         // 逐文件捕获：单张坏图跳过并在日志里带文件名，不再中断整个批次。
         if let Err(error) = image_to_dds(input, &output_file, alpha, format, scale) {
-            push_log(Some(app), &mut logs, "error", format!("失败 {}：{error}", input.display()));
+            push_log(
+                Some(app),
+                &mut logs,
+                "error",
+                format!("失败 {}：{error}", input.display()),
+            );
             continue;
         }
         completed += 1;
-        push_log(Some(app), &mut logs, "success", format!(
-            "转换 {} -> {}",
-            input
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or(file),
-            output_file
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("output.dds")
-        ));
+        push_log(
+            Some(app),
+            &mut logs,
+            "success",
+            format!(
+                "转换 {} -> {}",
+                input
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(file),
+                output_file
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("output.dds")
+            ),
+        );
         emit_task_progress(
             app,
             completed,
@@ -1139,7 +1214,11 @@ fn anime_cutout_inner(
     }
     anime::ensure_ort_runtime_with(&base, &|done, total| {
         if let Some(handle) = app {
-            let percent = if total > 0 { done as f64 / total as f64 * 100.0 } else { 0.0 };
+            let percent = if total > 0 {
+                done as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
             emit_task_progress_percent(
                 handle,
                 0,
@@ -1151,15 +1230,25 @@ fn anime_cutout_inner(
     })?;
 
     let mut logs = Vec::new();
-    push_log(app, &mut logs, "info", if anime::cuda_ep_compiled() {
-        "推理后端：CUDA（GPU 加速）".to_string()
-    } else if anime::gpu_ort_ready(&base) {
-        "推理后端：CPU（GPU 运行库未生效，重启应用后再试）".to_string()
-    } else {
-        "推理后端：CPU（检测到 NVIDIA 显卡时可在「GPU 加速」中下载运行库）".to_string()
-    });
+    push_log(
+        app,
+        &mut logs,
+        "info",
+        if anime::cuda_ep_compiled() {
+            "推理后端：CUDA（GPU 加速）".to_string()
+        } else if anime::gpu_ort_ready(&base) {
+            "推理后端：CPU（GPU 运行库未生效，重启应用后再试）".to_string()
+        } else {
+            "推理后端：CPU（检测到 NVIDIA 显卡时可在「GPU 加速」中下载运行库）".to_string()
+        },
+    );
     if options.recover_details {
-        push_log(app, &mut logs, "info", "实验功能：已启用高分辨率细节补全（双局部裁切一致时才补回边缘）。".to_string());
+        push_log(
+            app,
+            &mut logs,
+            "info",
+            "实验功能：已启用高分辨率细节补全（双局部裁切一致时才补回边缘）。".to_string(),
+        );
     }
     let mut outputs = Vec::new();
     let mut completed = 0usize;
@@ -1169,16 +1258,31 @@ fn anime_cutout_inner(
     for file in &options.files {
         if safety::take_task_cancel() {
             cancelled = true;
-            push_log(app, &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                "任务已停止，已完成文件保留。".into(),
+            );
             break;
         }
         let input = Path::new(file);
         if !input.exists() {
-            push_log(app, &mut logs, "warn", format!("跳过（文件不存在）：{file}"));
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                format!("跳过（文件不存在）：{file}"),
+            );
             continue;
         }
         let Some(stem) = input.file_stem().and_then(|value| value.to_str()) else {
-            push_log(app, &mut logs, "warn", format!("跳过（文件名无效）：{file}"));
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                format!("跳过（文件名无效）：{file}"),
+            );
             continue;
         };
         let extension = input
@@ -1187,7 +1291,12 @@ fn anime_cutout_inner(
             .map(|value| value.to_lowercase())
             .unwrap_or_default();
         if !anime_supported_extension(&extension) {
-            push_log(app, &mut logs, "warn", format!("跳过（暂不支持 {extension} 格式）：{stem}"));
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                format!("跳过（暂不支持 {extension} 格式）：{stem}"),
+            );
             continue;
         }
 
@@ -1217,8 +1326,9 @@ fn anime_cutout_inner(
         // 折算成整体百分比，进度条在单张图推理期间也能真实移动。
         let phase_progress = |fraction: f64, phase: &str| {
             if let Some(handle) = app {
-                let percent =
-                    (completed as f64 + fraction.clamp(0.0, 1.0)) / options.files.len() as f64 * 100.0;
+                let percent = (completed as f64 + fraction.clamp(0.0, 1.0))
+                    / options.files.len() as f64
+                    * 100.0;
                 emit_task_progress_percent(
                     handle,
                     completed,
@@ -1255,20 +1365,30 @@ fn anime_cutout_inner(
                     // The committed fallback result is valid even if cleanup fails.
                     let _ = fs::remove_file(&target);
                     let fallback_label = anime::model_label(&outcome.model_used);
-                    push_log(app, &mut logs, "success", format!(
-                        "完成 {} → {}（ToonOut 在此复杂背景上失效，已自动改用 {}）",
-                        stem, actual, fallback_label
-                    ));
+                    push_log(
+                        app,
+                        &mut logs,
+                        "success",
+                        format!(
+                            "完成 {} → {}（ToonOut 在此复杂背景上失效，已自动改用 {}）",
+                            stem, actual, fallback_label
+                        ),
+                    );
                     path
                 } else {
-                    push_log(app, &mut logs, "success", format!(
-                        "完成 {} → {}",
-                        stem,
-                        target
-                            .file_name()
-                            .and_then(|value| value.to_str())
-                            .unwrap_or("output.png")
-                    ));
+                    push_log(
+                        app,
+                        &mut logs,
+                        "success",
+                        format!(
+                            "完成 {} → {}",
+                            stem,
+                            target
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("output.png")
+                        ),
+                    );
                     target
                 };
                 outputs.push(final_path.display().to_string());
@@ -1336,7 +1456,10 @@ fn superres_models_status(app: AppHandle) -> Result<Vec<superres::SuperResModelS
 }
 
 #[tauri::command]
-async fn superres_model_download(app: AppHandle, model: String) -> Result<Vec<superres::SuperResModelStatus>, String> {
+async fn superres_model_download(
+    app: AppHandle,
+    model: String,
+) -> Result<Vec<superres::SuperResModelStatus>, String> {
     let base = superres_base_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         superres::download_model(Some(&app), &base, &model)?;
@@ -1347,7 +1470,10 @@ async fn superres_model_download(app: AppHandle, model: String) -> Result<Vec<su
 }
 
 #[tauri::command]
-async fn superres_model_uninstall(app: AppHandle, model: String) -> Result<Vec<superres::SuperResModelStatus>, String> {
+async fn superres_model_uninstall(
+    app: AppHandle,
+    model: String,
+) -> Result<Vec<superres::SuperResModelStatus>, String> {
     let base = superres_base_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         superres::uninstall_model(&base, &model)?;
@@ -1374,7 +1500,11 @@ fn superres_run_inner(
     }
     anime::ensure_ort_runtime_with(&base, &|done, total| {
         if let Some(handle) = app {
-            let percent = if total > 0 { done as f64 / total as f64 * 100.0 } else { 0.0 };
+            let percent = if total > 0 {
+                done as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
             emit_task_progress_percent(
                 handle,
                 0,
@@ -1386,11 +1516,16 @@ fn superres_run_inner(
     })?;
 
     let mut logs = Vec::new();
-    push_log(app, &mut logs, "info", if anime::cuda_ep_compiled() {
-        "推理后端：CUDA（GPU 加速）".to_string()
-    } else {
-        "推理后端：CPU（通用模型较慢，NVIDIA 显卡可在 AI 抠图页下载 GPU 运行库）".to_string()
-    });
+    push_log(
+        app,
+        &mut logs,
+        "info",
+        if anime::cuda_ep_compiled() {
+            "推理后端：CUDA（GPU 加速）".to_string()
+        } else {
+            "推理后端：CPU（通用模型较慢，NVIDIA 显卡可在 AI 抠图页下载 GPU 运行库）".to_string()
+        },
+    );
     let mut outputs = Vec::new();
     let mut completed = 0usize;
     let mut cancelled = false;
@@ -1400,16 +1535,31 @@ fn superres_run_inner(
     for (file_index, file) in options.files.iter().enumerate() {
         if safety::take_task_cancel() {
             cancelled = true;
-            push_log(app, &mut logs, "warn", "任务已停止，已完成文件保留。".into());
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                "任务已停止，已完成文件保留。".into(),
+            );
             break;
         }
         let input = Path::new(file);
         if !input.exists() {
-            push_log(app, &mut logs, "warn", format!("跳过（文件不存在）：{file}"));
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                format!("跳过（文件不存在）：{file}"),
+            );
             continue;
         }
         let Some(stem) = input.file_stem().and_then(|value| value.to_str()) else {
-            push_log(app, &mut logs, "warn", format!("跳过（文件名无效）：{file}"));
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                format!("跳过（文件名无效）：{file}"),
+            );
             continue;
         };
         let extension = input
@@ -1418,10 +1568,16 @@ fn superres_run_inner(
             .map(|value| value.to_lowercase())
             .unwrap_or_default();
         if !superres_supported_extension(&extension) {
-            push_log(app, &mut logs, "warn", format!("跳过（暂不支持 {extension} 格式）：{stem}"));
+            push_log(
+                app,
+                &mut logs,
+                "warn",
+                format!("跳过（暂不支持 {extension} 格式）：{stem}"),
+            );
             continue;
         }
-        let target = Path::new(&options.output_path).join(superres_output_name(stem, &options.model, scale));
+        let target =
+            Path::new(&options.output_path).join(superres_output_name(stem, &options.model, scale));
         let label = input
             .file_name()
             .and_then(|value| value.to_str())
@@ -1437,7 +1593,8 @@ fn superres_run_inner(
         }
         // 图块级真实进度：每完成一个 256px 图块推理回调一次，把文件内比例
         // 折算进整体百分比（带 Alpha 的图两遍推理，单位数自动翻倍）。
-        let highest_percent = std::cell::Cell::new(file_index as f64 / options.files.len() as f64 * 100.0);
+        let highest_percent =
+            std::cell::Cell::new(file_index as f64 / options.files.len() as f64 * 100.0);
         let tile_progress = |done_units: usize, total_units: usize, phase: &str| {
             if let Some(handle) = app {
                 let fraction = if total_units > 0 {
@@ -1445,20 +1602,32 @@ fn superres_run_inner(
                 } else {
                     0.0
                 };
-                let percent =
-                    (file_index as f64 + fraction.clamp(0.0, 1.0)) / options.files.len() as f64 * 100.0;
+                let percent = (file_index as f64 + fraction.clamp(0.0, 1.0))
+                    / options.files.len() as f64
+                    * 100.0;
                 let percent = percent.max(highest_percent.get());
                 highest_percent.set(percent);
                 emit_task_progress_percent(
                     handle,
                     completed,
                     options.files.len(),
-                    format!("第 {}/{} 张 · {label} · {phase}", file_index + 1, options.files.len()),
+                    format!(
+                        "第 {}/{} 张 · {label} · {phase}",
+                        file_index + 1,
+                        options.files.len()
+                    ),
                     Some(percent),
                 );
             }
         };
-        match superres::upscale_with_progress(&base, &options.model, input, &target, scale, &tile_progress) {
+        match superres::upscale_with_progress(
+            &base,
+            &options.model,
+            input,
+            &target,
+            scale,
+            &tile_progress,
+        ) {
             Ok(()) => {
                 completed += 1;
                 let name = target
@@ -1466,7 +1635,12 @@ fn superres_run_inner(
                     .and_then(|value| value.to_str())
                     .unwrap_or("output.png")
                     .to_string();
-                push_log(app, &mut logs, "success", format!("完成 {} → {}", stem, name));
+                push_log(
+                    app,
+                    &mut logs,
+                    "success",
+                    format!("完成 {} → {}", stem, name),
+                );
                 outputs.push(target.display().to_string());
                 if let Some(handle) = app {
                     emit_task_progress_percent(
@@ -1508,8 +1682,8 @@ async fn superres_run(app: AppHandle, options: SuperResRunOptions) -> Result<Tas
         let _task = safety::task_guard()?;
         superres_run_inner(Some(&app), options)
     })
-        .await
-        .map_err(to_string_error)?
+    .await
+    .map_err(to_string_error)?
 }
 
 #[tauri::command]
@@ -1745,7 +1919,10 @@ fn process_base_color(
 fn push_log(app: Option<&AppHandle>, logs: &mut Vec<String>, level: &str, line: String) {
     logs.push(line.clone());
     if let Some(app) = app {
-        let _ = app.emit("task-log", serde_json::json!({ "line": line, "level": level }));
+        let _ = app.emit(
+            "task-log",
+            serde_json::json!({ "line": line, "level": level }),
+        );
     }
 }
 
@@ -1947,26 +2124,47 @@ fn encode_dds(image: &RgbaImage, format: &str) -> Result<Vec<u8>, String> {
 
 fn write_dds(image: &RgbaImage, output: &Path, format: &str) -> Result<(), String> {
     let bytes = encode_dds(image, format)?;
-    safety::atomic_write(output, |writer| { use std::io::Write; writer.write_all(&bytes).map_err(to_string_error) })
+    safety::atomic_write(output, |writer| {
+        use std::io::Write;
+        writer.write_all(&bytes).map_err(to_string_error)
+    })
 }
 
 // Work in linear light with premultiplied alpha, avoiding gamma darkening
 // and color leakage from invisible texels during either comparison path.
 fn resize_mip_color(image: &RgbaImage, w: u32, h: u32) -> RgbaImage {
     let linear = image::Rgba32FImage::from_fn(image.width(), image.height(), |x, y| {
-        let p = image.get_pixel(x, y); let a = p[3] as f32 / 255.0;
-        image::Rgba(std::array::from_fn(|c| if c == 3 { a } else {
-            let v = p[c] as f32 / 255.0;
-            (if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }) * a
+        let p = image.get_pixel(x, y);
+        let a = p[3] as f32 / 255.0;
+        image::Rgba(std::array::from_fn(|c| {
+            if c == 3 {
+                a
+            } else {
+                let v = p[c] as f32 / 255.0;
+                (if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }) * a
+            }
         }))
     });
     let resized = image::imageops::resize(&linear, w, h, image::imageops::FilterType::Triangle);
     RgbaImage::from_fn(w, h, |x, y| {
-        let p = resized.get_pixel(x, y); let a = p[3].clamp(0.0, 1.0);
+        let p = resized.get_pixel(x, y);
+        let a = p[3].clamp(0.0, 1.0);
         image::Rgba(std::array::from_fn(|c| {
-            let v = if c == 3 { a } else if a <= 1e-6 { 0.0 } else {
+            let v = if c == 3 {
+                a
+            } else if a <= 1e-6 {
+                0.0
+            } else {
                 let v = (p[c] / a).clamp(0.0, 1.0);
-                if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+                if v <= 0.0031308 {
+                    v * 12.92
+                } else {
+                    1.055 * v.powf(1.0 / 2.4) - 0.055
+                }
             };
             (v * 255.0).round() as u8
         }))
@@ -1982,7 +2180,9 @@ fn generate_experimental_mips(base: &RgbaImage, intermediate: bool) -> Vec<RgbaI
         let next = if intermediate {
             let bridge = resize_mip_color(previous, (w - w / 4).max(1), (h - h / 4).max(1));
             resize_mip_color(&bridge, target.0, target.1)
-        } else { resize_mip_color(previous, target.0, target.1) };
+        } else {
+            resize_mip_color(previous, target.0, target.1)
+        };
         levels.push(next);
     }
     levels
@@ -2018,7 +2218,10 @@ fn write_dds_with_mipmaps(images: &[RgbaImage], output: &Path, format: &str) -> 
         })
         .collect::<Vec<_>>();
     let bytes = build_dds(&levels, format)?;
-    safety::atomic_write(output, |writer| { use std::io::Write; writer.write_all(&bytes).map_err(to_string_error) })
+    safety::atomic_write(output, |writer| {
+        use std::io::Write;
+        writer.write_all(&bytes).map_err(to_string_error)
+    })
 }
 
 fn dds_to_image(dds_path: &Path) -> Result<DynamicImage, String> {
@@ -2059,7 +2262,9 @@ fn save_dynamic_image(image: &DynamicImage, output: PathBuf, format: &str) -> Re
     use image::ImageEncoder;
     safety::atomic_write(&output, |writer| {
         if format.eq_ignore_ascii_case("tga") {
-            image.write_to(writer, image::ImageFormat::Tga).map_err(to_string_error)
+            image
+                .write_to(writer, image::ImageFormat::Tga)
+                .map_err(to_string_error)
         } else {
             // fdeflate 快速档替代默认 zlib-6：4K 级贴图导出不再卡在编码上。
             image::codecs::png::PngEncoder::new_with_quality(
@@ -2230,9 +2435,17 @@ mod tests {
         let source = image::open(input).unwrap().to_rgba8();
         let mut images = Vec::new();
         for width in [1024, 768, 512, 384, 256] {
-            let height = (source.height() as u64 * width as u64 / source.width() as u64).max(1) as u32;
-            let resized = image::imageops::resize(&source, width, height, image::imageops::FilterType::Lanczos3);
-            resized.save(out.join(format!("level-{width}.png"))).unwrap();
+            let height =
+                (source.height() as u64 * width as u64 / source.width() as u64).max(1) as u32;
+            let resized = image::imageops::resize(
+                &source,
+                width,
+                height,
+                image::imageops::FilterType::Lanczos3,
+            );
+            resized
+                .save(out.join(format!("level-{width}.png")))
+                .unwrap();
             images.push(resized);
         }
         let mut report = String::new();
@@ -2243,13 +2456,21 @@ mod tests {
             for level in 0..images.len() {
                 match image_from_dds(&dds, level as u32) {
                     Ok(decoded) => {
-                        report.push_str(&format!("{format} level {level}: supplied {:?}, decoded {:?}\n", images[level].dimensions(), decoded.dimensions()));
+                        report.push_str(&format!(
+                            "{format} level {level}: supplied {:?}, decoded {:?}\n",
+                            images[level].dimensions(),
+                            decoded.dimensions()
+                        ));
                         if level == 1 {
                             assert_ne!(decoded.dimensions(), images[level].dimensions());
-                            decoded.save(out.join(format!("misread-level1-{format}.png"))).unwrap();
+                            decoded
+                                .save(out.join(format!("misread-level1-{format}.png")))
+                                .unwrap();
                         }
                     }
-                    Err(error) => report.push_str(&format!("{format} level {level}: error {error}\n")),
+                    Err(error) => {
+                        report.push_str(&format!("{format} level {level}: error {error}\n"))
+                    }
                 }
             }
         }
@@ -2260,18 +2481,39 @@ mod tests {
     #[test]
     fn experimental_mips_keep_standard_dimensions_and_alpha() {
         let mut base = RgbaImage::from_pixel(17, 9, Rgba([255, 0, 0, 255]));
-        for y in 0..9 { for x in 8..17 { base.put_pixel(x, y, Rgba([0, 0, 255, 0])); } }
+        for y in 0..9 {
+            for x in 8..17 {
+                base.put_pixel(x, y, Rgba([0, 0, 255, 0]));
+            }
+        }
         for intermediate in [false, true] {
             let levels = generate_experimental_mips(&base, intermediate);
             assert_eq!(levels.last().unwrap().dimensions(), (1, 1));
             for (index, level) in levels.iter().enumerate() {
                 validate_mipmap_dimensions(level, Some(&base), index as u32).unwrap();
-                if index > 0 { for p in level.pixels().filter(|p| p[3] > 0) { assert_eq!(p[2], 0, "invisible blue must not bleed"); } }
+                if index > 0 {
+                    for p in level.pixels().filter(|p| p[3] > 0) {
+                        assert_eq!(p[2], 0, "invisible blue must not bleed");
+                    }
+                }
             }
             for format in ["8.8.8.8", "DXT5"] {
-                let encoded = levels.iter().map(|im| MipmapLevel { width: im.width(), height: im.height(), payload: encode_image_payload(im, format) }).collect::<Vec<_>>();
-                let dds = Dds::read(&mut Cursor::new(build_dds(&encoded, format).unwrap())).unwrap();
-                for (index, level) in levels.iter().enumerate() { assert_eq!(image_from_dds(&dds, index as u32).unwrap().dimensions(), level.dimensions()); }
+                let encoded = levels
+                    .iter()
+                    .map(|im| MipmapLevel {
+                        width: im.width(),
+                        height: im.height(),
+                        payload: encode_image_payload(im, format),
+                    })
+                    .collect::<Vec<_>>();
+                let dds =
+                    Dds::read(&mut Cursor::new(build_dds(&encoded, format).unwrap())).unwrap();
+                for (index, level) in levels.iter().enumerate() {
+                    assert_eq!(
+                        image_from_dds(&dds, index as u32).unwrap().dimensions(),
+                        level.dimensions()
+                    );
+                }
             }
         }
     }
@@ -2285,14 +2527,22 @@ mod tests {
         let base = image::open(input).unwrap().to_rgba8();
         for intermediate in [false, true] {
             let levels = generate_experimental_mips(&base, intermediate);
-            let file = out.join(if intermediate { "Mipmap_intermediate.dds" } else { "Mipmap_reference.dds" });
+            let file = out.join(if intermediate {
+                "Mipmap_intermediate.dds"
+            } else {
+                "Mipmap_reference.dds"
+            });
             write_dds_with_mipmaps(&levels, &file, "DXT5").unwrap();
             let dds = Dds::read(&mut BufReader::new(fs::File::open(file).unwrap())).unwrap();
             for (i, level) in levels.iter().enumerate() {
                 let decoded = image_from_dds(&dds, i as u32).unwrap();
                 assert_eq!(decoded.dimensions(), level.dimensions());
             }
-            println!("intermediate={intermediate}, levels={}, base={:?}", levels.len(), base.dimensions());
+            println!(
+                "intermediate={intermediate}, levels={}, base={:?}",
+                levels.len(),
+                base.dimensions()
+            );
         }
     }
 
@@ -2347,7 +2597,9 @@ mod tests {
     #[test]
     #[ignore = "依赖本机模型与测试图片，全量 ONNX 推理很慢；用 --ignored 运行"]
     fn anime_cutout_runs_locally_without_comfyui() {
-        let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _gpu_guard = GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
         let Some(base) = anime_base_dir_for_tests() else {
             eprintln!("skip: app data dir unavailable");
@@ -2445,7 +2697,9 @@ mod tests {
     #[test]
     #[ignore = "依赖本机超分模型，全量 ONNX 推理很慢；用 --ignored 运行"]
     fn superres_anime_upscale_runs_locally() {
-        let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _gpu_guard = GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let Some(base) = anime_base_dir_for_tests() else {
             eprintln!("skip: app data dir unavailable");
             return;
@@ -2459,7 +2713,12 @@ mod tests {
         let mut input_image = image::RgbaImage::new(300, 96);
         for (x, y, pixel) in input_image.enumerate_pixels_mut() {
             let check = (x / 8 + y / 8) % 2 == 0;
-            *pixel = image::Rgba([if check { 220 } else { 40 }, 90, if check { 30 } else { 200 }, if x < 150 { 255 } else { 120 }]);
+            *pixel = image::Rgba([
+                if check { 220 } else { 40 },
+                90,
+                if check { 30 } else { 200 },
+                if x < 150 { 255 } else { 120 },
+            ]);
         }
         let input = std::env::temp_dir().join("aias_superres_input.png");
         input_image.save(&input).expect("save test input");
@@ -2478,7 +2737,11 @@ mod tests {
         assert_eq!(result.completed, 1);
         let saved = output_dir.join("aias_superres_input_4x_anime.png");
         let image = image::open(&saved).expect("output should be readable");
-        assert_eq!((image.width(), image.height()), (1200, 384), "4x output size");
+        assert_eq!(
+            (image.width(), image.height()),
+            (1200, 384),
+            "4x output size"
+        );
         let rgba = image.to_rgba8();
         // Alpha 通道也被超分：右半 (x>=600) 的不透明度应明显低于左半。
         let left: u64 = rgba.pixels().filter(|p| p[3] >= 200).count() as u64;
@@ -2487,16 +2750,34 @@ mod tests {
             .filter(|(x, _, p)| *x >= 600 && p[3] > 100 && p[3] < 220)
             .count() as u64;
         assert!(left > 1200 * 384 / 4, "left half should stay mostly opaque");
-        assert!(right_soft > 10_000, "right half should be partially transparent after alpha superres");
+        assert!(
+            right_soft > 10_000,
+            "right half should be partially transparent after alpha superres"
+        );
         // 颜色通道必须保持（回归：曾把 NCHW 输出按 HWC 读取，输出变灰度乱块）。
-        let reddish = rgba.pixels().filter(|p| p[0] as i32 > p[2] as i32 + 40).count();
-        let bluish = rgba.pixels().filter(|p| p[2] as i32 > p[0] as i32 + 40).count();
-        assert!(reddish > 50_000, "checkerboard red blocks should survive superres");
-        assert!(bluish > 50_000, "checkerboard blue blocks should survive superres");
+        let reddish = rgba
+            .pixels()
+            .filter(|p| p[0] as i32 > p[2] as i32 + 40)
+            .count();
+        let bluish = rgba
+            .pixels()
+            .filter(|p| p[2] as i32 > p[0] as i32 + 40)
+            .count();
+        assert!(
+            reddish > 50_000,
+            "checkerboard red blocks should survive superres"
+        );
+        assert!(
+            bluish > 50_000,
+            "checkerboard blue blocks should survive superres"
+        );
 
         // 无 Alpha 的图输出必须是全不透明（回归：曾输出 alpha=0 的全透明 PNG）。
         let opaque_input = std::env::temp_dir().join("aias_superres_input_opaque.png");
-        image::DynamicImage::ImageRgba8(input_image).to_rgb8().save(&opaque_input).expect("save opaque input");
+        image::DynamicImage::ImageRgba8(input_image)
+            .to_rgb8()
+            .save(&opaque_input)
+            .expect("save opaque input");
         let result = superres_run_inner(
             None,
             SuperResRunOptions {
@@ -2511,7 +2792,11 @@ mod tests {
         let opaque = image::open(output_dir.join("aias_superres_input_opaque_4x_anime.png"))
             .expect("opaque output should be readable")
             .to_rgba8();
-        assert_eq!(opaque.pixels().filter(|p| p[3] == 255).count(), (1200 * 384) as usize, "opaque input must stay fully opaque");
+        assert_eq!(
+            opaque.pixels().filter(|p| p[3] == 255).count(),
+            (1200 * 384) as usize,
+            "opaque input must stay fully opaque"
+        );
 
         // 非原生倍率：2x 在 4x 结果上缩小；超范围倍率（旧配置可能存过 6/8）在
         // 命令层 clamp 到 4，输出名与内容都用实际倍率。
@@ -2527,8 +2812,13 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("scale {requested}: {error}"));
             assert_eq!(result.completed, 1);
-            let saved = output_dir.join(superres_output_name("aias_superres_input", "anime", effective));
-            let image = image::open(&saved).unwrap_or_else(|error| panic!("scale {requested}: {error}"));
+            let saved = output_dir.join(superres_output_name(
+                "aias_superres_input",
+                "anime",
+                effective,
+            ));
+            let image =
+                image::open(&saved).unwrap_or_else(|error| panic!("scale {requested}: {error}"));
             assert_eq!(
                 (image.width(), image.height()),
                 (300 * effective, 96 * effective),
@@ -2539,14 +2829,22 @@ mod tests {
 
     #[test]
     fn superres_output_name_uses_scale() {
-        assert_eq!(superres_output_name("hero", "anime", 4), "hero_4x_anime.png");
-        assert_eq!(superres_output_name("hero", "general", 6), "hero_6x_general.png");
+        assert_eq!(
+            superres_output_name("hero", "anime", 4),
+            "hero_4x_anime.png"
+        );
+        assert_eq!(
+            superres_output_name("hero", "general", 6),
+            "hero_6x_general.png"
+        );
     }
 
     #[test]
     #[ignore = "依赖本机模型与测试图片，全量 ONNX 推理很慢；用 --ignored 运行"]
     fn anime_advanced_cutout_runs_locally() {
-        let _gpu_guard = GPU_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _gpu_guard = GPU_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let input = Path::new("F:\\WebUI\\ComfyUI\\input\\anime_test.png");
         let Some(base) = anime_base_dir_for_tests() else {
             eprintln!("skip: app data dir unavailable");

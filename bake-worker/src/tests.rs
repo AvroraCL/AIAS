@@ -1,10 +1,50 @@
 use crate::{
     bake,
+    denoise::Oidn,
     gpu::{Gpu, Surface},
     model::{self, Model, Named, Triangle},
 };
 use glam::Vec3;
 use std::collections::BTreeMap;
+
+#[test]
+fn structured_bake_progress_is_monotonic_across_maps_and_materials() {
+    let mut events = Vec::new();
+    let mut capture = |event| events.push(event);
+    for (material_position, map_index, within) in [
+        (0, 0, 0.0),
+        (0, 5, 0.84),
+        (0, 6, 0.10),
+        (0, 6, 1.0),
+        (1, 0, 0.0),
+        (1, 6, 1.0),
+    ] {
+        bake::emit_bake_progress(
+            &mut capture,
+            "测试阶段".into(),
+            "mesh_map",
+            "curvature",
+            material_position,
+            material_position,
+            2,
+            map_index,
+            7,
+            within,
+            None,
+        );
+    }
+    let values: Vec<_> = events
+        .iter()
+        .map(|event| event["progress"].as_f64().unwrap())
+        .collect();
+    assert!(values.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_eq!(events[0]["stage"], "mesh_map");
+    assert_eq!(events[0]["map"], "curvature");
+    assert_eq!(events[0]["materialPosition"], 1);
+    assert_eq!(events.last().unwrap()["materialPosition"], 2);
+    assert_eq!(events.last().unwrap()["progress"], 0.96);
+}
+
 fn triangle(uv: [[f32; 2]; 3], object: usize, material: usize) -> Triangle {
     Triangle {
         positions: [[0., 0., 0.], [1., 0., 1.], [1., 0., 0.]],
@@ -43,7 +83,98 @@ fn model(triangles: Vec<Triangle>) -> Model {
         units: "模型单位".into(),
         degenerate_faces: 0,
         degenerate_examples: vec![],
+        warnings: vec![],
+        source_format: "obj".into(),
+        generated_channels: BTreeMap::new(),
     }
+}
+
+#[test]
+#[ignore = "requires the packaged OIDN runtime; set AIAS_OIDN_DIR"]
+fn packaged_oidn_runtime_denoises_pixels() {
+    let directory = std::env::var_os("AIAS_OIDN_DIR").expect("AIAS_OIDN_DIR is required");
+    let runtime = Oidn::load(std::path::Path::new(&directory)).unwrap();
+    let mut pixels = vec![0.0f32; 16 * 16];
+    pixels[8 * 16 + 8] = 1.0;
+    runtime.denoise_gray(&mut pixels, 16, 16).unwrap();
+    assert!(pixels.iter().all(|value| value.is_finite()));
+}
+
+#[test]
+fn missing_mtl_keeps_usemtl_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing.obj");
+    std::fs::write(&path, "mtllib absent.mtl\no hull\nusemtl Armor\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n").unwrap();
+    let loaded = model::load(&path).unwrap();
+    assert_eq!(loaded.materials[loaded.triangles[0].material].name, "Armor");
+    assert!(loaded
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("absent.mtl")));
+}
+
+#[test]
+fn smart_uv_preserves_valid_and_generates_invalid_materials() {
+    let valid = [[0., 0.], [0., 1.], [1., 0.]];
+    let mut invalid = triangle([[2., 0.], [2., 1.], [3., 0.]], 1, 1);
+    invalid.positions = [[0., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+    let mut value = model(vec![triangle(valid, 0, 0), invalid]);
+    let selected = model::prepare_uvs(&mut value, "preserveValid").unwrap();
+    assert_eq!(selected[&0], 0);
+    assert_ne!(selected[&1], 0);
+    assert_eq!(value.triangles[0].uvs[&0], valid);
+    let all_objects = vec![0, 1];
+    assert!(model::inspect(&value, 1, selected[&1], &all_objects).valid);
+}
+
+#[test]
+fn generated_uv_welds_connected_triangle_corners() {
+    let mut first = triangle([[f32::NAN; 2]; 3], 0, 0);
+    first.positions = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.]];
+    let mut second = triangle([[f32::NAN; 2]; 3], 0, 0);
+    second.positions = [[0., 0., 0.], [1., 1., 0.], [0., 1., 0.]];
+    let mut value = model(vec![first, second]);
+    let selected = model::prepare_uvs(&mut value, "regenerateAll").unwrap();
+    let channel = selected[&0];
+    let a = value.triangles[0].uvs[&channel];
+    let b = value.triangles[1].uvs[&channel];
+    assert_eq!(a[0], b[0], "the shared origin must stay in one chart");
+    assert_eq!(
+        a[2], b[1],
+        "the shared opposite corner must stay in one chart"
+    );
+}
+
+#[test]
+fn compact_preview_round_trips_offsets() {
+    let value = model(vec![triangle([[0., 0.], [0., 1.], [1., 0.]], 0, 0)]);
+    let dir = tempfile::tempdir().unwrap();
+    let preview = model::write_preview(&value, dir.path()).unwrap();
+    let bytes = std::fs::read(preview["bufferPath"].as_str().unwrap()).unwrap();
+    assert_eq!(bytes.len() as u64, preview["byteLength"].as_u64().unwrap());
+    let batch = &preview["batches"][0];
+    let offset = batch["positionOffset"].as_u64().unwrap() as usize;
+    assert_eq!(
+        f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()),
+        0.0
+    );
+    assert_eq!(batch["vertexCount"], 3);
+}
+
+#[test]
+fn generated_glb_reimports_with_the_selected_uv() {
+    let mut value = model(vec![triangle([[0., 0.], [0., 1.], [1., 0.]], 0, 0)]);
+    value.source_format = "glb".into();
+    let directory = tempfile::tempdir().unwrap();
+    let files =
+        model::export_bake_model(&value, &BTreeMap::from([(0, 0)]), directory.path()).unwrap();
+    let glb = files
+        .iter()
+        .find(|path| path.extension().is_some_and(|extension| extension == "glb"))
+        .unwrap();
+    let imported = model::load(glb).unwrap();
+    let objects: Vec<_> = imported.objects.iter().map(|object| object.id).collect();
+    assert!(model::inspect(&imported, 0, 0, &objects).valid);
 }
 #[test]
 fn uv_shared_edges_at_fractional_offsets_do_not_overlap() {
@@ -127,6 +258,44 @@ fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {
 }
 
 #[test]
+fn curvature_map_is_neutral_on_flats_and_marks_convex_bends() {
+    let flat = (0..3)
+        .map(|column| Surface {
+            position: [column as f32, 0., 0.],
+            normal: [0., 1., 0.],
+            object: 0,
+            pixel: column + 3,
+        })
+        .collect::<Vec<_>>();
+    let nearest = [
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        3,
+        4,
+        5,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+    ];
+    let flat_pixels = bake::curvature_map(&flat, &nearest, 3);
+    assert_eq!(flat_pixels[4 * 4], 128);
+    let bent = vec![
+        Surface {
+            normal: [-0.2, 0.98, 0.],
+            ..flat[0]
+        },
+        flat[1],
+        Surface {
+            normal: [0.2, 0.98, 0.],
+            ..flat[2]
+        },
+    ];
+    let bent_pixels = bake::curvature_map(&bent, &nearest, 3);
+    assert!(bent_pixels[4 * 4] > flat_pixels[4 * 4]);
+}
+
+#[test]
 fn material_stems_follow_sp_style_naming() {
     let named = |id: usize, name: &str| Named {
         id,
@@ -145,7 +314,10 @@ fn material_stems_follow_sp_style_naming() {
     assert_eq!(stems[3], "同名_3");
     assert_eq!(stems[4], "material_4");
     for stem in &stems {
-        assert!(!stem.contains("_m0"), "old id-tagged format must not survive");
+        assert!(
+            !stem.contains("_m0"),
+            "old id-tagged format must not survive"
+        );
     }
     // 同名区分依据全部材质统计，批量清洗过滤不会改变已定名。
     let single = bake::material_stems(&[named(0, "同名")]);
@@ -229,6 +401,19 @@ fn gpu_matches_cpu_distance_self_and_repeat() {
         })
         .collect();
     let mut gpu = Gpu::new(0, &v, &objects).unwrap();
+    let top = [Surface {
+        position: [0., 0.5, 0.],
+        normal: [0., 1., 0.],
+        object: 1,
+        pixel: 0,
+    }];
+    let thickness = gpu
+        .trace_thickness(&top, 128, 2., 0.0001, false, || false)
+        .unwrap();
+    assert!(
+        thickness[0] > 0,
+        "inward rays must measure the opposite shell"
+    );
     for (distance, self_only) in [(2., false), (0.1, false), (2., true)] {
         let actual = gpu
             .trace(&surfaces, 128, distance, 0.0001, self_only, || false)

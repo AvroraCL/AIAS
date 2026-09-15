@@ -16,5 +16,8 @@ base64 = "0.22"
 sysinfo = "0.33"
 tempfile = "3"
 
+[build-dependencies]
+cc = "1"
+
 [profile.release]
 strip = true

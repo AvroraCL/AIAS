@@ -355,8 +355,12 @@ pub fn cutout_with_options(
     on_phase(0.02, "读取图片");
     let (rgb, icc_profile) = timed("1 decode+exif", || {
         use image::ImageDecoder as _;
-        let mut decoder = image::ImageReader::open(input).map_err(to_string_error)?
-            .with_guessed_format().map_err(to_string_error)?.into_decoder().map_err(to_string_error)?;
+        let mut decoder = image::ImageReader::open(input)
+            .map_err(to_string_error)?
+            .with_guessed_format()
+            .map_err(to_string_error)?
+            .into_decoder()
+            .map_err(to_string_error)?;
         let profile = decoder.icc_profile().map_err(to_string_error)?;
         let mut image = image::DynamicImage::from_decoder(decoder).map_err(to_string_error)?;
         if let Some(orientation) = exif_orientation(input)? {
@@ -369,36 +373,20 @@ pub fn cutout_with_options(
     on_phase(0.08, "模型推理");
     let (mask, fallback_model) = timed("2 inference+fallback", || {
         Ok::<_, String>(match model_spec(model_id)?.kind {
-        ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
-        ModelKind::Advanced => (run_advanced(base, &rgb)?, model_id),
-        ModelKind::BiRefNet { matting } => (run_birefnet(base, model_id, matting, &rgb)?, model_id),
-        ModelKind::Toonout => {
-            let mask = run_birefnet(base, "toonout", false, &rgb)?;
-            if toonout_likely_failed(&mask, w, h) {
-                // 先释放 ToonOut 会话，避免两套大模型在显存中重叠。AnimeSeg 专精
-                // 模型优先处理「主体与背景同为动漫线稿」的误保留，通用 BiRefNet
-                // 仍保留为专精模型未安装或未通过客观清理门槛时的兜底。
-                release_birefnet_session("toonout");
-                let specialist_candidate = if is_model_ready(base, "anime-specialist") {
-                    match run_birefnet(base, "anime-specialist", false, &rgb) {
-                        Ok(candidate)
-                            if matte_is_substantially_cleaner(&candidate, &mask, w, h) =>
-                        {
-                            Some(candidate)
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                if let Some(candidate) = specialist_candidate {
-                    (candidate, "anime-specialist")
-                } else {
-                    // 专精候选没有接管时才能继续加载 General；否则两次 1024 推理
-                    // 既无质量收益，也会在小显存显卡上制造不必要的峰值占用。
-                    release_birefnet_session("anime-specialist");
-                    let general_candidate = if is_model_ready(base, "birefnet-general") {
-                        match run_birefnet(base, "birefnet-general", false, &rgb) {
+            ModelKind::Simple => (run_simple(base, &rgb)?, model_id),
+            ModelKind::Advanced => (run_advanced(base, &rgb)?, model_id),
+            ModelKind::BiRefNet { matting } => {
+                (run_birefnet(base, model_id, matting, &rgb)?, model_id)
+            }
+            ModelKind::Toonout => {
+                let mask = run_birefnet(base, "toonout", false, &rgb)?;
+                if toonout_likely_failed(&mask, w, h) {
+                    // 先释放 ToonOut 会话，避免两套大模型在显存中重叠。AnimeSeg 专精
+                    // 模型优先处理「主体与背景同为动漫线稿」的误保留，通用 BiRefNet
+                    // 仍保留为专精模型未安装或未通过客观清理门槛时的兜底。
+                    release_birefnet_session("toonout");
+                    let specialist_candidate = if is_model_ready(base, "anime-specialist") {
+                        match run_birefnet(base, "anime-specialist", false, &rgb) {
                             Ok(candidate)
                                 if matte_is_substantially_cleaner(&candidate, &mask, w, h) =>
                             {
@@ -409,32 +397,50 @@ pub fn cutout_with_options(
                     } else {
                         None
                     };
-                    if let Some(candidate) = general_candidate {
-                        (candidate, "birefnet-general")
-                    } else if is_model_ready(base, "advanced") {
-                        // General 复核未接管时不保留它的会话，避免和后续两阶段
-                        // 动漫模型重叠占用显存。
-                        release_birefnet_session("birefnet-general");
-                        match run_advanced(base, &rgb) {
-                            Ok(candidate)
-                                if matte_is_substantially_cleaner(&candidate, &mask, w, h) =>
-                            {
-                                (candidate, "advanced")
-                            }
-                            _ => (mask, "toonout"),
-                        }
-                    } else if is_model_ready(base, "simple") {
-                        release_birefnet_session("birefnet-general");
-                        (run_simple(base, &rgb)?, "simple")
+                    if let Some(candidate) = specialist_candidate {
+                        (candidate, "anime-specialist")
                     } else {
-                        release_birefnet_session("birefnet-general");
-                        (mask, "toonout")
+                        // 专精候选没有接管时才能继续加载 General；否则两次 1024 推理
+                        // 既无质量收益，也会在小显存显卡上制造不必要的峰值占用。
+                        release_birefnet_session("anime-specialist");
+                        let general_candidate = if is_model_ready(base, "birefnet-general") {
+                            match run_birefnet(base, "birefnet-general", false, &rgb) {
+                                Ok(candidate)
+                                    if matte_is_substantially_cleaner(&candidate, &mask, w, h) =>
+                                {
+                                    Some(candidate)
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(candidate) = general_candidate {
+                            (candidate, "birefnet-general")
+                        } else if is_model_ready(base, "advanced") {
+                            // General 复核未接管时不保留它的会话，避免和后续两阶段
+                            // 动漫模型重叠占用显存。
+                            release_birefnet_session("birefnet-general");
+                            match run_advanced(base, &rgb) {
+                                Ok(candidate)
+                                    if matte_is_substantially_cleaner(&candidate, &mask, w, h) =>
+                                {
+                                    (candidate, "advanced")
+                                }
+                                _ => (mask, "toonout"),
+                            }
+                        } else if is_model_ready(base, "simple") {
+                            release_birefnet_session("birefnet-general");
+                            (run_simple(base, &rgb)?, "simple")
+                        } else {
+                            release_birefnet_session("birefnet-general");
+                            (mask, "toonout")
+                        }
                     }
+                } else {
+                    (mask, "toonout")
                 }
-            } else {
-                (mask, "toonout")
             }
-        }
         })
     })?;
 
@@ -460,7 +466,9 @@ pub fn cutout_with_options(
     // 轮廓；其它模型和较小图片保留既有输出，避免改变已验证的行为。
     let mask = if fallback_model == "anime-specialist" {
         on_phase(0.72, "边界精修");
-        timed("3 closed-form", || refine_closed_form_boundary_alpha(&rgb, mask))
+        timed("3 closed-form", || {
+            refine_closed_form_boundary_alpha(&rgb, mask)
+        })
     } else {
         mask
     };
@@ -469,9 +477,7 @@ pub fn cutout_with_options(
         finalize_cutout_image(&rgb, mask, model_uses_native_edge_alpha(fallback_model))
     });
     let result = timed("5 detail-recovery", || {
-        if recover_details
-            && model_id == "anime-specialist"
-            && fallback_model == "anime-specialist"
+        if recover_details && model_id == "anime-specialist" && fallback_model == "anime-specialist"
         {
             on_phase(0.85, "细节恢复");
             recover_anime_specialist_details_rgba(base, &rgb, result)
@@ -494,16 +500,18 @@ pub fn cutout_with_options(
     timed("7 save-png", || {
         use image::ImageEncoder as _;
         crate::safety::atomic_write(output, |writer| {
-        // fdeflate 快速档：比默认 zlib-6 快一个量级，4K 保存从秒级降到亚秒。
-        let mut encoder = image::codecs::png::PngEncoder::new_with_quality(
-            writer,
-            image::codecs::png::CompressionType::Fast,
-            image::codecs::png::FilterType::Adaptive,
-        );
-        if let Some(profile) = icc_profile {
-            encoder.set_icc_profile(profile).map_err(to_string_error)?;
-        }
-        encoder.write_image(result.as_raw(), w, h, image::ExtendedColorType::Rgba8).map_err(to_string_error)
+            // fdeflate 快速档：比默认 zlib-6 快一个量级，4K 保存从秒级降到亚秒。
+            let mut encoder = image::codecs::png::PngEncoder::new_with_quality(
+                writer,
+                image::codecs::png::CompressionType::Fast,
+                image::codecs::png::FilterType::Adaptive,
+            );
+            if let Some(profile) = icc_profile {
+                encoder.set_icc_profile(profile).map_err(to_string_error)?;
+            }
+            encoder
+                .write_image(result.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+                .map_err(to_string_error)
         })
     })?;
     on_phase(1.0, "完成");

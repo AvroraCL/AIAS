@@ -49,12 +49,10 @@ fn main() {
                         std::fs::File::open(&args[2]).map_err(|e| e.to_string())?,
                     )
                     .map_err(|e| e.to_string())?;
-                    let model: model::Model = serde_json::from_reader(
-                        std::io::BufReader::new(
-                            std::fs::File::open(request["modelPath"].as_str().ok_or("缺失模型路径")?)
-                                .map_err(|e| e.to_string())?,
-                        ),
-                    )
+                    let model: model::Model = serde_json::from_reader(std::io::BufReader::new(
+                        std::fs::File::open(request["modelPath"].as_str().ok_or("缺失模型路径")?)
+                            .map_err(|e| e.to_string())?,
+                    ))
                     .map_err(|e| e.to_string())?;
                     let objects: Vec<usize> = serde_json::from_value(request["objects"].clone())
                         .map_err(|e| e.to_string())?;
@@ -68,17 +66,39 @@ fn main() {
                     serde_json::to_value(reports).map_err(|e| e.to_string())
                 }
                 "import" => {
-                    let model = model::load(std::path::Path::new(&args[2]))?;
+                    let mut model = model::load(std::path::Path::new(&args[2]))?;
                     let dir = std::path::Path::new(args.get(4).ok_or("缺失输出目录")?);
                     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                    let uv_mode = args.get(5).map(String::as_str).unwrap_or("preserveValid");
+                    println!(
+                        "{}",
+                        serde_json::json!({"jobId":job,"type":"progress","data":{"phase":"检查并准备 UV","progress":0.55}})
+                    );
+                    let selected_channels = model::prepare_uvs_with_progress(
+                        &mut model,
+                        uv_mode,
+                        |position, total| {
+                            println!(
+                                "{}",
+                                serde_json::json!({"jobId":job,"type":"progress","data":{"phase":format!("检查并准备 UV · {}/{}",position+1,total),"progress":0.55 + 0.25 * position as f64 / total.max(1) as f64}})
+                            );
+                        },
+                    )?;
                     bake::atomic_json(&dir.join("model.json"), &model)?;
+                    println!(
+                        "{}",
+                        serde_json::json!({"jobId":job,"type":"progress","data":{"phase":"生成三维预览","progress":0.82}})
+                    );
+                    let preview = model::write_preview(&model, dir)?;
                     let objects: Vec<_> = model.objects.iter().map(|o| o.id).collect();
                     let materials:Vec<_>=model.materials.iter().filter(|m|model.triangles.iter().any(|t|t.material==m.id)).map(|m|{
                     let mut channels=std::collections::BTreeSet::new();for t in model.triangles.iter().filter(|t|t.material==m.id){channels.extend(t.uvs.keys().copied());}channels.insert(0);
-                    serde_json::json!({"id":m.id,"name":m.name,"channels":channels.iter().map(|c|model::inspect(&model,m.id,*c,&objects)).collect::<Vec<_>>()})
+                    let generated = model.generated_channels.get(&m.id).copied();
+                    let reports = channels.iter().map(|c| { let mut value=serde_json::to_value(model::inspect(&model,m.id,*c,&objects)).unwrap(); value["generated"]=serde_json::json!(generated==Some(*c)); value }).collect::<Vec<_>>();
+                    serde_json::json!({"id":m.id,"name":m.name,"channels":reports,"selectedChannel":selected_channels.get(&m.id).copied().unwrap_or(0)})
                 }).collect();
                     Ok(
-                        serde_json::json!({"name":model.name,"objects":model.objects,"materials":materials,"bounds":model.bounds,"units":model.units,"meshPath":dir.join("model.json"),"triangleCount":model.triangles.len(),"degenerateFaces":model.degenerate_faces,"degenerateExamples":model.degenerate_examples}),
+                        serde_json::json!({"name":model.name,"objects":model.objects,"materials":materials,"bounds":model.bounds,"units":model.units,"meshPath":dir.join("model.json"),"preview":preview,"triangleCount":model.triangles.len(),"degenerateFaces":model.degenerate_faces,"degenerateExamples":model.degenerate_examples,"warnings":model.warnings,"sourceFormat":model.source_format,"generatedChannels":model.generated_channels}),
                     )
                 }
                 "bake" => {

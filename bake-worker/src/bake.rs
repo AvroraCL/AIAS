@@ -35,6 +35,16 @@ pub struct Options {
     pub ao: bool,
     pub uv: bool,
     pub id: bool,
+    #[serde(default)]
+    pub normal: bool,
+    #[serde(default)]
+    pub world_normal: bool,
+    #[serde(default)]
+    pub curvature: bool,
+    #[serde(default)]
+    pub position: bool,
+    #[serde(default)]
+    pub thickness: bool,
     pub bits: u8,
 }
 #[derive(Serialize, Deserialize, Default)]
@@ -47,6 +57,15 @@ pub struct ResultSet {
     pub failures: Vec<String>,
     pub cancelled: bool,
     pub elapsed_ms: u128,
+    #[serde(default)]
+    pub artifacts: Vec<Artifact>,
+    #[serde(default)]
+    pub selected_channels: BTreeMap<usize, u32>,
+}
+#[derive(Serialize, Deserialize)]
+pub struct Artifact {
+    pub kind: String,
+    pub path: PathBuf,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Output {
@@ -148,6 +167,246 @@ pub fn color(material: usize) -> [u8; 4] {
     let value = (material as u32 + 1).wrapping_mul(0x9e3779) & 0xffffff;
     [(value >> 16) as u8, (value >> 8) as u8, value as u8, 255]
 }
+
+fn unit_byte(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn encode_surface_map(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    mut encode: impl FnMut(&Surface) -> [u8; 4],
+) -> Vec<u8> {
+    let mut pixels = vec![0; nearest.len() * 4];
+    for surface in surfaces {
+        let offset = surface.pixel as usize * 4;
+        pixels[offset..offset + 4].copy_from_slice(&encode(surface));
+    }
+    for (pixel, source) in nearest.iter().copied().enumerate() {
+        if source == u32::MAX {
+            continue;
+        }
+        let source = source as usize * 4;
+        let value = [
+            pixels[source],
+            pixels[source + 1],
+            pixels[source + 2],
+            pixels[source + 3],
+        ];
+        pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&value);
+    }
+    pixels
+}
+
+pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<u8> {
+    let mut surface_at = vec![u32::MAX; nearest.len()];
+    for (index, surface) in surfaces.iter().enumerate() {
+        surface_at[surface.pixel as usize] = index as u32;
+    }
+    let mut pixels = vec![0; nearest.len() * 4];
+    for surface in surfaces {
+        let pixel = surface.pixel as usize;
+        let x = pixel % size;
+        let y = pixel / size;
+        let position = Vec3::from_array(surface.position);
+        let normal = Vec3::from_array(surface.normal).normalize_or_zero();
+        let mut signed = 0.0;
+        let mut count = 0.0;
+        for (dx, dy) in [
+            (-1isize, 0isize),
+            (1, 0),
+            (0, -1),
+            (0, 1),
+            (-1, -1),
+            (1, -1),
+            (-1, 1),
+            (1, 1),
+        ] {
+            let nx = x as isize + dx;
+            let ny = y as isize + dy;
+            if nx < 0 || ny < 0 || nx >= size as isize || ny >= size as isize {
+                continue;
+            }
+            let other_index = surface_at[ny as usize * size + nx as usize];
+            if other_index == u32::MAX {
+                continue;
+            }
+            let other = surfaces[other_index as usize];
+            let delta = Vec3::from_array(other.position) - position;
+            if delta.length_squared() <= 1e-20 {
+                continue;
+            }
+            let delta_normal = Vec3::from_array(other.normal).normalize_or_zero() - normal;
+            signed += delta_normal.dot(delta.normalize());
+            count += 1.0;
+        }
+        let value = unit_byte(
+            0.5 + if count > 0.0 {
+                signed / count * 6.0
+            } else {
+                0.0
+            },
+        );
+        pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&[value, value, value, 255]);
+    }
+    for (pixel, source) in nearest.iter().copied().enumerate() {
+        if source == u32::MAX {
+            continue;
+        }
+        let source = source as usize * 4;
+        let value = [
+            pixels[source],
+            pixels[source + 1],
+            pixels[source + 2],
+            pixels[source + 3],
+        ];
+        pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&value);
+    }
+    pixels
+}
+
+fn write_rgba_map(
+    options: &Options,
+    result: &mut ResultSet,
+    material: usize,
+    prefix: &str,
+    kind: &str,
+    pixels: Vec<u8>,
+) -> Result<(), String> {
+    let path = options.output.join(format!("{prefix}_{kind}.png"));
+    save(
+        &path,
+        image::DynamicImage::ImageRgba8(
+            image::RgbaImage::from_raw(options.resolution, options.resolution, pixels)
+                .ok_or("Mesh Map 图像尺寸错误")?,
+        ),
+    )?;
+    result.files.push(Output {
+        material,
+        kind: kind.into(),
+        path,
+    });
+    atomic_json(&options.output.join("result.json"), result)
+}
+
+fn save_scalar_map(
+    options: &Options,
+    path: &Path,
+    nearest: &[u32],
+    values: &[f32],
+    background: f32,
+) -> Result<(), String> {
+    if options.bits == 16 {
+        let data = nearest
+            .iter()
+            .map(|source| {
+                let value = if *source == u32::MAX {
+                    background
+                } else {
+                    values[*source as usize]
+                };
+                (value.clamp(0.0, 1.0) * 65535.0).round() as u16
+            })
+            .collect::<Vec<_>>();
+        save(
+            path,
+            image::DynamicImage::ImageLuma16(
+                image::ImageBuffer::from_raw(options.resolution, options.resolution, data)
+                    .ok_or("灰度 Mesh Map 尺寸错误")?,
+            ),
+        )
+    } else {
+        let data = nearest
+            .iter()
+            .map(|source| {
+                let value = if *source == u32::MAX {
+                    background
+                } else {
+                    values[*source as usize]
+                };
+                unit_byte(value)
+            })
+            .collect::<Vec<_>>();
+        save(
+            path,
+            image::DynamicImage::ImageLuma8(
+                image::GrayImage::from_raw(options.resolution, options.resolution, data)
+                    .ok_or("灰度 Mesh Map 尺寸错误")?,
+            ),
+        )
+    }
+}
+
+fn completion_kind(options: &Options) -> &'static str {
+    if options.thickness {
+        "thickness"
+    } else if options.ao {
+        "ao"
+    } else if options.curvature {
+        "curvature"
+    } else if options.position {
+        "position"
+    } else if options.world_normal {
+        "world_normal"
+    } else if options.normal {
+        "normal"
+    } else if options.id {
+        "id"
+    } else {
+        "uv"
+    }
+}
+
+fn enabled_map_count(options: &Options) -> usize {
+    [
+        options.uv,
+        options.id,
+        options.normal,
+        options.world_normal,
+        options.position,
+        options.curvature,
+        options.ao,
+        options.thickness,
+    ]
+    .into_iter()
+    .filter(|enabled| *enabled)
+    .count()
+    .max(1)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_bake_progress(
+    progress: &mut impl FnMut(serde_json::Value),
+    phase: String,
+    stage: &str,
+    map: &str,
+    material: usize,
+    material_position: usize,
+    material_total: usize,
+    map_index: usize,
+    map_total: usize,
+    within_map: f64,
+    block_size: Option<usize>,
+) {
+    let completed = material_position * map_total + map_index;
+    let total = (material_total * map_total).max(1);
+    // Reserve the final 4% for legends, remapped model artifacts and the manifest.
+    // This keeps the UI below 100% while files are still being finalized.
+    let overall = (completed as f64 + within_map.clamp(0.0, 1.0)) / total as f64 * 0.96;
+    progress(serde_json::json!({
+        "phase": phase,
+        "stage": stage,
+        "map": map,
+        "material": material,
+        "materialPosition": material_position + 1,
+        "materialTotal": material_total,
+        "mapPosition": (map_index + 1).min(map_total),
+        "mapTotal": map_total,
+        "progress": overall,
+        "blockSize": block_size,
+    }));
+}
+
 pub fn run(
     options: &Options,
     mut progress: impl FnMut(serde_json::Value),
@@ -164,7 +423,14 @@ pub fn run(
     }
     if options.objects.is_empty()
         || options.materials.is_empty()
-        || !(options.ao || options.uv || options.id)
+        || !(options.ao
+            || options.uv
+            || options.id
+            || options.normal
+            || options.world_normal
+            || options.curvature
+            || options.position
+            || options.thickness)
     {
         return Err("请选择材质和输出类型".into());
     }
@@ -200,6 +466,8 @@ pub fn run(
     // 显存类问题抢先。
     let mut gpu: Option<Gpu> = None;
     let stems = material_stems(&model.materials);
+    let material_total = options.materials.len();
+    let map_total = enabled_map_count(options);
     for (position, material) in options.materials.iter().copied().enumerate() {
         if options.cancel_path.exists() {
             result.cancelled = true;
@@ -214,6 +482,20 @@ pub fn run(
             model.materials[material].name.trim()
         );
         let attempt = (|| -> Result<(), String> {
+            let mut map_index = 0usize;
+            emit_bake_progress(
+                &mut progress,
+                format!("{material_label} · 准备 UV 像素"),
+                "raster",
+                "",
+                material,
+                position,
+                material_total,
+                map_index,
+                map_total,
+                0.0,
+                None,
+            );
             let (surfaces, covered, wire) = raster(
                 &model,
                 material,
@@ -223,6 +505,19 @@ pub fn run(
                 options.uv,
             )?;
             if options.uv {
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · UV 线框"),
+                    "mesh_map",
+                    "uv",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.1,
+                    None,
+                );
                 let path = options.output.join(format!("{prefix}_uv.png"));
                 save(
                     &path,
@@ -236,12 +531,17 @@ pub fn run(
                     kind: "uv".into(),
                     path,
                 });
-                // UV/ID-only 烘焙没有 GPU AO 阶段的事件，进度条会恒为 0：
-                // 按材质边界补发阶段进度。
-                progress(serde_json::json!({"phase":format!("{material_label} · UV 线框"),"material":material,"progress":(position as f64+0.34)/options.materials.len() as f64}));
+                map_index += 1;
                 atomic_json(&options.output.join("result.json"), &result)?;
             }
-            if !report.valid && (options.ao || options.id) {
+            let data_maps = options.ao
+                || options.id
+                || options.normal
+                || options.world_normal
+                || options.curvature
+                || options.position
+                || options.thickness;
+            if !report.valid && data_maps {
                 return Err(format!(
                     "UV 校验失败（{} 处）：{}",
                     report.issue_count,
@@ -254,15 +554,28 @@ pub fn run(
                         .join("；")
                 ));
             }
-            if surfaces.is_empty() && (options.ao || options.id) {
+            if surfaces.is_empty() && data_maps {
                 return Err("所选材质没有像素覆盖".into());
             }
-            let nearest = if options.ao || options.id {
+            let nearest = if data_maps {
                 dilate(&covered, options.resolution as usize, options.margin)
             } else {
                 vec![]
             };
             if options.id {
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · 材质 ID"),
+                    "mesh_map",
+                    "id",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.1,
+                    None,
+                );
                 let c = color(material);
                 let mut pixels = vec![0; covered.len() * 4];
                 for (i, source) in nearest.iter().enumerate() {
@@ -283,12 +596,138 @@ pub fn run(
                     kind: "id".into(),
                     path,
                 });
-                progress(serde_json::json!({"phase":format!("{material_label} · 材质 ID"),"material":material,"progress":(position as f64+0.67)/options.materials.len() as f64}));
+                map_index += 1;
                 atomic_json(&options.output.join("result.json"), &result)?;
+            }
+            if options.normal {
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · 切线空间法线"),
+                    "mesh_map",
+                    "normal",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.1,
+                    None,
+                );
+                write_rgba_map(
+                    options,
+                    &mut result,
+                    material,
+                    &prefix,
+                    "normal",
+                    encode_surface_map(&surfaces, &nearest, |_| [128, 128, 255, 255]),
+                )?;
+                map_index += 1;
+            }
+            if options.world_normal {
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · 世界空间法线"),
+                    "mesh_map",
+                    "world_normal",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.1,
+                    None,
+                );
+                write_rgba_map(
+                    options,
+                    &mut result,
+                    material,
+                    &prefix,
+                    "world_normal",
+                    encode_surface_map(&surfaces, &nearest, |surface| {
+                        let normal = Vec3::from_array(surface.normal).normalize_or_zero();
+                        [
+                            unit_byte(normal.x * 0.5 + 0.5),
+                            unit_byte(normal.y * 0.5 + 0.5),
+                            unit_byte(normal.z * 0.5 + 0.5),
+                            255,
+                        ]
+                    }),
+                )?;
+                map_index += 1;
+            }
+            if options.position {
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · 位置"),
+                    "mesh_map",
+                    "position",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.1,
+                    None,
+                );
+                let min = Vec3::from_array(model.bounds[0]);
+                let span = (Vec3::from_array(model.bounds[1]) - min).max(Vec3::splat(1e-12));
+                write_rgba_map(
+                    options,
+                    &mut result,
+                    material,
+                    &prefix,
+                    "position",
+                    encode_surface_map(&surfaces, &nearest, |surface| {
+                        let value = (Vec3::from_array(surface.position) - min) / span;
+                        [
+                            unit_byte(value.x),
+                            unit_byte(value.y),
+                            unit_byte(value.z),
+                            255,
+                        ]
+                    }),
+                )?;
+                map_index += 1;
+            }
+            if options.curvature {
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · 曲率"),
+                    "mesh_map",
+                    "curvature",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.1,
+                    None,
+                );
+                write_rgba_map(
+                    options,
+                    &mut result,
+                    material,
+                    &prefix,
+                    "curvature",
+                    curvature_map(&surfaces, &nearest, options.resolution as usize),
+                )?;
+                map_index += 1;
             }
             if options.ao {
                 if gpu.is_none() {
-                    progress(serde_json::json!({"phase":"构建 GPU 加速结构","progress":0}));
+                    emit_bake_progress(
+                        &mut progress,
+                        "构建 GPU 加速结构".into(),
+                        "prepare_gpu",
+                        "ao",
+                        material,
+                        position,
+                        material_total,
+                        map_index,
+                        map_total,
+                        0.0,
+                        None,
+                    );
                     let selected: Vec<_> = model
                         .triangles
                         .iter()
@@ -327,26 +766,82 @@ pub fn run(
                     if percent != last_percent && last_emit.elapsed().as_millis() >= 100 {
                         last_emit = Instant::now();
                         last_percent = percent;
-                        progress(
-                            serde_json::json!({"phase":format!("{material_label} · GPU AO"),"material":material,"progress":(position as f64+done)/options.materials.len() as f64,"blockSize":block}),
+                        emit_bake_progress(
+                            &mut progress,
+                            format!("{material_label} · GPU AO"),
+                            "ao",
+                            "ao",
+                            material,
+                            position,
+                            material_total,
+                            map_index,
+                            map_total,
+                            done * 0.84,
+                            Some(block),
                         );
                     }
                 }
-                progress(
-                    serde_json::json!({"phase":format!("{material_label} · GPU AO"),"material":material,"progress":(position as f64+1.0)/options.materials.len() as f64,"blockSize":block}),
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · GPU AO"),
+                    "ao",
+                    "ao",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.84,
+                    Some(block),
                 );
                 if options.denoise {
-                    let oidn_dir = options.oidn_dir.as_deref().ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
-                    progress(serde_json::json!({"phase":format!("{material_label} · AI 降噪"),"material":material,"progress":(position as f64+0.98)/options.materials.len() as f64}));
+                    let oidn_dir = options
+                        .oidn_dir
+                        .as_deref()
+                        .ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
+                    emit_bake_progress(
+                        &mut progress,
+                        format!("{material_label} · AI 降噪"),
+                        "denoise",
+                        "ao",
+                        material,
+                        position,
+                        material_total,
+                        map_index,
+                        map_total,
+                        0.88,
+                        None,
+                    );
                     let denoiser = crate::denoise::Oidn::load(std::path::Path::new(oidn_dir))?;
-                    denoiser.denoise_gray(&mut values, options.resolution as usize, options.resolution as usize)?;
+                    denoiser.denoise_gray(
+                        &mut values,
+                        options.resolution as usize,
+                        options.resolution as usize,
+                    )?;
                 }
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · 保存 AO"),
+                    "save",
+                    "ao",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.94,
+                    None,
+                );
                 let path = options.output.join(format!("{prefix}_ao.png"));
                 if options.bits == 16 {
                     let data: Vec<u16> = nearest
                         .iter()
                         .map(|s| {
-                            let value = if *s == u32::MAX { 1. } else { values[*s as usize] };
+                            let value = if *s == u32::MAX {
+                                1.
+                            } else {
+                                values[*s as usize]
+                            };
                             (value * 65535.).round() as u16
                         })
                         .collect();
@@ -365,7 +860,11 @@ pub fn run(
                     let data: Vec<u8> = nearest
                         .iter()
                         .map(|s| {
-                            let value = if *s == u32::MAX { 1. } else { values[*s as usize] };
+                            let value = if *s == u32::MAX {
+                                1.
+                            } else {
+                                values[*s as usize]
+                            };
                             (value * 255.).round() as u8
                         })
                         .collect();
@@ -386,8 +885,112 @@ pub fn run(
                     kind: "ao".into(),
                     path,
                 });
+                map_index += 1;
                 atomic_json(&options.output.join("result.json"), &result)?;
             }
+            if options.thickness {
+                if gpu.is_none() {
+                    emit_bake_progress(
+                        &mut progress,
+                        "构建 GPU 加速结构".into(),
+                        "prepare_gpu",
+                        "thickness",
+                        material,
+                        position,
+                        material_total,
+                        map_index,
+                        map_total,
+                        0.0,
+                        None,
+                    );
+                    let selected: Vec<_> = model
+                        .triangles
+                        .iter()
+                        .filter(|t| options.objects.contains(&t.object))
+                        .collect();
+                    let vertices: Vec<_> = selected.iter().flat_map(|t| t.positions).collect();
+                    let objects: Vec<_> = selected.iter().map(|t| t.object as u32).collect();
+                    gpu = Some(Gpu::new(options.device, &vertices, &objects)?);
+                }
+                let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
+                let diagonal = (Vec3::from_array(model.bounds[1])
+                    - Vec3::from_array(model.bounds[0]))
+                .length();
+                let bias = (diagonal * 1e-5).max(1e-7).min(options.distance * 0.01);
+                let mut values = vec![0f32; covered.len()];
+                let block = gpu.block_size;
+                let mut last_emit = Instant::now();
+                let mut last_percent = -1i64;
+                for (chunk_index, chunk) in surfaces.chunks(block).enumerate() {
+                    let sums = gpu.trace_thickness(
+                        chunk,
+                        options.samples,
+                        options.distance,
+                        bias,
+                        options.self_only,
+                        || options.cancel_path.exists(),
+                    )?;
+                    result.peak_device_bytes = result.peak_device_bytes.max(gpu.peak_device_bytes);
+                    for (surface, sum) in chunk.iter().zip(sums) {
+                        values[surface.pixel as usize] =
+                            sum as f32 / (options.samples as f32 * 65535.0);
+                    }
+                    let done = (chunk_index * block + chunk.len()) as f64 / surfaces.len() as f64;
+                    let percent = (done * 100.0) as i64;
+                    if percent != last_percent && last_emit.elapsed().as_millis() >= 100 {
+                        last_emit = Instant::now();
+                        last_percent = percent;
+                        emit_bake_progress(
+                            &mut progress,
+                            format!("{material_label} · GPU 厚度"),
+                            "thickness",
+                            "thickness",
+                            material,
+                            position,
+                            material_total,
+                            map_index,
+                            map_total,
+                            done * 0.92,
+                            Some(block),
+                        );
+                    }
+                }
+                emit_bake_progress(
+                    &mut progress,
+                    format!("{material_label} · 保存厚度"),
+                    "save",
+                    "thickness",
+                    material,
+                    position,
+                    material_total,
+                    map_index,
+                    map_total,
+                    0.94,
+                    Some(block),
+                );
+                let path = options.output.join(format!("{prefix}_thickness.png"));
+                save_scalar_map(options, &path, &nearest, &values, 0.0)?;
+                result.files.push(Output {
+                    material,
+                    kind: "thickness".into(),
+                    path,
+                });
+                map_index += 1;
+                atomic_json(&options.output.join("result.json"), &result)?;
+            }
+            emit_bake_progress(
+                &mut progress,
+                format!("{material_label} · 已完成"),
+                "material_complete",
+                "",
+                material,
+                position,
+                material_total,
+                map_index.saturating_sub(1),
+                map_total,
+                1.0,
+                None,
+            );
             Ok(())
         })();
         if let Err(e) = attempt {
@@ -402,6 +1005,18 @@ pub fn run(
             break;
         }
     }
+    if !result.cancelled {
+        progress(serde_json::json!({
+            "phase": "整理贴图、模型与清单",
+            "stage": "finalize",
+            "map": "",
+            "materialPosition": material_total,
+            "materialTotal": material_total,
+            "mapPosition": map_total,
+            "mapTotal": map_total,
+            "progress": 0.97,
+        }));
+    }
     if options.id {
         let legend:Vec<_>=options.materials.iter().map(|i|serde_json::json!({"material":i,"name":model.materials[*i].name,"rgba":color(*i)})).collect();
         atomic_json(&options.output.join("material-colors.json"), &legend)?;
@@ -410,26 +1025,76 @@ pub fn run(
         let complete: std::collections::HashSet<_> = result
             .files
             .iter()
-            .filter(|f| {
-                f.kind
-                    == if options.ao {
-                        "ao"
-                    } else if options.id {
-                        "id"
-                    } else {
-                        "uv"
-                    }
-            })
+            .filter(|f| f.kind == completion_kind(options))
             .map(|f| f.material)
             .collect();
         for m in &options.materials {
             if !complete.contains(m) {
-                result.failures.push(format!("{} 未完成（取消）", model.materials[*m].name));
+                result
+                    .failures
+                    .push(format!("{} 未完成（取消）", model.materials[*m].name));
             }
         }
     }
     result.elapsed_ms = start.elapsed().as_millis();
+    result.selected_channels = options.channels.clone();
+    if !model.generated_channels.is_empty() {
+        for path in crate::model::export_bake_model(&model, &options.channels, &options.output)? {
+            result.artifacts.push(Artifact {
+                kind: "model".into(),
+                path,
+            });
+        }
+    }
+    let manifest_path = options.output.join("bake-manifest.json");
+    let texture_manifest: Vec<_> = result.files.iter().map(|file| serde_json::json!({
+        "material":file.material,"kind":file.kind,"file":file.path.file_name().unwrap_or_default().to_string_lossy()
+    })).collect();
+    let artifact_manifest: Vec<_> = result
+        .artifacts
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "kind":file.kind,"file":file.path.file_name().unwrap_or_default().to_string_lossy()
+            })
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "model": model.name,
+        "sourceFormat": model.source_format,
+        "selectedChannels": options.channels,
+        "generatedChannels": model.generated_channels,
+        "meshMapConventions": {
+            "ao": "linear grayscale; 1 = unoccluded",
+            "normal": "OpenGL tangent space; +Y",
+            "world_normal": "RGB = world XYZ remapped from -1..1 to 0..1",
+            "curvature": "signed grayscale; 0.5 = flat, dark = concave, light = convex",
+            "position": "RGB = model-bounds normalized world XYZ",
+            "thickness": "linear grayscale; normalized inward hit distance",
+            "id": "RGBA material color; see material-colors.json",
+            "uv": "diagnostic wireframe only"
+        },
+        "textures": texture_manifest,
+        "artifacts": artifact_manifest,
+    });
+    atomic_json(&manifest_path, &manifest)?;
+    result.artifacts.push(Artifact {
+        kind: "manifest".into(),
+        path: manifest_path,
+    });
     atomic_json(&options.output.join("result.json"), &result)?;
+    if !result.cancelled {
+        progress(serde_json::json!({
+            "phase": "结果已就绪",
+            "stage": "finalize",
+            "map": "",
+            "materialPosition": material_total,
+            "materialTotal": material_total,
+            "mapPosition": map_total,
+            "mapTotal": map_total,
+            "progress": 1.0,
+        }));
+    }
     Ok(result)
 }
 fn cross(a: Vec2, b: Vec2) -> f32 {

@@ -414,7 +414,10 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
     // 权重与加权颜色都是 {0,1}×u8 的精确可表示值，f32 存储零误差；积分图在
     // box_mean 内部仍按 f64 累加，只有均值输出降为 f32（相对误差 ~1e-7，
     // 远小于后续 ±24 clamp 与 8bit 量化），4K 下省约 600MB 瞬时缓冲。
-    let weight: Vec<f32> = matte.iter().map(|a| if *a <= 0.05 { 1.0 } else { 0.0 }).collect();
+    let weight: Vec<f32> = matte
+        .iter()
+        .map(|a| if *a <= 0.05 { 1.0 } else { 0.0 })
+        .collect();
     let rgb_raw = rgb.as_raw();
     let build_weighted = |ch: usize| -> Vec<f32> {
         weight
@@ -450,8 +453,10 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
             // Uncertain alpha must not amplify a small background-estimation
             // error into a black/white fringe. Keep correction local in color.
             let original = pixel[ch] as f64;
-            color[ch] = foreground.clamp(original - 24.0, original + 24.0)
-                .round().clamp(0.0, 255.0) as u8;
+            color[ch] = foreground
+                .clamp(original - 24.0, original + 24.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
         }
         *slot = color;
     });
@@ -811,7 +816,11 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
             jobs.push((left, top, right, bottom));
         }
     }
-    let solutions: Vec<((usize, usize, usize, usize), CfTileOutcome, Vec<(usize, f32)>)> = jobs
+    let solutions: Vec<(
+        (usize, usize, usize, usize),
+        CfTileOutcome,
+        Vec<(usize, f32)>,
+    )> = jobs
         .par_iter()
         .map(|&(left, top, right, bottom)| {
             let padded_top = top.saturating_sub(TILE_PAD);
@@ -1019,9 +1028,8 @@ fn cf_solve_tile(
     }
     // 每个未知像素一“行”；一行实际只收 3×3 窗口去重后约 ≤30 个不同列，
     // 线性查插的定长 Vec 比每像素一个 HashMap 省 10⁵ 量级的堆分配与哈希。
-    let mut rows: Vec<Vec<(usize, f64)>> = (0..unknown_count)
-        .map(|_| Vec::with_capacity(32))
-        .collect();
+    let mut rows: Vec<Vec<(usize, f64)>> =
+        (0..unknown_count).map(|_| Vec::with_capacity(32)).collect();
     let mut b = vec![0.0f64; unknown_count];
 
     // Levin et al. 的 3×3 closed-form matting Laplacian。只保留 unknown 行，
@@ -1361,14 +1369,16 @@ pub(crate) fn finalize_cutout_image_with_alpha_gamma(
     let colors = timed("f7 decontaminate", || decontaminate_colors(rgb, &mask));
     let mut raw = vec![0u8; (w as usize) * (h as usize) * 4];
     timed("f8 composite", || {
-        raw.par_chunks_exact_mut(4).enumerate().for_each(|(index, pixel)| {
-            let alpha = (mask[index] * 255.0).round().clamp(0.0, 255.0) as u8;
-            let color = colors[index];
-            pixel[0] = color[0];
-            pixel[1] = color[1];
-            pixel[2] = color[2];
-            pixel[3] = alpha;
-        });
+        raw.par_chunks_exact_mut(4)
+            .enumerate()
+            .for_each(|(index, pixel)| {
+                let alpha = (mask[index] * 255.0).round().clamp(0.0, 255.0) as u8;
+                let color = colors[index];
+                pixel[0] = color[0];
+                pixel[1] = color[1];
+                pixel[2] = color[2];
+                pixel[3] = alpha;
+            });
     });
     RgbaImage::from_raw(w, h, raw).expect("composite buffer size matches")
 }
@@ -1399,7 +1409,9 @@ mod color_regression_tests {
         alpha[820] = 0.1;
         let colors = decontaminate_colors(&rgb, &alpha);
         for channel in 0..3 {
-            assert!((colors[820][channel] as i16 - rgb.get_pixel(20, 20)[channel] as i16).abs() <= 24);
+            assert!(
+                (colors[820][channel] as i16 - rgb.get_pixel(20, 20)[channel] as i16).abs() <= 24
+            );
         }
         alpha[820] = 242.0 / 255.0;
         assert_eq!(decontaminate_colors(&rgb, &alpha)[820], [80, 120, 160]);
@@ -1417,7 +1429,9 @@ mod color_regression_tests {
         let mask: Vec<f32> = result.pixels().map(|p| p[3] as f32 / 255.0).collect();
         let colors = decontaminate_colors(&rgb, &mask);
         for (pixel, color) in result.pixels_mut().zip(colors) {
-            pixel[0] = color[0]; pixel[1] = color[1]; pixel[2] = color[2];
+            pixel[0] = color[0];
+            pixel[1] = color[1];
+            pixel[2] = color[2];
         }
         result.save(output).unwrap();
     }

@@ -13,6 +13,8 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 static MODELS: LazyLock<Mutex<HashMap<String, tempfile::TempDir>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static RESULTS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static JOBS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static CANCEL_REQUESTS: LazyLock<Mutex<std::collections::HashSet<String>>> =
@@ -154,10 +156,7 @@ fn execute(
         }
         if last_output.elapsed() > stall {
             let _ = child.kill();
-            failure = Some(format!(
-                "工作进程超过 {} 秒无输出，已终止",
-                stall.as_secs()
-            ));
+            failure = Some(format!("工作进程超过 {} 秒无输出，已终止", stall.as_secs()));
             break;
         }
     }
@@ -181,7 +180,11 @@ pub async fn bake_capabilities(app: AppHandle) -> Result<Value, String> {
         .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub async fn bake_import(app: AppHandle, path: String) -> Result<Value, String> {
+pub async fn bake_import(
+    app: AppHandle,
+    path: String,
+    uv_mode: Option<String>,
+) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = crate::safety::task_guard()?;
         let source = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
@@ -196,6 +199,11 @@ pub async fn bake_import(app: AppHandle, path: String) -> Result<Value, String> 
             .tempdir()
             .map_err(|e| e.to_string())?;
         let handle = id();
+        let uv_mode = match uv_mode.as_deref() {
+            Some("regenerateAll") => "regenerateAll",
+            Some("strictSource") => "strictSource",
+            _ => "preserveValid",
+        };
         let mut data = execute(
             &app,
             &[
@@ -203,6 +211,7 @@ pub async fn bake_import(app: AppHandle, path: String) -> Result<Value, String> 
                 source.as_os_str(),
                 handle.as_ref(),
                 temp.path().as_os_str(),
+                uv_mode.as_ref(),
             ],
             &handle,
             None,
@@ -242,12 +251,12 @@ pub async fn bake_start(
             return Err("任务编号无效".into());
         }
         let started = Instant::now();
-        // AI 降噪：勾选时校验组件已就位，并把组件目录传给 worker。
-        if options["denoise"].as_bool().unwrap_or(false) {
-            let bin = oidn_bin_dir(&app)?.join("bin");
-            if !bin.join("OpenImageDenoise.dll").is_file() {
+        // AI 降噪：优先使用随安装包提供的组件，其次使用下载副本。
+        if options["denoise"].as_bool().unwrap_or(false) && options["ao"].as_bool().unwrap_or(false)
+        {
+            let Some(bin) = resolve_oidn_dir(&app)? else {
                 return Err("AI 降噪组件未下载，请先在烘焙设置中下载降噪组件。".into());
-            }
+            };
             options["oidnDir"] = json!(bin.display().to_string());
         }
         let model_path = MODELS
@@ -257,11 +266,10 @@ pub async fn bake_start(
             .ok_or("模型句柄已失效，请重新导入")?
             .path()
             .join("model.json");
-        // 结果先缓存到应用数据目录（每次烘焙清空旧缓存），用户在结果页
-        // 手动导出到目标文件夹。
+        // 每次任务独占目录。旧结果由结果句柄持有，直到前端完成原子切换后释放。
         let root = bake_cache_root(&app)?;
-        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        prune_bake_cache(&root);
         let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
         let output = root.join(format!("AIAS_bake_{}", id()));
         std::fs::create_dir(&output).map_err(|e| e.to_string())?;
@@ -308,8 +316,8 @@ pub async fn bake_start(
             .lock()
             .map_err(|_| "任务状态锁损坏")?
             .remove(&job_id);
-        match response {
-            Ok(data) => Ok(data),
+        let mut data = match response {
+            Ok(data) => data,
             Err(error) => {
                 let mut data = std::fs::read(output.join("result.json"))
                     .ok()
@@ -324,15 +332,29 @@ pub async fn bake_start(
                     .push(json!(error));
                 let mut unfinished = Vec::new();
                 for material in options["materials"].as_array().into_iter().flatten() {
-                    for kind in ["ao", "uv", "id"] {
+                    for kind in [
+                        "ao",
+                        "normal",
+                        "worldNormal",
+                        "curvature",
+                        "position",
+                        "thickness",
+                        "id",
+                        "uv",
+                    ] {
+                        let output_kind = if kind == "worldNormal" {
+                            "world_normal"
+                        } else {
+                            kind
+                        };
                         if options[kind] == true
                             && !data["files"]
                                 .as_array()
                                 .into_iter()
                                 .flatten()
-                                .any(|f| f["material"] == *material && f["kind"] == kind)
+                                .any(|f| f["material"] == *material && f["kind"] == output_kind)
                         {
-                            unfinished.push(json!({"material":material,"kind":kind}));
+                            unfinished.push(json!({"material":material,"kind":output_kind}));
                         }
                     }
                 }
@@ -358,9 +380,16 @@ pub async fn bake_start(
                     w.write_all(&serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())
                 })?;
-                Ok(data)
+                data
             }
-        }
+        };
+        let result_handle = id();
+        RESULTS
+            .lock()
+            .map_err(|_| "结果状态锁损坏")?
+            .insert(result_handle.clone(), output);
+        data["resultHandle"] = json!(result_handle);
+        Ok(data)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -392,15 +421,11 @@ pub async fn bake_inspect(
         .map_err(|e| e.to_string())?;
         execute(
             &app,
-            &[
-                "inspect".as_ref(),
-                temp.path().as_os_str(),
-            "inspect".as_ref(),
-        ],
-        "inspect",
-        None,
-        STALL_QUICK,
-    )
+            &["inspect".as_ref(), temp.path().as_os_str()],
+            "inspect",
+            None,
+            STALL_QUICK,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -424,14 +449,17 @@ const OIDN_ZIP_SIZE: u64 = 28_934_149;
 const OIDN_ZIP_SHA256: &str = "5cc8bcc2a3321ef32547c3be70d43878a41324718cabdfb151b332a2a4928297";
 const OIDN_MODEL_ID: &str = "oidn";
 /// CPU 降噪所需文件（其余 cuda/hip/sycl 设备与基准工具不下载）。
+const OIDN_REQUIRED: &[&str] = &[
+    "OpenImageDenoise.dll",
+    "OpenImageDenoise_core.dll",
+    "OpenImageDenoise_device_cpu.dll",
+    "tbb12.dll",
+];
 const OIDN_EXTRACT: &[&str] = &[
     "oidn-2.2.2.x64.windows/bin/OpenImageDenoise.dll",
     "oidn-2.2.2.x64.windows/bin/OpenImageDenoise_core.dll",
     "oidn-2.2.2.x64.windows/bin/OpenImageDenoise_device_cpu.dll",
     "oidn-2.2.2.x64.windows/bin/tbb12.dll",
-    "oidn-2.2.2.x64.windows/bin/tbbbind.dll",
-    "oidn-2.2.2.x64.windows/bin/tbbbind_2_0.dll",
-    "oidn-2.2.2.x64.windows/bin/tbbbind_2_5.dll",
     "oidn-2.2.2.x64.windows/doc/LICENSE.txt",
 ];
 const OIDN_URLS: &[&str] = &[
@@ -446,10 +474,22 @@ pub(crate) fn oidn_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("无法定位应用数据目录：{error}"))
 }
 
-pub(crate) fn oidn_installed(app: &AppHandle) -> bool {
-    oidn_bin_dir(app)
-        .map(|dir| dir.join("OpenImageDenoise.dll").is_file())
-        .unwrap_or(false)
+fn oidn_dir_complete(dir: &Path) -> bool {
+    OIDN_REQUIRED.iter().all(|name| dir.join(name).is_file())
+}
+
+fn resolve_oidn_dir(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("无法定位资源目录：{e}"))?
+        .join("bake")
+        .join("oidn");
+    if oidn_dir_complete(&bundled) {
+        return Ok(Some(bundled));
+    }
+    let downloaded = oidn_bin_dir(app)?;
+    Ok(oidn_dir_complete(&downloaded).then_some(downloaded))
 }
 
 fn sha256_of_file(path: &Path) -> Result<String, String> {
@@ -482,16 +522,29 @@ fn progress_oidn(app: &AppHandle, completed: u64, total: u64, file: &str) {
 
 #[tauri::command]
 pub(crate) async fn oidn_status(app: AppHandle) -> Result<serde_json::Value, String> {
-    let installed = oidn_installed(&app);
-    Ok(json!({ "installed": installed }))
+    let resolved = resolve_oidn_dir(&app)?;
+    let downloaded = oidn_bin_dir(&app)?;
+    let source = resolved.as_ref().map(|path| {
+        if *path == downloaded {
+            "downloaded"
+        } else {
+            "bundled"
+        }
+    });
+    Ok(json!({ "installed": resolved.is_some(), "source": source, "version": OIDN_VERSION }))
 }
 
 #[tauri::command]
 pub(crate) async fn oidn_install(app: AppHandle) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let bin = oidn_bin_dir(&app)?.join("bin");
-        if bin.join("OpenImageDenoise.dll").is_file() {
-            return Ok(json!({ "installed": true }));
+        if let Some(path) = resolve_oidn_dir(&app)? {
+            let downloaded = oidn_bin_dir(&app)?;
+            let source = if path == downloaded {
+                "downloaded"
+            } else {
+                "bundled"
+            };
+            return Ok(json!({ "installed": true, "source": source, "version": OIDN_VERSION }));
         }
         let tmp = tempfile::Builder::new()
             .prefix("aias-oidn-")
@@ -518,13 +571,14 @@ pub(crate) async fn oidn_install(app: AppHandle) -> Result<serde_json::Value, St
             let _ = fs::remove_file(&archive);
             return Err("降噪组件校验失败（SHA256 不匹配），请重试下载。".into());
         }
-        std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+        let extract_root = tmp.path().join("extract");
+        std::fs::create_dir_all(&extract_root).map_err(|e| e.to_string())?;
         for entry in OIDN_EXTRACT {
             let output = crate::safety::quiet_command("tar")
                 .arg("-xf")
                 .arg(&archive)
                 .arg("-C")
-                .arg(&bin)
+                .arg(&extract_root)
                 .arg(entry)
                 .output()
                 .map_err(|error| format!("无法启动 tar 解压：{error}"))?;
@@ -535,11 +589,39 @@ pub(crate) async fn oidn_install(app: AppHandle) -> Result<serde_json::Value, St
                 ));
             }
         }
-        fs::rename(bin.join("doc").join("LICENSE.txt"), bin.join("OIDN-LICENSE.txt"))
-            .or_else(|_| fs::copy(bin.join("doc").join("LICENSE.txt"), bin.join("OIDN-LICENSE.txt")).map(|_| ()))
-            .map_err(|e| e.to_string())?;
+        let source_root = extract_root.join(format!("oidn-{OIDN_VERSION}.x64.windows"));
+        let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&app_data).map_err(|e| e.to_string())?;
+        let staging = app_data.join(format!("oidn-install-{}", id()));
+        let staging_bin = staging.join("bin");
+        std::fs::create_dir_all(&staging_bin).map_err(|e| e.to_string())?;
+        for name in OIDN_REQUIRED {
+            fs::copy(source_root.join("bin").join(name), staging_bin.join(name))
+                .map_err(|e| format!("复制 {name} 失败：{e}"))?;
+        }
+        fs::copy(
+            source_root.join("doc").join("LICENSE.txt"),
+            staging.join("OIDN-LICENSE.txt"),
+        )
+        .map_err(|e| e.to_string())?;
+        if !oidn_dir_complete(&staging_bin) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err("降噪组件文件不完整".into());
+        }
+        let target = app_data.join("oidn");
+        let backup = app_data.join(format!("oidn-backup-{}", id()));
+        if target.exists() {
+            fs::rename(&target, &backup).map_err(|e| format!("无法替换旧降噪组件：{e}"))?;
+        }
+        if let Err(error) = fs::rename(&staging, &target) {
+            if backup.exists() {
+                let _ = fs::rename(&backup, &target);
+            }
+            return Err(format!("安装降噪组件失败：{error}"));
+        }
+        let _ = fs::remove_dir_all(&backup);
         let _ = fs::remove_file(&archive);
-        Ok(json!({ "installed": true }))
+        Ok(json!({ "installed": true, "source": "downloaded", "version": OIDN_VERSION }))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -569,11 +651,56 @@ pub fn bake_release(handle: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn bake_result_release(result_handle: String) -> Result<(), String> {
+    let path = RESULTS
+        .lock()
+        .map_err(|_| "结果状态锁损坏")?
+        .remove(&result_handle);
+    if let Some(path) = path {
+        let _ = std::fs::remove_dir_all(path);
+    }
+    Ok(())
+}
+
 fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|dir| dir.join("bake-cache"))
         .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+fn prune_bake_cache(root: &Path) {
+    let retained: std::collections::HashSet<PathBuf> = RESULTS
+        .lock()
+        .ok()
+        .map(|results| results.values().cloned().collect())
+        .unwrap_or_default();
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(24 * 60 * 60))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if retained.contains(&path) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|modified| modified < cutoff);
+        if stale {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+pub(crate) fn prune_stale_cache_on_startup(app: &AppHandle) {
+    if let Ok(root) = bake_cache_root(app) {
+        if root.is_dir() {
+            prune_bake_cache(&root);
+        }
+    }
 }
 
 /// 把缓存目录内的贴图复制到用户选择的目标文件夹。源必须位于缓存目录内，
@@ -607,9 +734,8 @@ fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result
         let name = source
             .file_name()
             .ok_or_else(|| format!("无效的文件名：{}", source.display()))?;
-        std::fs::copy(&source, directory.join(name)).map_err(|error| {
-            format!("导出 {} 失败：{error}", name.to_string_lossy())
-        })?;
+        std::fs::copy(&source, directory.join(name))
+            .map_err(|error| format!("导出 {} 失败：{error}", name.to_string_lossy()))?;
         exported += 1;
     }
     Ok(exported)
@@ -618,15 +744,40 @@ fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result
 #[tauri::command]
 pub async fn bake_export(
     app: AppHandle,
-    files: Vec<String>,
+    files: Option<Vec<String>>,
+    result_handle: Option<String>,
     directory: String,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // 持任务锁：否则"导出期间开始烘焙"会清空缓存，导出到一半报文件不存在。
-        let _guard = crate::safety::task_guard()?;
         if directory.trim().is_empty() {
             return Err("请选择导出目标文件夹。".into());
         }
+        // 结果目录彼此独立，导出可以和新烘焙并行。句柄锁保留到复制完成，
+        // 避免前端在新结果切换时释放正在导出的旧目录。
+        let retained_results = result_handle
+            .as_ref()
+            .map(|_| RESULTS.lock().map_err(|_| "结果状态锁损坏"))
+            .transpose()?;
+        let files = if let Some(handle) = result_handle {
+            let result_dir = retained_results
+                .as_ref()
+                .and_then(|results| results.get(&handle))
+                .cloned()
+                .ok_or("烘焙结果已释放，请重新烘焙")?;
+            let result: Value = serde_json::from_reader(std::io::BufReader::new(
+                std::fs::File::open(result_dir.join("result.json")).map_err(|e| e.to_string())?,
+            ))
+            .map_err(|e| e.to_string())?;
+            result["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(result["artifacts"].as_array().into_iter().flatten())
+                .filter_map(|item| item["path"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        } else {
+            files.unwrap_or_default()
+        };
         if files.is_empty() {
             return Err("没有可导出的贴图。".into());
         }
@@ -640,7 +791,8 @@ pub async fn bake_export(
 }
 
 #[cfg(feature = "bake-validation")]
-pub fn validation_fault(job: &str, suspend: bool) -> Result<(), String> {    type Handle = *mut std::ffi::c_void;
+pub fn validation_fault(job: &str, suspend: bool) -> Result<(), String> {
+    type Handle = *mut std::ffi::c_void;
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
@@ -707,8 +859,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(exported, 2);
-        assert_eq!(std::fs::read(output.path().join("1_ao.png")).unwrap(), b"ao");
-        assert_eq!(std::fs::read(output.path().join("1_uv.png")).unwrap(), b"uv");
+        assert_eq!(
+            std::fs::read(output.path().join("1_ao.png")).unwrap(),
+            b"ao"
+        );
+        assert_eq!(
+            std::fs::read(output.path().join("1_uv.png")).unwrap(),
+            b"uv"
+        );
 
         let rejected = export_files(
             cache.path(),
@@ -746,6 +904,21 @@ mod tests {
         export_files(cache.path(), &[file.display().to_string()], output.path()).unwrap();
         std::fs::write(&file, b"second").unwrap();
         export_files(cache.path(), &[file.display().to_string()], output.path()).unwrap();
-        assert_eq!(std::fs::read(output.path().join("2_id.png")).unwrap(), b"second");
+        assert_eq!(
+            std::fs::read(output.path().join("2_id.png")).unwrap(),
+            b"second"
+        );
+    }
+
+    #[test]
+    fn oidn_requires_the_complete_runtime_set() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(!oidn_dir_complete(directory.path()));
+        for name in OIDN_REQUIRED {
+            std::fs::write(directory.path().join(name), b"dll").unwrap();
+        }
+        assert!(oidn_dir_complete(directory.path()));
+        std::fs::remove_file(directory.path().join("tbb12.dll")).unwrap();
+        assert!(!oidn_dir_complete(directory.path()));
     }
 }

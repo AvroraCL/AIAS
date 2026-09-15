@@ -200,14 +200,19 @@ pub fn upscale_with_progress(
     let scale = scale.clamp(2, 4);
     on_progress(0, 1, "正在准备推理运行库");
     crate::anime::ensure_ort_runtime_with(base, &|done, total| {
-        let percent = if total > 0 { (done as f64 / total as f64 * 100.0).round() as u64 } else { 0 };
+        let percent = if total > 0 {
+            (done as f64 / total as f64 * 100.0).round() as u64
+        } else {
+            0
+        };
         on_progress(0, 1, &format!("正在下载推理运行库 {percent}%"));
     })?;
     superres_spec(id)?;
     // 与抠图家族跨功能互斥：清掉全部动漫会话，只保留当前超分模型的槽位
     // （GPU/CPU 两个）；切换功能后首次推理重建会话，与动漫家族取舍一致。
     crate::anime::prune_sessions(crate::anime::SessionKeep::Superres(id));
-    let (input_w, input_h) = image::image_dimensions(input).map_err(crate::anime::to_string_error)?;
+    let (input_w, input_h) =
+        image::image_dimensions(input).map_err(crate::anime::to_string_error)?;
     // 4x 中间缓冲（每像素 4 字节）+ 终图 + PNG 编码并存，按 8 字节/像素预留。
     crate::safety::memory_budget(input_w, input_h, 128 + u64::from(scale * scale) * 8)?;
     on_progress(0, 1, "正在读取图片");
@@ -226,12 +231,29 @@ pub fn upscale_with_progress(
     }
 
     retry_tiles(|use_gpu, tile_size| {
-        let phase = if !use_gpu { "显存不足，切换 CPU 重试（64px 分块）".to_string() }
-            else if tile_size < 256 { format!("显存不足，缩小为 {tile_size}px 分块重试") }
-            else { "正在加载超分模型".to_string() };
+        let phase = if !use_gpu {
+            "显存不足，切换 CPU 重试（64px 分块）".to_string()
+        } else if tile_size < 256 {
+            format!("显存不足，缩小为 {tile_size}px 分块重试")
+        } else {
+            "正在加载超分模型".to_string()
+        };
         on_progress(0, 1, &phase);
-        let result = try_upscale_with(base, id, &image, output, use_gpu, scale, tile_size, on_progress);
-        if result.as_ref().err().is_some_and(|error| is_gpu_oom_error(error)) {
+        let result = try_upscale_with(
+            base,
+            id,
+            &image,
+            output,
+            use_gpu,
+            scale,
+            tile_size,
+            on_progress,
+        );
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| is_gpu_oom_error(error))
+        {
             release_session(id);
         }
         result
@@ -274,7 +296,9 @@ fn try_upscale_with(
     let out_w = w as usize * 4;
     let out_h = h as usize * 4;
     let mut result = Vec::new();
-    result.try_reserve_exact(out_w * out_h * 4).map_err(|_| "超分输出缓冲内存不足".to_string())?;
+    result
+        .try_reserve_exact(out_w * out_h * 4)
+        .map_err(|_| "超分输出缓冲内存不足".to_string())?;
     result.resize(out_w * out_h * 4, 0_u8);
     // 不透明的图直接按不透明输出；带透明的图由后面的 Alpha 推理填充。
     let has_alpha = image.pixels().any(|pixel| pixel[3] != 255);
@@ -290,62 +314,102 @@ fn try_upscale_with(
     // Reserve one unit each for final resize and PNG save.
     let total_units = tile_count * (if has_alpha { 2 } else { 1 }) + 2;
     let report = |done_units: usize| {
-        let phase = if done_units == total_units { "已保存".to_string() }
-            else if done_units + 1 == total_units { "正在保存 PNG".to_string() }
-            else if done_units + 2 == total_units { "正在调整输出尺寸".to_string() }
-            else if done_units >= tile_count && has_alpha { format!("处理透明通道 · 分块 {}/{}", done_units - tile_count, tile_count) }
-            else { format!("处理颜色细节 · 分块 {done_units}/{tile_count}") };
+        let phase = if done_units == total_units {
+            "已保存".to_string()
+        } else if done_units + 1 == total_units {
+            "正在保存 PNG".to_string()
+        } else if done_units + 2 == total_units {
+            "正在调整输出尺寸".to_string()
+        } else if done_units >= tile_count && has_alpha {
+            format!(
+                "处理透明通道 · 分块 {}/{}",
+                done_units - tile_count,
+                tile_count
+            )
+        } else {
+            format!("处理颜色细节 · 分块 {done_units}/{tile_count}")
+        };
         on_progress(done_units.min(total_units), total_units, &phase);
     };
 
     report(0);
     // RGB 通道
-    run_pass(&cache_key, image, tile_size, |pixel| {
-        [pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0, pixel[2] as f32 / 255.0]
-    }, |tile| {
-        // 输出行互不重叠，逐行并行写回；每槽位算术与串行版一致。
-        let cols = tile.core_w.min(out_w - tile.dst_x);
-        let rows = tile.core_h.min(out_h - tile.dst_y);
-        let band = &mut result[tile.dst_y * out_w * 4..][..rows * out_w * 4];
-        band.par_chunks_mut(out_w * 4).enumerate().for_each(|(row, line)| {
-            let src_row = (row + tile.crop_t) * tile.stride + tile.crop_l;
-            for col in 0..cols {
-                let src = src_row + col;
-                let slot = (tile.dst_x + col) * 4;
-                line[slot] = (tile.data[src] * 255.0).round().clamp(0.0, 255.0) as u8;
-                line[slot + 1] = (tile.data[tile.plane + src] * 255.0).round().clamp(0.0, 255.0) as u8;
-                line[slot + 2] = (tile.data[2 * tile.plane + src] * 255.0).round().clamp(0.0, 255.0) as u8;
-            }
-        });
-    }, &report)?;
-
-    // Alpha 通道（仅当存在透明像素）
-    if has_alpha {
-        run_pass(&cache_key, image, tile_size, |pixel| {
-            let alpha = pixel[3] as f32 / 255.0;
-            [alpha, alpha, alpha]
-        }, |tile| {
+    run_pass(
+        &cache_key,
+        image,
+        tile_size,
+        |pixel| {
+            [
+                pixel[0] as f32 / 255.0,
+                pixel[1] as f32 / 255.0,
+                pixel[2] as f32 / 255.0,
+            ]
+        },
+        |tile| {
+            // 输出行互不重叠，逐行并行写回；每槽位算术与串行版一致。
             let cols = tile.core_w.min(out_w - tile.dst_x);
             let rows = tile.core_h.min(out_h - tile.dst_y);
             let band = &mut result[tile.dst_y * out_w * 4..][..rows * out_w * 4];
-            band.par_chunks_mut(out_w * 4).enumerate().for_each(|(row, line)| {
-                let src_row = (row + tile.crop_t) * tile.stride + tile.crop_l;
-                for col in 0..cols {
-                    let src = src_row + col;
-                    line[(tile.dst_x + col) * 4 + 3] =
-                        (tile.data[src] * 255.0).round().clamp(0.0, 255.0) as u8;
-                }
-            });
-        }, &|done| report(tile_count + done))?;
+            band.par_chunks_mut(out_w * 4)
+                .enumerate()
+                .for_each(|(row, line)| {
+                    let src_row = (row + tile.crop_t) * tile.stride + tile.crop_l;
+                    for col in 0..cols {
+                        let src = src_row + col;
+                        let slot = (tile.dst_x + col) * 4;
+                        line[slot] = (tile.data[src] * 255.0).round().clamp(0.0, 255.0) as u8;
+                        line[slot + 1] = (tile.data[tile.plane + src] * 255.0)
+                            .round()
+                            .clamp(0.0, 255.0) as u8;
+                        line[slot + 2] = (tile.data[2 * tile.plane + src] * 255.0)
+                            .round()
+                            .clamp(0.0, 255.0) as u8;
+                    }
+                });
+        },
+        &report,
+    )?;
+
+    // Alpha 通道（仅当存在透明像素）
+    if has_alpha {
+        run_pass(
+            &cache_key,
+            image,
+            tile_size,
+            |pixel| {
+                let alpha = pixel[3] as f32 / 255.0;
+                [alpha, alpha, alpha]
+            },
+            |tile| {
+                let cols = tile.core_w.min(out_w - tile.dst_x);
+                let rows = tile.core_h.min(out_h - tile.dst_y);
+                let band = &mut result[tile.dst_y * out_w * 4..][..rows * out_w * 4];
+                band.par_chunks_mut(out_w * 4)
+                    .enumerate()
+                    .for_each(|(row, line)| {
+                        let src_row = (row + tile.crop_t) * tile.stride + tile.crop_l;
+                        for col in 0..cols {
+                            let src = src_row + col;
+                            line[(tile.dst_x + col) * 4 + 3] =
+                                (tile.data[src] * 255.0).round().clamp(0.0, 255.0) as u8;
+                        }
+                    });
+            },
+            &|done| report(tile_count + done),
+        )?;
     }
 
-    let framed = image::RgbaImage::from_raw(w * 4, h * 4, result)
-        .ok_or("超分输出缓冲尺寸无效")?;
+    let framed = image::RgbaImage::from_raw(w * 4, h * 4, result).ok_or("超分输出缓冲尺寸无效")?;
     // 模型只会输出 4x；其余倍率在 4x 结果上做一次 Lanczos 重采样。
     let final_image = if scale == 4 {
         framed
     } else {
-        image::imageops::resize(&framed, w * scale, h * scale, image::imageops::FilterType::Lanczos3)
+        image::imageops::resize(
+            &framed,
+            w * scale,
+            h * scale,
+            image::imageops::FilterType::Lanczos3,
+        )
     };
     report(total_units - 1);
     crate::safety::atomic_write(output, |writer| {
@@ -356,7 +420,13 @@ fn try_upscale_with(
             image::codecs::png::CompressionType::Fast,
             image::codecs::png::FilterType::Adaptive,
         )
-        .write_image(final_image.as_raw(), final_image.width(), final_image.height(), image::ExtendedColorType::Rgba8).map_err(crate::anime::to_string_error)
+        .write_image(
+            final_image.as_raw(),
+            final_image.width(),
+            final_image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(crate::anime::to_string_error)
     })?;
     report(total_units);
     Ok(())
@@ -418,8 +488,9 @@ fn run_pass(
             let tw = (pad_x1 - pad_x0) as usize;
             let th = (pad_y1 - pad_y0) as usize;
 
-            let tile = image::imageops::crop_imm(image, pad_x0, pad_y0, pad_x1 - pad_x0, pad_y1 - pad_y0)
-                .to_image();
+            let tile =
+                image::imageops::crop_imm(image, pad_x0, pad_y0, pad_x1 - pad_x0, pad_y1 - pad_y0)
+                    .to_image();
             let mut input = vec![0_f32; 3 * tw * th];
             for (index, pixel) in tile.pixels().enumerate() {
                 let channels = sample(pixel);
@@ -427,8 +498,8 @@ fn run_pass(
                 input[tw * th + index] = channels[1];
                 input[2 * tw * th + index] = channels[2];
             }
-            let tensor =
-                Tensor::from_array((vec![1_usize, 3, th, tw], input)).map_err(crate::anime::to_string_error)?;
+            let tensor = Tensor::from_array((vec![1_usize, 3, th, tw], input))
+                .map_err(crate::anime::to_string_error)?;
             let outputs = session
                 .run(ort::inputs![input_name.as_str() => tensor])
                 .map_err(crate::anime::to_string_error)?;
@@ -477,8 +548,13 @@ mod tests {
         let mut seen = Vec::new();
         retry_tiles(|gpu, tile| {
             seen.push((gpu, tile));
-            if gpu { Err("out of memory".into()) } else { Ok(()) }
-        }).unwrap();
+            if gpu {
+                Err("out of memory".into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
         assert_eq!(seen, [(true, 256), (true, 128), (true, 64), (false, 64)]);
     }
 
@@ -487,11 +563,20 @@ mod tests {
         let mut seen = Vec::new();
         retry_tiles(|gpu, tile| {
             seen.push((gpu, tile));
-            if tile == 256 { Err("out of memory".into()) } else { Ok(()) }
-        }).unwrap();
+            if tile == 256 {
+                Err("out of memory".into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
         assert_eq!(seen, [(true, 256), (true, 128)]);
         let mut calls = 0;
-        let error = retry_tiles(|_, _| { calls += 1; Err("invalid tensor".into()) }).unwrap_err();
+        let error = retry_tiles(|_, _| {
+            calls += 1;
+            Err("invalid tensor".into())
+        })
+        .unwrap_err();
         assert_eq!(calls, 1);
         assert_eq!(error, "invalid tensor");
     }
@@ -499,7 +584,11 @@ mod tests {
     #[test]
     fn superres_reports_exhausted_memory_retries() {
         let mut calls = 0;
-        let error = retry_tiles(|_, _| { calls += 1; Err("out of memory".into()) }).unwrap_err();
+        let error = retry_tiles(|_, _| {
+            calls += 1;
+            Err("out of memory".into())
+        })
+        .unwrap_err();
         assert_eq!(calls, 4);
         assert!(error.contains("内存不足"));
     }

@@ -17,6 +17,7 @@
 .bake-floating-button:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
 .bake-floating-button.active { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
 .bake-floating-button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.bake-workspace button.busy::before { content: ''; width: 12px; height: 12px; flex: 0 0 12px; box-sizing: border-box; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .bake-import-button { min-width: auto; padding-inline: 13px; border-color: var(--accent); color: #0d0d0f; background: var(--accent); }
 .bake-import-button:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
 
@@ -98,6 +99,9 @@
 .bake-display-tools { position: absolute; z-index: 6; top: 68px; left: var(--bake-left); display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; }
 .bake-display-tools[hidden] { display: none; }
 .bake-display-tools > button { border-color: transparent; }
+.bake-map-preview-control { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 5px 0 8px; border-right: 1px solid var(--border); color: var(--text-dim); font-size: 10px; white-space: nowrap; }
+.bake-map-preview-control select { width: 118px; min-height: 26px; padding: 3px 22px 3px 7px; border-color: transparent; background-color: var(--surface-raised); color: var(--text-soft); font-size: 11px; }
+.bake-map-preview-control select:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
 .bake-display-menu { position: relative; }
 .bake-display-menu summary { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; cursor: pointer; font-size: 11px; list-style: none; }
 .bake-display-menu svg { width: 15px; height: 15px; }
@@ -105,6 +109,20 @@
 .bake-display-menu button { text-align: left; padding: 8px 12px; border: 0; background: transparent; }
 .bake-display-menu button[aria-pressed=true]::after { content: '✓'; float: right; }
 .bake-display-menu button:hover { background: var(--surface-hover); }
+.bake-live-progress { position: absolute; z-index: 7; right: var(--bake-right); bottom: 92px; left: var(--bake-left); width: auto; max-width: 540px; margin: 0 auto; padding: 13px 15px 12px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface-raised); pointer-events: none; }
+.bake-live-progress[hidden] { display: none; }
+.bake-live-heading { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 10px; }
+.bake-live-heading div { display: grid; min-width: 0; gap: 2px; }
+.bake-live-heading small { color: var(--text-dim); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
+.bake-live-heading strong { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+.bake-live-heading b { color: var(--text-soft); font-size: 15px; font-variant-numeric: tabular-nums; }
+.bake-live-spinner { width: 15px; height: 15px; box-sizing: border-box; border: 2px solid var(--text-dim); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.bake-live-track { height: 4px; margin: 10px 0 8px; overflow: hidden; border-radius: 2px; background: var(--border); }
+.bake-live-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .12s linear; }
+.bake-live-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+.bake-live-stages { display: grid; grid-template-columns: repeat(6,1fr); gap: 4px; margin-top: 9px; }
+.bake-live-stages span { overflow: hidden; padding: 4px 3px; border: 1px solid transparent; border-radius: 4px; color: var(--text-dim); background: var(--surface); font-size: 9px; text-align: center; white-space: nowrap; }
+.bake-live-stages span.active { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
 .bake-viewport-note { position: absolute; bottom: 88px; left: var(--bake-left); right: var(--bake-right); text-align: center; color: var(--text-dim); font-size: 10px; pointer-events: none; }
 .bake-list-actions { display: flex; gap: 8px; margin: 4px 0; }
 .bake-list-actions button { border: 0; padding: 4px 0; color: var(--text-dim); background: transparent; font-size: 10px; }
@@ -150,5 +168,9 @@
   .bake-footer { gap: 10px; }
   .bake-status-panel { max-width: calc(100% - 120px); }
   .bake-run-actions { flex-wrap: wrap; justify-content: end; }
+  .bake-map-preview-control { font-size: 0; padding-left: 4px; }
+  .bake-map-preview-control select { width: 102px; font-size: 10px; }
+  .bake-live-progress { right: 16px; left: 16px; }
+  .bake-live-stages { grid-template-columns: repeat(3,1fr); }
 }
 #view-model-bake { container: bake / inline-size; }

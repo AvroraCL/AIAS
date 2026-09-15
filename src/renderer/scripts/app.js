@@ -106,7 +106,7 @@ const modeMeta = {
   "ascii-dot": { title: "波点", description: "将图片按亮度映射为半调圆点，支持原图颜色与透明底，导出 PNG" },
   "ascii-hatch": { title: "线条款描", description: "用不同角度的平行排线表现明暗，铜版画/素描风格，支持原图颜色与透明底" },
   "normal-map": { title: "生成法线图", description: "从素材高度变化生成法线贴图，支持可移动光照预览" },
-  "model-bake": { title: "模型烘焙", description: "检查模型 UV，使用 GPU 按材质烘焙 AO、UV 布局与材质 ID" },
+  "model-bake": { title: "模型烘焙", description: "生成 AO、曲率、世界法线等智能材质 Mesh Maps，并在模型上检查" },
   "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
   merge: { title: "PBR 多通道合成", description: "生成游戏可用的 _c 与 _n 通道贴图" },
   split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },

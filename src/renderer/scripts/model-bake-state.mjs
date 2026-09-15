@@ -5,10 +5,13 @@ export const bakeWorkspaceDefaults = Object.freeze({
   grid: true,
   axes: true,
   wireframe: false,
+  mapPreview: 'ao',
 });
 
 export const bakeDefaults = Object.freeze({
   device: 0,
+  deviceLuid: '',
+  uvMode: 'preserveValid',
   resolution: 2048,
   samples: 128,
   margin: 16,
@@ -16,7 +19,12 @@ export const bakeDefaults = Object.freeze({
   distanceRatio: 0.1,
   selfOnly: false,
   ao: true,
-  uv: true,
+  normal: true,
+  worldNormal: true,
+  curvature: true,
+  position: true,
+  thickness: true,
+  uv: false,
   id: true,
   denoise: false,
   workspace: bakeWorkspaceDefaults,
@@ -27,9 +35,11 @@ export function restoreBakeSettings(value) {
   const out = { ...bakeDefaults, workspace: { ...bakeWorkspaceDefaults } };
   for (const [key, choices] of [['resolution', [512, 1024, 2048, 4096]], ['samples', [32, 64, 128, 256]], ['bits', [8, 16]]]) if (choices.includes(source[key])) out[key] = source[key];
   if (Number.isInteger(source.device) && source.device >= 0 && source.device < 64) out.device = source.device;
+  if (typeof source.deviceLuid === 'string' && source.deviceLuid.length <= 64) out.deviceLuid = source.deviceLuid;
+  if (['preserveValid', 'regenerateAll', 'strictSource'].includes(source.uvMode)) out.uvMode = source.uvMode;
   if (Number.isInteger(source.margin) && source.margin >= 0 && source.margin <= 128) out.margin = source.margin;
   if (Number.isFinite(source.distanceRatio) && source.distanceRatio > 0) out.distanceRatio = source.distanceRatio;
-  for (const key of ['selfOnly', 'ao', 'uv', 'id', 'denoise']) if (typeof source[key] === 'boolean') out[key] = source[key];
+  for (const key of ['selfOnly', 'ao', 'normal', 'worldNormal', 'curvature', 'position', 'thickness', 'uv', 'id', 'denoise']) if (typeof source[key] === 'boolean') out[key] = source[key];
   const workspace = source.workspace && typeof source.workspace === 'object' ? source.workspace : {};
   for (const key of ['outlinerOpen', 'settingsOpen', 'grid', 'axes', 'wireframe']) {
     if (typeof workspace[key] === 'boolean') out.workspace[key] = workspace[key];
@@ -37,5 +47,6 @@ export function restoreBakeSettings(value) {
   if (workspace.projection === 'perspective' || workspace.projection === 'orthographic') {
     out.workspace.projection = workspace.projection;
   }
+  if (['material', 'ao', 'normal', 'world_normal', 'curvature', 'position', 'thickness', 'id', 'uv'].includes(workspace.mapPreview)) out.workspace.mapPreview = workspace.mapPreview;
   return out;
 }

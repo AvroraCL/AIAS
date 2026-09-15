@@ -5,18 +5,28 @@ import { bakeDefaults as defaults, restoreBakeSettings } from './model-bake-stat
 
 export function createModelBake({ root, desktop, invoke, open, openPath, convertFileSrc, listen, settings, save, busy, withLog, notify, syncSelect = () => {}, progress }) {
   const stored = restoreBakeSettings(settings);
-  let model = null, geometry = null, active = false, running = false, loading = false, disposed = false, job = '', view = 'model';
+  let model = null, geometry = null, active = false, running = false, loading = false, exporting = false, disposed = false, job = '', view = 'model';
   let materials = new Set(), channels = {}, focused = null, results = [];
   let renderer, controls, scene, camera, group, grid, axes, resizeObserver;
-  let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false, oidnReady = false;
+  let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false, oidnReady = false, oidnSource = '';
   let narrowPanel = 'settings';
-  const aoTextures = new Map();
+  const resultTextures = new Map();
+  let previewMaterialRevision = 0, resultTextureEpoch = 0, lastBakeProgress = 0;
   let resultChannels = {};
   let capabilitiesRequested = false;
-  let saveTimer, renderFrame, unlisten, outputDirectory = '', reportRevision = 0, orthographicHeight = 2, renderWidth = 0, renderHeight = 0;
+  let saveTimer, renderFrame, unlisten, outputDirectory = '', resultHandle = '', reportRevision = 0, orthographicHeight = 2, renderWidth = 0, renderHeight = 0;
+  let importRevision = 0, previewRequest = 0, uvDrawRevision = 0;
+  const previewPending = new Map();
+  const previewWorker = typeof Worker === 'function' ? new Worker(new URL('./model-bake-preview-worker.js', import.meta.url), { type: 'module' }) : null;
+  if (previewWorker) previewWorker.onmessage = event => {
+    const pending = previewPending.get(event.data.id);
+    if (!pending) return;
+    previewPending.delete(event.data.id);
+    if (event.data.error) pending.reject(Error(event.data.error)); else pending.resolve(event.data.buffer);
+  };
   let reportTimer, reportPending = false, reportInFlight = false, inFlightSignature = '', lastReportSignature = '';
   const objectBounds = new Map();
-  const scratchPoint = new THREE.Vector3(), scratchSize = new THREE.Vector3();
+  const scratchSize = new THREE.Vector3();
 
   const section = (name, html) => `<section class="bake-control-section"><h3>${name}</h3>${html}</section>`;
   const select = (id, title, entries) => `<label>${title}<select id="bake-${id}" aria-label="${title}">${entries.map(([value, text]) => `<option value="${value}">${text}</option>`).join('')}</select></label>`;
@@ -30,7 +40,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       <div id="bake-empty">
         <span class="bake-empty-glyph"><i data-lucide="box" aria-hidden="true"></i></span>
         <span class="bake-eyebrow">MODEL BAKING</span><h2>从一个模型开始</h2>
-        <p>检查 UV，为每个材质生成 AO、UV 布局与材质 ID。</p>
+        <p>生成智能材质识别所需的 Mesh Maps，并直接在模型上检查结果。</p>
         <button id="bake-empty-import" class="primary-compact" type="button">选择模型</button>
         <small id="bake-entry-note">支持 OBJ、GLB、glTF · 静态三角网格</small>
         <div class="bake-entry-steps"><span>01　导入模型</span><span>02　检查 UV</span><span>03　烘焙贴图</span></div>
@@ -52,7 +62,15 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         </div>
       </header>
 
+      <div id="bake-live-progress" class="bake-live-progress" hidden role="status" aria-live="polite">
+        <div class="bake-live-heading"><span class="bake-live-spinner" aria-hidden="true"></span><div><small>实时烘焙阶段</small><strong id="bake-live-phase">准备烘焙任务</strong></div><b id="bake-live-percent">0%</b></div>
+        <div class="bake-live-track" aria-hidden="true"><span id="bake-live-fill"></span></div>
+        <div class="bake-live-meta"><span id="bake-live-material">正在准备材质</span><span id="bake-live-map">等待 Worker</span></div>
+        <div class="bake-live-stages" aria-label="烘焙阶段"><span data-bake-stage="prepare">准备</span><span data-bake-stage="mesh_map">几何图</span><span data-bake-stage="ao">AO</span><span data-bake-stage="denoise">降噪</span><span data-bake-stage="thickness">厚度</span><span data-bake-stage="finalize">整理</span></div>
+      </div>
+
       <div class="bake-display-tools" aria-label="视图显示工具">
+        <label class="bake-map-preview-control">贴图预览<select id="bake-map-preview" aria-label="模型贴图预览"><option value="ao">环境遮蔽</option><option value="curvature">曲率</option><option value="world_normal">世界空间法线</option><option value="position">位置</option><option value="thickness">厚度</option><option value="normal">切线法线</option><option value="id">材质 ID</option><option value="uv">UV 线框</option><option value="material">着色 + AO</option></select></label>
         <button id="bake-focus" data-bake-display="focus" class="bake-floating-button" type="button" title="聚焦所选对象 · F" aria-label="聚焦所选对象"><i data-lucide="scan" aria-hidden="true"></i></button>
         <button id="bake-reset" data-bake-display="reset" class="bake-floating-button" type="button" title="复位视图" aria-label="复位视图"><i data-lucide="rotate-ccw" aria-hidden="true"></i></button>
         <button id="bake-projection" data-bake-display="projection" class="bake-floating-button" type="button" title="切换透视 / 正交">透视</button>
@@ -74,18 +92,19 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       <aside id="bake-settings-panel" class="bake-float-panel bake-settings-panel" aria-label="烘焙参数">
         <header class="bake-panel-heading"><h2>烘焙参数</h2><button data-bake-panel-toggle="settings" class="bake-floating-button bake-panel-close" type="button" aria-label="收起烘焙参数面板">×</button></header>
         <div class="bake-panel-scroll bake-controls">
-          ${section('01 / 输出贴图', `${check('ao', '环境遮蔽 AO')}${check('uv', 'UV 线框')}${check('id', '材质 ID')}<small id="bake-output-summary">按所选材质分别导出</small>`)}
+          ${section('01 / 智能材质 Mesh Maps', `${check('ao', '环境遮蔽 AO')}${check('curvature', '曲率 Curvature')}${check('worldNormal', '世界空间法线')}${check('position', '位置 Position')}${check('thickness', '厚度 Thickness')}${check('normal', '切线空间法线（同模平面）')}${check('id', '材质 ID')}${check('uv', 'UV 线框（检查用）')}<small id="bake-output-summary">按所选材质分别导出</small>`)}
           ${section('02 / 烘焙质量', `<div class="bake-presets" aria-label="质量预设"><button data-bake-preset="draft" type="button">快速</button><button data-bake-preset="standard" type="button">标准</button><button data-bake-preset="high" type="button">精细</button></div>${select('resolution', '贴图尺寸', [512, 1024, 2048, 4096].map(value => [value, `${value} × ${value}`]))}<small id="bake-quality-note"></small>`)}
           ${section('03 / 导出', `<button id="bake-export" class="secondary-action output-action" data-bake-export type="button"><i data-lucide="download" aria-hidden="true"></i>导出全部贴图</button><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开缓存目录</button><small>结果先缓存在应用数据目录，导出时选择目标文件夹</small>`)}
           <details class="bake-advanced"><summary>高级设置</summary>
+          ${section('UV 工作流', `${select('uvMode', '导入时 UV 处理', [['preserveValid', '智能保留'], ['regenerateAll', '全部重新展开'], ['strictSource', '严格使用源 UV']])}<small>智能保留会优先使用合格源 UV，仅修复缺失、越界、退化或重叠的材质。</small>`)}
           ${section('计算设备', `${select('device', 'GPU', [[0, '检测设备中…']])}<small id="bake-device-note"></small>`)}
-          ${section('AO 与边缘', `${select('samples', 'AO 采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', 'AO 位深', [[8, '8 位线性灰度'], [16, '16 位线性灰度']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>遮蔽距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${check('denoise', 'AI 降噪（去除 AO 噪点）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相遮挡'], ['true', '仅模型自身遮挡']])}<small>按不透明几何计算，不读取透明贴图。</small>`)}
+          ${section('光线追踪与边缘', `${select('samples', 'AO / 厚度采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', '灰度贴图位深', [[8, '8 位线性灰度'], [16, '16 位线性灰度']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>射线距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${check('denoise', 'AI 降噪（仅用于 AO）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相影响'], ['true', '仅同一对象']])}<small>AO 与厚度使用 GPU；其余 Mesh Map 由模型几何直接生成。</small>`)}
           </details>
         </div>
       </aside>
 
       <footer class="bake-footer"><div class="bake-status-panel"><span id="bake-readiness"></span><span id="bake-status" role="status"></span><progress id="bake-progress" max="1" value="0" hidden aria-label="烘焙进度"></progress></div>
-      <div class="bake-run-actions"><button id="bake-cancel" class="secondary-action" type="button" hidden>取消烘焙</button><button id="bake-run" class="run-button hidden" type="button">开始烘焙</button></div></footer>
+      <div class="bake-run-actions"><button id="bake-cancel" class="secondary-action" type="button" hidden><span>取消烘焙</span></button><button id="bake-run" class="run-button hidden" type="button"><span>开始烘焙</span></button></div></footer>
     </div>
   </section>`;
 
@@ -99,7 +118,50 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
 
   let devices = [];
   const presets = { draft: [512, 32], standard: [2048, 128], high: [4096, 256] };
+  const meshMapKeys = ['ao', 'curvature', 'worldNormal', 'position', 'thickness', 'normal', 'id', 'uv'];
   const status = text => { $('status').textContent = text; };
+  const progressMapNames = { ao: '环境遮蔽', curvature: '曲率', world_normal: '世界空间法线', position: '位置', thickness: '厚度', normal: '切线空间法线', id: '材质 ID', uv: 'UV 线框' };
+  function updateBakeProgress(data = {}) {
+    const raw = Math.max(0, Math.min(1, Number(data.progress) || 0));
+    const value = running ? Math.max(lastBakeProgress, raw) : raw;
+    if (running) lastBakeProgress = value;
+    const phase = data.phase || (running ? '准备烘焙任务' : '正在处理…');
+    status(phase);
+    $('progress').value = value;
+    progress?.(value, phase);
+    if (!running) return;
+    const live = $('live-progress');
+    live.hidden = false;
+    $('live-phase').textContent = phase;
+    $('live-percent').textContent = `${Math.round(value * 100)}%`;
+    $('live-fill').style.width = `${(value * 100).toFixed(2)}%`;
+    $('live-material').textContent = data.materialPosition
+      ? `材质 ${data.materialPosition} / ${data.materialTotal}${Number.isInteger(data.material) ? ` · ID ${data.material}` : ''}`
+      : '正在准备全部材质';
+    $('live-map').textContent = data.mapPosition
+      ? `贴图 ${data.mapPosition} / ${data.mapTotal}${data.map ? ` · ${progressMapNames[data.map] || data.map}` : ''}`
+      : '准备输出贴图';
+    let activeStage = data.stage || 'prepare';
+    if (activeStage === 'raster' || activeStage === 'prepare_gpu') activeStage = 'prepare';
+    if (activeStage === 'save') activeStage = data.map === 'ao' ? 'ao' : data.map === 'thickness' ? 'thickness' : 'mesh_map';
+    root.querySelectorAll('[data-bake-stage]').forEach(element => element.classList.toggle('active', element.dataset.bakeStage === activeStage));
+  }
+  const setActionBusy = (button, value) => {
+    if (!button) return;
+    button.classList.toggle('busy', value);
+    button.dataset.busy = String(value);
+    button.setAttribute('aria-busy', String(value));
+    button.disabled = value;
+  };
+  const loadPreview = preview => {
+    const url = convertFileSrc(preview.bufferPath);
+    if (!previewWorker) return fetch(url).then(response => { if (!response.ok) throw Error('无法读取预览数据'); return response.arrayBuffer(); });
+    const id = ++previewRequest;
+    return new Promise((resolve, reject) => {
+      previewPending.set(id, { resolve, reject });
+      previewWorker.postMessage({ id, url, expectedBytes: preview.byteLength });
+    });
+  };
   // 大网格解析/构建前让状态文案先上屏：等两帧覆盖一次绘制；窗口最小化时 rAF
   // 不触发，用 200ms 定时器兜底，避免导入流程停住。
   const nextPaint = () => new Promise(resolve => {
@@ -114,16 +176,21 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
 
   function blocker() {
     if (!desktop) return '请在桌面软件中导入模型并烘焙。';
-    if (running || loading || busy()) return '任务正在运行。';
+    if (running || loading || exporting || busy()) return '任务正在运行。';
     if (inspecting) return '正在检查 UV…';
     if (inspectionError) return 'UV 检查失败，请重新检查后烘焙。';
     if (!model) return '请导入模型。';
     if (!materials.size) return '请选择输出材质。';
-    if (!stored.ao && !stored.uv && !stored.id) return '请选择输出类型。';
+    if (!meshMapKeys.some(key => stored[key])) return '请选择输出类型。';
     if (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0) return '遮蔽距离必须大于 0。';
     if (!Number.isInteger(+$('margin').value) || +$('margin').value < 0 || +$('margin').value > 128) return '边缘扩展应为 0–128 的整数。';
-    if (stored.ao && !devices.find(device => device.index === +stored.device)?.supported) return '当前设备不支持 DXR 1.1 AO。';
-    if (stored.denoise && desktop && !oidnReady) return 'AI 降噪组件未下载，请先点击「下载降噪组件」。';
+    if ((stored.ao || stored.thickness) && !devices.find(device => device.index === +stored.device)?.supported) return '当前设备不支持 DXR 1.1 光线追踪。';
+    if (stored.ao && stored.denoise && desktop && !oidnReady) return 'AI 降噪组件未下载，请先点击「下载降噪组件」。';
+    const invalid = [...materials].find(id => {
+      const material = model?.materials.find(item => item.id === id);
+      return material?.channels.find(channel => channel.channel === (channels[id] ?? 0))?.valid === false;
+    });
+    if (invalid != null && meshMapKeys.some(key => key !== 'uv' && stored[key])) return `材质 ${invalid} 的当前 UV 不合格，请选择自动 UV 或仅导出 UV 线框。`;
     return null;
   }
 
@@ -271,47 +338,148 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (!group) return;
     for (const mesh of [...group.children]) {
       mesh.geometry.dispose();
-      mesh.material.aoMap?.dispose();
       mesh.material.dispose();
       group.remove(mesh);
     }
   }
 
+  function disposePreparedMeshes(meshes) {
+    for (const mesh of meshes || []) {
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    }
+  }
+
+  function createBaseMaterial(aoMap = null) {
+    const material = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.85, side: THREE.DoubleSide, wireframe: stored.workspace.wireframe });
+    if (aoMap) {
+      material.aoMap = aoMap;
+      material.aoMapIntensity = 1.35;
+    }
+    return material;
+  }
+
+  function clearResultTextures() {
+    ++resultTextureEpoch;
+    ++previewMaterialRevision;
+    resultTextures.forEach(texture => {
+      texture.image?.close?.();
+      texture.dispose();
+    });
+    resultTextures.clear();
+  }
+
+  function loadResultTexture(file, usage) {
+    const key = `${usage}:${file.path}`;
+    const cached = resultTextures.get(key);
+    if (cached) return Promise.resolve(cached);
+    const epoch = resultTextureEpoch;
+    const commit = texture => {
+        if (disposed || epoch !== resultTextureEpoch) {
+          texture.image?.close?.();
+          texture.dispose();
+          throw Error('贴图预览已过期');
+        }
+        texture.colorSpace = usage === 'ao' ? THREE.NoColorSpace : THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+        resultTextures.set(key, texture);
+        return texture;
+    };
+    if (typeof createImageBitmap === 'function') {
+      return fetch(convertFileSrc(file.path))
+        .then(response => { if (!response.ok) throw Error(`无法读取贴图（${response.status}）`); return response.blob(); })
+        .then(blob => createImageBitmap(blob, { resizeWidth: 512, resizeHeight: 512, resizeQuality: 'high', imageOrientation: 'flipY' }))
+        .then(bitmap => commit(new THREE.Texture(bitmap)));
+    }
+    return new Promise((resolve, reject) => {
+      new THREE.TextureLoader().load(convertFileSrc(file.path), texture => {
+        try { resolve(commit(texture)); } catch (error) { reject(error); }
+      }, undefined, reject);
+    });
+  }
+
+  async function applyMapPreview(kind = stored.workspace.mapPreview, announce = true, switchView = true) {
+    if (!group || !model || !results.length) return;
+    const mismatched = [...materials].some(id => (resultChannels[id] ?? 0) !== (channels[id] ?? 0));
+    if (mismatched) {
+      status('烘焙结果使用了不同的 UV 通道，请切回烘焙通道后预览。');
+      return;
+    }
+    const revision = ++previewMaterialRevision;
+    const sourceKind = kind === 'material' ? 'ao' : kind;
+    const files = results.filter(file => file.kind === sourceKind);
+    if (kind !== 'material' && !files.length) {
+      status('本次结果没有生成该贴图。');
+      return;
+    }
+    $('map-preview').value = kind;
+    if (announce) status(`正在模型上载入${$('map-preview').selectedOptions[0]?.textContent || '贴图'}…`);
+    const textures = new Map();
+    for (const file of files) {
+      try {
+        textures.set(file.material, await loadResultTexture(file, kind === 'material' ? 'ao' : 'display'));
+      } catch (error) {
+        if (revision === previewMaterialRevision) notify(`贴图预览加载失败：${error}`);
+      }
+      if (revision !== previewMaterialRevision || disposed) return;
+      await nextPaint();
+    }
+    if (revision !== previewMaterialRevision || disposed) return;
+    for (const mesh of group.children) {
+      const texture = textures.get(mesh.userData.material) || null;
+      const previous = mesh.material;
+      mesh.material = kind === 'material'
+        ? createBaseMaterial(texture)
+        : new THREE.MeshBasicMaterial({ map: texture, color: texture ? 0xffffff : 0x2c2d30, side: THREE.DoubleSide, wireframe: stored.workspace.wireframe });
+      previous.dispose();
+    }
+    stored.workspace.mapPreview = kind;
+    if (switchView) setView('model');
+    syncDisplayControls();
+    persist();
+    if (announce) status(kind === 'material' ? '已在模型上显示着色 + AO 预览。' : `正在模型上预览${$('map-preview').selectedOptions[0]?.textContent || '贴图'}。`);
+  }
+
   // 一次性为全部 (对象,材质) 组合建立网格，并按对象预计算包围盒：之后选择变化只切
   // mesh.visible，不再重扫三角形重建几何体（该函数只允许在导入/几何体变化时调用）。
-  function buildMeshes() {
+  async function buildMeshes(revision, nextModel, nextGeometry, nextChannels) {
     init3d();
-    if (!group || !geometry) return;
-    clearMeshes();
-    objectBounds.clear();
-    const batches = new Map();
-    for (const triangle of geometry.triangles) {
-      let bounds = objectBounds.get(triangle.object);
-      if (!bounds) objectBounds.set(triangle.object, bounds = new THREE.Box3());
-      for (const position of triangle.positions) bounds.expandByPoint(scratchPoint.set(position[0], position[1], position[2]));
-      const key = `${triangle.object}:${triangle.material}`;
-      if (!batches.has(key)) batches.set(key, { positions: [], normals: [], uvs: [], material: triangle.material, object: triangle.object });
-      const batch = batches.get(key);
-      const [p0, p1, p2] = triangle.positions;
-      batch.positions.push(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]);
-      const [n0, n1, n2] = triangle.normals;
-      batch.normals.push(n0[0], n0[1], n0[2], n1[0], n1[1], n1[2], n2[0], n2[1], n2[2]);
-      const uv = triangle.uvs[channels[triangle.material] ?? 0] || [[0, 0], [0, 0], [0, 0]];
-      batch.uvs.push(uv[0][0], uv[0][1], uv[1][0], uv[1][1], uv[2][0], uv[2][1]);
-    }
-    for (const batch of batches.values()) {
+    if (!group || !nextGeometry) return { meshes: [], bounds: new Map() };
+    const meshes = [];
+    const bounds = new Map();
+    const modelBounds = new THREE.Box3(new THREE.Vector3(...nextModel.bounds[0]), new THREE.Vector3(...nextModel.bounds[1]));
+    for (const object of nextModel.objects) bounds.set(object.id, modelBounds);
+    let sliceStarted = performance.now();
+    for (const [batchIndex, batch] of nextGeometry.batches.entries()) {
+      if (revision !== importRevision || disposed) {
+        disposePreparedMeshes(meshes);
+        throw Error('导入已被新的模型替代');
+      }
       const meshGeometry = new THREE.BufferGeometry();
-      meshGeometry.setAttribute('position', new THREE.Float32BufferAttribute(batch.positions, 3));
-      meshGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(batch.normals, 3));
-      meshGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(batch.uvs, 2));
-      const material = new THREE.MeshStandardMaterial({ color: 0xb8b8b8, roughness: 0.85, side: THREE.DoubleSide, wireframe: stored.workspace.wireframe });
+      meshGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nextGeometry.buffer, batch.positionOffset, batch.vertexCount * 3), 3));
+      meshGeometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nextGeometry.buffer, batch.normalOffset, batch.vertexCount * 3), 3));
+      const uvOffset = batch.uvOffsets[String(nextChannels[batch.material] ?? 0)];
+      const uv = uvOffset == null ? new Float32Array(batch.vertexCount * 2) : new Float32Array(nextGeometry.buffer, uvOffset, batch.vertexCount * 2);
+      meshGeometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      const material = createBaseMaterial();
       const mesh = new THREE.Mesh(meshGeometry, material);
       mesh.userData.material = batch.material;
       mesh.userData.object = batch.object;
-      const ao = aoTextures.get(`${batch.material}:${channels[batch.material] ?? 0}`);
-      if (ao) { mesh.material.aoMap = ao.clone(); mesh.material.aoMap.needsUpdate = true; }
-      group.add(mesh);
+      mesh.userData.batch = batch;
+      meshes.push(mesh);
+      if (performance.now() - sliceStarted >= 9 || batchIndex === nextGeometry.batches.length - 1) {
+        await nextPaint();
+        sliceStarted = performance.now();
+      }
     }
+    return { meshes, bounds };
+  }
+
+  function installMeshes(prepared) {
+    clearMeshes();
+    objectBounds.clear();
+    for (const [id, bounds] of prepared.bounds) objectBounds.set(id, bounds);
+    for (const mesh of prepared.meshes) group?.add(mesh);
     syncMeshVisibility();
     updateSceneHelpers();
     syncDisplayControls();
@@ -322,34 +490,18 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     for (const mesh of group.children) mesh.visible = materials.has(mesh.userData.material);
   }
 
-  // 通道切换只更新该材质的 uv 属性，并让 AO 贴图随通道失效或恢复（等价于原整表重建）。
+  // 通道切换只更新该材质的 uv 属性；已有结果仍绑定烘焙时的通道。
   function refreshMaterialUv(id) {
     if (!group || !geometry) return;
     const channel = channels[id] ?? 0;
-    const values = new Map();
-    for (const triangle of geometry.triangles) {
-      if (triangle.material !== id) continue;
-      if (!values.has(triangle.object)) values.set(triangle.object, []);
-      const uv = triangle.uvs[channel] || [[0, 0], [0, 0], [0, 0]];
-      values.get(triangle.object).push(uv[0][0], uv[0][1], uv[1][0], uv[1][1], uv[2][0], uv[2][1]);
-    }
-    const ao = aoTextures.get(`${id}:${channel}`);
     for (const mesh of group.children) {
       if (mesh.userData.material !== id) continue;
-      const next = values.get(mesh.userData.object);
-      if (!next) continue;
-      const attribute = mesh.geometry.getAttribute('uv');
-      if (attribute.array.length === next.length) {
-        attribute.array.set(next);
-        attribute.needsUpdate = true;
-      } else {
-        mesh.geometry.setAttribute('uv', new THREE.Float32BufferAttribute(next, 2));
-      }
-      mesh.material.aoMap?.dispose();
-      mesh.material.aoMap = ao ? ao.clone() : null;
-      if (mesh.material.aoMap) mesh.material.aoMap.needsUpdate = true;
-      mesh.material.needsUpdate = true;
+      const batch = mesh.userData.batch;
+      const offset = batch.uvOffsets[String(channel)];
+      const next = offset == null ? new Float32Array(batch.vertexCount * 2) : new Float32Array(geometry.buffer, offset, batch.vertexCount * 2);
+      mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(next, 2));
     }
+    if (results.length) applyMapPreview(stored.workspace.mapPreview, false);
   }
 
   // 取景与网格辅助覆盖整个模型（对象不再参与筛选）。
@@ -436,7 +588,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     focused = id;
     const material = model.materials.find(item => item.id === id);
     $('focused').textContent = `材质 ${id} · ${material.name}`;
-    $('channel').replaceChildren(...material.channels.map(channel => new Option(`UV${channel.channel}`, channel.channel)));
+    $('channel').replaceChildren(...material.channels.map(channel => new Option(channel.generated ? `自动 UV · UV${channel.channel}` : `源 UV${channel.channel}`, channel.channel)));
     $('channel').value = String(channels[id] ?? 0);
     syncSelect($('channel'));
     drawUv();
@@ -446,6 +598,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   function lists() {
     const container = $('materials');
     container.replaceChildren();
+    $('object-count').textContent = `(${model.materials.length})`;
     for (const item of model.materials) {
       const row = document.createElement('div');
       row.className = 'bake-select-row';
@@ -556,6 +709,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   function drawUv(highlight = highlightedTriangle) {
     highlightedTriangle = highlight;
     if (!model || focused === null) return;
+    if (view !== 'uv') { ++uvDrawRevision; return; }
     const canvas = $('uv-canvas');
     const stage = $('stage');
     const safe = getComputedStyle(root.querySelector('.bake-workspace'));
@@ -568,26 +722,34 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     context.fillRect(0, 0, size, size);
     const report = model.materials.find(material => material.id === focused)?.channels.find(channel => channel.channel === (channels[focused] ?? 0));
     const bad = new Set((report?.issues || []).flatMap(issue => [issue.triangle, issue.otherTriangle]).filter(index => index != null));
-    geometry.triangles.forEach((triangle, index) => {
-      if (triangle.material !== focused) return;
-      const uv = triangle.uvs[channels[focused] ?? 0];
-      if (!uv) return;
-      context.beginPath();
-      uv.forEach((point, pointIndex) => {
-        const x = 12 + point[0] * (size - 24);
-        const y = 12 + (1 - point[1]) * (size - 24);
-        if (pointIndex) context.lineTo(x, y);
-        else context.moveTo(x, y);
-      });
-      context.closePath();
-      context.strokeStyle = highlight === index ? '#ffd166' : bad.has(index) ? '#ff6278' : '#a8a8a8';
-      context.lineWidth = highlight === index ? 3 : 1;
-      if (bad.has(index)) {
-        context.fillStyle = '#ff627833';
-        context.fill();
+    const drawRevision = ++uvDrawRevision;
+    const batches = geometry.batches.filter(batch => batch.material === focused && batch.uvOffsets[String(channels[focused] ?? 0)] != null)
+      .map(batch => ({ batch, values: new Float32Array(geometry.buffer, batch.uvOffsets[String(channels[focused] ?? 0)], batch.vertexCount * 2), triangleIds: new Uint32Array(geometry.buffer, batch.triangleOffset, batch.triangleCount) }));
+    let batchIndex = 0, triangle = 0;
+    const drawChunk = () => {
+      if (drawRevision !== uvDrawRevision || view !== 'uv') return;
+      const deadline = performance.now() + 9;
+      while (batchIndex < batches.length && performance.now() < deadline) {
+        const { batch, values, triangleIds } = batches[batchIndex];
+        if (triangle >= batch.triangleCount) { batchIndex++; triangle = 0; continue; }
+        const index = triangleIds[triangle];
+        context.beginPath();
+        for (let point = 0; point < 3; point++) {
+          const base = triangle * 6 + point * 2;
+          const x = 12 + values[base] * (size - 24);
+          const y = 12 + (1 - values[base + 1]) * (size - 24);
+          if (point) context.lineTo(x, y); else context.moveTo(x, y);
+        }
+        context.closePath();
+        context.strokeStyle = highlight === index ? '#ffd166' : bad.has(index) ? '#ff6278' : '#a8a8a8';
+        context.lineWidth = highlight === index ? 3 : 1;
+        if (bad.has(index)) { context.fillStyle = '#ff627833'; context.fill(); }
+        context.stroke();
+        triangle++;
       }
-      context.stroke();
-    });
+      if (batchIndex < batches.length) requestAnimationFrame(drawChunk);
+    };
+    drawChunk();
     const issues = $('issues');
     issues.replaceChildren();
     if (report?.issues?.length) {
@@ -640,7 +802,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   }
 
   function refresh() {
-    const locked = running || loading || busy();
+    const locked = running || loading || exporting || busy();
     root.querySelector('.bake-workspace').classList.toggle('has-model', Boolean(model));
     root.querySelectorAll('input, select, button').forEach(element => {
       const staysInteractive = element.dataset.bakeView || element.dataset.bakeDisplay || element.dataset.bakePanelToggle || element.id === 'bake-cancel';
@@ -655,30 +817,38 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     root.querySelectorAll('[data-bake-view]').forEach(el => el.disabled = el.dataset.bakeView === 'uv' ? !model : el.dataset.bakeView === 'results' ? !results.length : false);
     $('check-uv').disabled = !model || locked || inspecting;
     $('cancel').disabled = cancelling;
-    $('progress').hidden = !running;
-    const count = materials.size * ['ao', 'uv', 'id'].filter(key => stored[key]).length;
+    $('progress').hidden = !(running || loading);
+    $('live-progress').hidden = !running;
+    const count = materials.size * meshMapKeys.filter(key => stored[key]).length;
     $('output-summary').textContent = `${materials.size} 个材质 · 预计 ${count} 张贴图`;
-    $('quality-note').textContent = stored.ao ? `${stored.samples} 次 AO 采样 · ${stored.bits} 位灰度` : 'UV 与 ID 导出不使用 AO 采样';
-    for (const key of ['samples', 'bits', 'device', 'distance', 'selfOnly']) $(key).disabled = locked || !stored.ao;
+    const rayMaps = stored.ao || stored.thickness;
+    $('quality-note').textContent = rayMaps ? `${stored.samples} 次光线采样 · ${stored.bits} 位灰度` : '几何 Mesh Map 不使用光线采样';
+    for (const key of ['samples', 'bits', 'device', 'distance', 'selfOnly']) $(key).disabled = locked || !rayMaps;
     root.querySelectorAll('[data-bake-preset]').forEach(button => {
       const [resolution, samples] = presets[button.dataset.bakePreset];
       button.setAttribute('aria-pressed', String(stored.resolution === resolution && stored.samples === samples));
     });
     const device = devices.find(item => item.index === +stored.device);
     $('ao').disabled = locked || !device?.supported;
-    $('ao').closest('label').title = device?.supported ? '使用 GPU 生成环境遮蔽' : '当前设备不支持 AO，仍可导出 UV 与材质 ID';
-    $('device-note').textContent = !desktop ? '桌面版可检测 DXR 显卡' : device ? `${device.supported ? 'DXR 1.1 可用' : device.reason} · 可用预算 ${(device.availableBytes / 1073741824).toFixed(1)} GiB${[4098, 32902].includes(device.vendor) ? '；按能力支持，待硬件实测' : ''}` : '无合格显卡；仍可导出 UV／ID';
+    $('thickness').disabled = locked || !device?.supported;
+    $('ao').closest('label').title = device?.supported ? '使用 GPU 生成环境遮蔽' : '当前设备不支持 AO';
+    $('thickness').closest('label').title = device?.supported ? '使用 GPU 生成厚度图' : '当前设备不支持厚度图';
+    $('device-note').textContent = !desktop ? '桌面版可检测 DXR 显卡' : device ? `${device.supported ? 'DXR 1.1 可用' : device.reason} · 可用预算 ${(device.availableBytes / 1073741824).toFixed(1)} GiB${[4098, 32902].includes(device.vendor) ? '；按能力支持，待硬件实测' : ''}` : '无合格显卡；仍可导出几何 Mesh Maps';
     const reason = blocker();
     const oidnDownload = $('oidn-download');
     if (oidnDownload) {
-      oidnDownload.hidden = !desktop || !stored.denoise || oidnReady || locked;
+      oidnDownload.hidden = !desktop || !stored.ao || !stored.denoise || oidnReady || locked;
       oidnDownload.disabled = locked;
     }
+    $('oidn-note').textContent = !stored.ao || !stored.denoise ? '' : oidnReady ? (oidnSource === 'bundled' ? '已使用软件内置 OIDN 2.2.2。' : 'OIDN 2.2.2 已就绪。') : '需要下载 OIDN 2.2.2。';
     $('run').disabled = Boolean(reason);
     $('run').title = reason || '';
-    $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : reason || `已就绪 · ${count} 张贴图`;
-    $('open-output').disabled = !desktop || !outputDirectory;
-    root.querySelectorAll('[data-bake-export]').forEach(button => button.disabled = !desktop || !results.length || running);
+    $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : exporting ? '正在导出结果…' : reason || `已就绪 · ${count} 张贴图`;
+    $('open-output').disabled = exporting || !desktop || !outputDirectory;
+    root.querySelectorAll('[data-bake-export]').forEach(button => button.disabled = exporting || !desktop || !results.length);
+    $('map-preview').disabled = locked || !results.length;
+    const resultHint = root.querySelector('.bake-results-toolbar small');
+    if (resultHint?.dataset.baseText) resultHint.textContent = running ? `上次结果 · ${resultHint.dataset.baseText}` : resultHint.dataset.baseText;
     $('cancel').hidden = !running || !active;
     root.querySelectorAll('select').forEach(syncSelect);
   }
@@ -693,70 +863,88 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       devices = (await invoke('bake_capabilities')).devices || [];
       const device = $('device');
       device.replaceChildren();
-      for (const item of devices) device.add(new Option(`${item.name}${item.supported ? '' : '（不支持 AO）'}`, item.index));
+      for (const item of devices) device.add(new Option(`${item.displayName || item.name}${item.supported ? '' : '（不支持 AO）'}`, item.index));
+      const saved = stored.deviceLuid && devices.find(item => item.luid === stored.deviceLuid);
+      if (saved) stored.device = saved.index;
       if (!devices.some(item => item.index === +stored.device)) stored.device = devices.find(item => item.supported)?.index ?? devices[0]?.index ?? 0;
+      stored.deviceLuid = devices.find(item => item.index === +stored.device)?.luid || '';
       device.value = String(stored.device);
       if (!devices.find(item => item.index === +stored.device)?.supported) {
         stored.ao = false;
+        stored.thickness = false;
         $('ao').checked = false;
+        $('thickness').checked = false;
       }
     } catch (error) {
       capabilitiesRequested = false;
       status(String(error));
       $('device').replaceChildren(new Option('设备检测失败', '0'));
       stored.ao = false;
+      stored.thickness = false;
       $('ao').checked = false;
+      $('thickness').checked = false;
     }
     refresh();
   }
 
   async function importModel(path) {
-    if (!desktop || running || loading || busy()) return;
-    loading = true;
-    let pendingModel = null;
+    if (!desktop || running || loading || exporting || busy()) return;
+    loading = true; $('progress').value = 0;
+    const revision = ++importRevision;
+    let pendingModel = null, prepared = null;
     refresh();
     status('正在导入并检查模型…');
     try {
-      const data = await invoke('bake_import', { path });
+      const data = await invoke('bake_import', { path, uvMode: stored.uvMode });
       pendingModel = data;
-      const response = await fetch(convertFileSrc(data.meshPath));
-      if (!response.ok) throw Error('无法读取规范化网格');
-      // 大模型 JSON 在主线程解析需数秒到十数秒：先让状态提示上屏，避免界面被误判为卡死。
-      status('正在解析网格数据（大型模型可能需数秒）…');
+      if (revision !== importRevision || disposed) throw Error('导入已被新的模型替代');
+      status('正在载入紧凑三维预览…');
+      const buffer = await loadPreview(data.preview);
+      if (revision !== importRevision || disposed) throw Error('导入已被新的模型替代');
+      if (!data.materials?.length || !data.objects?.length || !data.preview?.batches?.length || !buffer.byteLength) throw Error('模型没有可用的网格或材质');
+      const nextGeometry = { buffer, batches: data.preview.batches };
+      const nextChannels = Object.fromEntries(data.materials.map(item => [item.id, item.selectedChannel ?? 0]));
+      status('正在建立三维预览…');
       await nextPaint();
-      const mesh = await response.json();
-      if (!data.materials?.length || !data.objects?.length || !mesh.triangles?.length) throw Error('模型没有可用的网格或材质');
-      if (model) await invoke('bake_release', { handle: model.handle });
+      prepared = await buildMeshes(revision, data, nextGeometry, nextChannels);
+      if (revision !== importRevision || disposed) throw Error('导入已被新的模型替代');
+
+      const previousModel = model;
+      const previousResultHandle = resultHandle;
       // 新模型已带全量检查报告：丢弃旧防抖/排队与成功签名，避免把新参数误判为已检查。
       clearTimeout(reportTimer); reportTimer = undefined; reportPending = false; lastReportSignature = '';
       ++reportRevision; inspecting = false; inspectionError = '';
-      aoTextures.forEach(texture => texture.dispose()); aoTextures.clear();
+      clearResultTextures();
       outputDirectory = '';
       model = data;
-      pendingModel = null;
-      geometry = mesh;
+      geometry = nextGeometry;
       highlightedTriangle = null;
       materials = new Set(model.materials.map(item => item.id));
-      channels = Object.fromEntries(model.materials.map(item => [item.id, 0]));
+      channels = nextChannels;
       results = [];
+      resultHandle = '';
       $('results').replaceChildren();
+      installMeshes(prepared); prepared = null;
+      pendingModel = null;
+      if (previousModel) invoke('bake_release', { handle: previousModel.handle }).catch(() => {});
+      if (previousResultHandle) invoke('bake_result_release', { resultHandle: previousResultHandle }).catch(() => {});
       $('model-info').textContent = `${model.name} · ${model.objects.length} 对象 · ${model.triangleCount.toLocaleString()} 三角形`;
       if (model.degenerateFaces > 0) {
         const examples = (model.degenerateExamples || []).join('、');
         notify(`已跳过 ${model.degenerateFaces} 个零面积退化面${examples ? `（${examples}${model.degenerateFaces > (model.degenerateExamples || []).length ? ' 等' : ''}）` : ''}，这些面对烘焙无影响。`);
       }
+      for (const warning of model.warnings || []) notify(warning);
       lists();
       updatePanelState('outliner'); updatePanelState('settings');
-      status('正在建立三维预览…');
-      await nextPaint();
-      buildMeshes();
       resizeRenderer(); reset();
       $('distance').value = String(selectedBounds() * stored.distanceRatio);
       $('distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
       focusMaterial(model.materials[0].id);
       setView('model');
-      status('模型已导入。检查材质 UV 后开始烘焙。');
+      const generated = Object.keys(model.generatedChannels || {}).length;
+      status(generated ? `模型已导入，${generated} 个材质已生成自动 UV。` : '模型已导入，源 UV 检查通过。');
     } catch (error) {
+      if (prepared) disposePreparedMeshes(prepared.meshes);
       if (pendingModel) invoke('bake_release', { handle: pendingModel.handle }).catch(() => {});
       status(`导入失败：${error}`);
       notify(error);
@@ -766,22 +954,28 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
   }
 
-  async function exportResults() {
-    if (!desktop || !results.length || running) return;
+  async function exportResults(button = $('export')) {
+    if (!desktop || !results.length || exporting) return;
+    exporting = true; setActionBusy(button, true); refresh();
     try {
       const directory = await open({ directory: true });
       if (!directory) return;
-      const data = await invoke('bake_export', { files: results.map(file => file.path), directory });
-      status(`已导出 ${data.exported} 张贴图到 ${data.directory}`);
-      notify(`已导出 ${data.exported} 张贴图`);
+      const data = await invoke('bake_export', resultHandle ? { resultHandle, directory } : { files: results.map(file => file.path), directory });
+      status(`已导出 ${data.exported} 个文件到 ${data.directory}`);
+      notify(`已导出 ${data.exported} 个文件`);
     } catch (error) {
       status(`导出失败：${error}`);
       notify(error);
+    } finally {
+      exporting = false; setActionBusy(button, false); refresh();
     }
   }
 
-  function showResults(data) {
+  async function showResults(data) {
+    const previousHandle = resultHandle;
+    clearResultTextures();
     results = data.files || [];
+    resultHandle = data.resultHandle || '';
     resultChannels = { ...channels };
     outputDirectory = data.directory;
     $('results').replaceChildren();
@@ -791,24 +985,27 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     exportButton.className = 'secondary-action'; exportButton.type = 'button';
     exportButton.dataset.bakeExport = '';
     exportButton.textContent = '导出全部贴图';
-    exportButton.onclick = () => exportResults();
+    exportButton.onclick = () => exportResults(exportButton);
     const openCache = document.createElement('button');
     openCache.className = 'secondary-action'; openCache.type = 'button';
     openCache.textContent = '打开缓存目录';
     openCache.onclick = () => openPath(data.directory).catch(notify);
     const hint = document.createElement('small');
-    hint.textContent = '结果缓存在应用数据目录，导出时选择目标文件夹';
+    hint.dataset.baseText = data.artifacts?.some(item => item.kind === 'model') ? '导出包含贴图、清单和匹配自动 UV 的模型' : '结果缓存在应用数据目录，导出时选择目标文件夹';
+    hint.textContent = hint.dataset.baseText;
     toolbar.append(exportButton, openCache, hint);
     $('results').append(toolbar);
     for (const file of results) {
       const card = document.createElement('div');
       card.className = 'bake-result';
       const materialName = model?.materials.find(item => item.id === file.material)?.name;
-      const label = materialName ? `${materialName} · ${file.kind.toUpperCase()}` : `材质 ${file.material} · ${file.kind.toUpperCase()}`;
+      const kindNames = { ao: '环境遮蔽', normal: '切线法线', world_normal: '世界空间法线', curvature: '曲率', position: '位置', thickness: '厚度', id: '材质 ID', uv: 'UV 线框' };
+      const kindName = kindNames[file.kind] || file.kind.toUpperCase();
+      const label = materialName ? `${materialName} · ${kindName}` : `材质 ${file.material} · ${kindName}`;
       const title = document.createElement('p');
       title.textContent = label;
       const image = document.createElement('img');
-      // 一次烘焙最多“材质数×3”张全分辨率贴图（4K 单张解码约 67MB）；
+      // 一次烘焙可能生成“材质数×8”张全分辨率贴图（4K 单张解码约 67MB）；
       // 懒加载把解码推迟到卡片接近视口，避免批量解码的内存尖峰。
       image.loading = 'lazy';
       image.decoding = 'async';
@@ -829,61 +1026,44 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       card.append(preview, title);
       const reveal = document.createElement('button'); reveal.className = 'secondary-action'; reveal.textContent = '打开文件';
       reveal.onclick = () => openPath(file.path).catch(notify); card.append(reveal);
-      if (file.kind === 'ao') {
-        const apply = document.createElement('button');
-        apply.className = 'secondary-action';
-        apply.type = 'button';
-        apply.textContent = '应用 AO 到模型';
-        apply.onclick = () => {
-          if (!group) return;
-          const appliedModel = model;
-          const uvChannel = resultChannels[file.material] ?? 0;
-          if (uvChannel !== (channels[file.material] ?? 0)) { status('请切回烘焙时使用的 UV 通道，再应用该 AO 结果。'); return; }
-          new THREE.TextureLoader().load(convertFileSrc(file.path), texture => {
-            if (disposed || appliedModel !== model || uvChannel !== (channels[file.material] ?? 0)) { texture.dispose(); return; }
-            const key = `${file.material}:${uvChannel}`;
-            aoTextures.get(key)?.dispose(); aoTextures.set(key, texture.clone());
-            texture.colorSpace = THREE.NoColorSpace;
-            for (const mesh of group.children.filter(item => item.userData.material === file.material)) {
-              mesh.material.aoMap?.dispose();
-              mesh.material.aoMap = texture.clone();
-              mesh.material.aoMap.needsUpdate = true;
-              mesh.material.aoMapIntensity = 1;
-              mesh.material.needsUpdate = true;
-            }
-            texture.dispose();
-            setView('model');
-            status('AO 已应用到预览，可切换线框检查。');
-          }, undefined, error => { status('AO 贴图加载失败'); notify(error); });
-        };
-        card.append(apply);
-      }
+      const apply = document.createElement('button');
+      apply.className = 'secondary-action'; apply.type = 'button';
+      apply.textContent = '在模型上预览';
+      apply.onclick = () => applyMapPreview(file.kind);
+      card.append(apply);
       $('results').append(card);
     }
-    setView('results');
-    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
+    if (previousHandle && previousHandle !== resultHandle) invoke('bake_result_release', { resultHandle: previousHandle }).catch(() => {});
+    const defaultPreview = results.some(file => file.kind === 'ao') ? 'ao' : (results.find(file => file.kind !== 'uv')?.kind || 'uv');
+    if (view === 'model') await applyMapPreview(defaultPreview, false, false);
+    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${view === 'model' ? ' · 已更新模型预览' : ' · 当前视图保持不变'}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
   }
 
   $('run').onclick = async () => {
     if (blocker()) return;
     job = crypto.randomUUID();
-    running = true; cancelling = false; $('progress').value = 0;
+    running = true; cancelling = false; lastBakeProgress = 0; $('progress').value = 0;
     refresh();
+    updateBakeProgress({ phase: '准备烘焙任务', stage: 'prepare', progress: 0, materialTotal: materials.size, mapTotal: meshMapKeys.filter(key => stored[key]).length });
     try {
       await withLog('model-bake-log', $('run'), async () => {
-        const types = ['ao', 'uv', 'id'].filter(key => stored[key]);
-        const { workspace, ...options } = stored;
+        const types = meshMapKeys.filter(key => stored[key]);
+        const { workspace, uvMode, deviceLuid, ...options } = stored;
         const data = await invoke('bake_start', {
           handle: model.handle,
           jobId: job,
           options: { ...options, device: +stored.device, objects: model.objects.map(item => item.id), materials: [...materials], channels: { ...channels }, distance: +$('distance').value },
         });
-        showResults(data);
+        if (data.files?.length) await showResults(data);
+        else {
+          if (data.resultHandle) invoke('bake_result_release', { resultHandle: data.resultHandle }).catch(() => {});
+          status(`${data.cancelled ? '烘焙已取消' : '烘焙失败'}，上次结果仍可使用。${data.failures?.length ? ` ${data.failures.join('；')}` : ''}`);
+        }
         return {
           completed: data.files?.length || 0,
           total: materials.size * types.length,
           cancelled: Boolean(data.cancelled),
-          logs: [...(data.files || []).map(file => file.path), ...(data.failures || []), ...(data.cancelled ? ['任务已取消，已完成文件保留。'] : [])],
+          logs: [...(data.files || []).map(file => file.path), ...(data.artifacts || []).map(file => file.path), ...(data.failures || []), ...(data.cancelled ? ['任务已取消，已完成文件保留。'] : [])],
         };
       }, '模型烘焙');
     } finally {
@@ -895,12 +1075,15 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
 
   $('cancel').onclick = async () => {
     if (!running || cancelling) return;
-    cancelling = true; $('cancel').disabled = true; refresh();
+    cancelling = true; setActionBusy($('cancel'), true); refresh();
     try {
       await invoke('bake_cancel', { jobId: job });
       status('正在取消，保留已完整写入的结果…');
+      $('live-phase').textContent = '正在安全取消，已完成文件会保留';
     } catch (error) {
       cancelling = false; notify(error); refresh();
+    } finally {
+      setActionBusy($('cancel'), false); refresh();
     }
   };
   $('import').onclick = async () => {
@@ -911,6 +1094,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   $('reset').onclick = reset;
   $('focus').onclick = () => frameSelection(false);
   $('projection').onclick = () => setProjection(stored.workspace.projection === 'perspective' ? 'orthographic' : 'perspective');
+  $('map-preview').value = stored.workspace.mapPreview;
+  $('map-preview').onchange = () => applyMapPreview($('map-preview').value);
   for (const key of ['wireframe', 'grid', 'axes']) {
     $(key).onclick = () => {
       stored.workspace[key] = !stored.workspace[key];
@@ -925,7 +1110,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     };
   });
   $('open-output').onclick = () => { if (outputDirectory) openPath(outputDirectory).catch(notify); };
-  root.querySelectorAll('[data-bake-export]').forEach(button => { button.onclick = () => exportResults(); });
+  root.querySelectorAll('[data-bake-export]').forEach(button => { button.onclick = () => exportResults(button); });
   $('channel').onchange = () => {
     if (focused === null) return;
     channels[focused] = +$('channel').value;
@@ -947,10 +1132,14 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const element = $(key);
     if (!element || key === 'workspace') continue;
     element.addEventListener('change', () => {
-      stored[key] = element.type === 'checkbox' ? element.checked : key === 'selfOnly' ? element.value === 'true' : +element.value;
+      stored[key] = element.type === 'checkbox' ? element.checked : key === 'selfOnly' ? element.value === 'true' : key === 'uvMode' ? element.value : +element.value;
+      if (key === 'uvMode' && model) status('UV 处理方式将在下次导入或重新导入模型时生效。');
+      if (key === 'device') stored.deviceLuid = devices.find(item => item.index === +stored.device)?.luid || '';
       if (key === 'device' && !devices.find(item => item.index === +stored.device)?.supported) {
         stored.ao = false;
+        stored.thickness = false;
         $('ao').checked = false;
+        $('thickness').checked = false;
       }
       persist();
       refresh();
@@ -959,11 +1148,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   root.querySelectorAll('[data-bake-view]').forEach(button => { button.onclick = () => setView(button.dataset.bakeView); });
   if (desktop) {
     listen('bake-progress', event => {
-      if (event.payload.jobId !== job) return;
-      const data = event.payload.data;
-      status(data.phase);
-      $('progress').value = Math.max(0, Math.min(1, Number(data.progress) || 0));
-      progress?.(data.progress, data.phase);
+      if (running && event.payload.jobId !== job) return;
+      if (!running && !loading) return;
+      updateBakeProgress(event.payload.data);
     }).then(unsubscribe => { if (disposed) unsubscribe(); else unlisten = unsubscribe; });
   }
 
@@ -1010,7 +1197,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   async function refreshOidnStatus() {
     if (!desktop) return;
     try {
-      oidnReady = Boolean((await invoke('oidn_status')).installed);
+      const value = await invoke('oidn_status'); oidnReady = Boolean(value.installed); oidnSource = value.source || '';
     } catch { oidnReady = false; }
     refresh();
   }
@@ -1022,8 +1209,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (button.disabled) return;
       button.disabled = true; button.textContent = '正在下载…';
       try {
-        await invoke('oidn_install');
-        oidnReady = true;
+        const value = await invoke('oidn_install');
+        oidnReady = true; oidnSource = value.source || 'downloaded';
         status('AI 降噪组件已就绪。');
         notify('AI 降噪组件已下载');
       } catch (error) {
@@ -1053,7 +1240,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (active) {
         init3d();
         requestAnimationFrame(() => resizeRenderer());
-        if (desktop) invoke('oidn_status').then(s => { oidnReady = Boolean(s.installed); refresh(); }).catch(() => {});
+        if (desktop) invoke('oidn_status').then(s => { oidnReady = Boolean(s.installed); oidnSource = s.source || ''; refresh(); }).catch(() => {});
       }
       refresh();
     },
@@ -1065,7 +1252,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       resizeObserver?.disconnect();
       document.removeEventListener('keydown', keyboard);
       document.removeEventListener('keyup', keyboard);
-      aoTextures.forEach(texture => texture.dispose()); aoTextures.clear();
+      clearResultTextures();
       unlisten?.();
       controls?.dispose();
       clearMeshes();
@@ -1076,6 +1263,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       });
       renderer?.dispose();
       if (model && !running) invoke('bake_release', { handle: model.handle }).catch(() => {});
+      if (resultHandle) invoke('bake_result_release', { resultHandle }).catch(() => {});
+      previewWorker?.terminate();
+      previewPending.forEach(({ reject }) => reject(Error('预览已关闭'))); previewPending.clear();
     },
   };
 }

@@ -48,7 +48,8 @@ test('model bake results are cached locally and exported on demand', () => {
   const state = readFileSync(new URL('../src/renderer/scripts/model-bake-state.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(script, /请选择输出目录/);
   assert.doesNotMatch(state, /output:/);
-  assert.match(script, /invoke\('bake_export', \{ files: results\.map\(file => file\.path\), directory \}\)/);
+  assert.match(script, /resultHandle \? \{ resultHandle, directory \} : \{ files: results\.map\(file => file\.path\), directory \}/);
+  assert.match(script, /invoke\('bake_result_release'/);
   assert.match(script, /querySelectorAll\('\[data-bake-export\]'\)/);
   assert.match(script, /结果先缓存在应用数据目录，导出时选择目标文件夹/);
   assert.match(script, /打开缓存目录/);
@@ -78,12 +79,57 @@ test('model bake toggles mesh visibility instead of rebuilding meshes on selecti
   assert.doesNotMatch(script, /id="bake-objects"/);
   assert.doesNotMatch(script, /objects = new Set\(/);
   // 整表构建只允许导入路径触发：定义 1 处 + 调用 1 处；勾选/通道变化不得再重建。
-  assert.equal([...script.matchAll(/buildMeshes\(\)/g)].length, 2);
+  assert.match(script, /prepared = await buildMeshes\(revision, data, nextGeometry, nextChannels\)/);
 });
 
-test('model bake yields a painted status before parsing large mesh JSON', () => {
+test('model bake decodes a compact transferable preview instead of parsing model JSON', () => {
   const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
-  assert.match(script, /await nextPaint\(\)/);
-  assert.match(script, /正在解析网格数据（大型模型可能需数秒）…'\);\s*await nextPaint\(\);\s*const mesh = await response\.json\(\);/);
+  const worker = readFileSync(new URL('../src/renderer/scripts/model-bake-preview-worker.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(script, /fetch\(convertFileSrc\(data\.meshPath\)\)/);
+  assert.doesNotMatch(script, /response\.json\(\)/);
+  assert.match(script, /new Worker\(new URL\('\.\/model-bake-preview-worker\.js'/);
+  assert.match(script, /new Float32Array\(geometry\.buffer/);
+  assert.match(script, /performance\.now\(\) - sliceStarted >= 9/);
+  assert.match(worker, /postMessage\(\{ id, buffer \}, \[buffer\]\)/);
 });
 
+test('model replacement commits only after the new preview is ready', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  const prepared = script.indexOf('prepared = await buildMeshes(revision, data, nextGeometry, nextChannels)');
+  const releasePrevious = script.indexOf("invoke('bake_release', { handle: previousModel.handle })");
+  assert.ok(prepared >= 0 && releasePrevious > prepared);
+  assert.match(script, /if \(prepared\) disposePreparedMeshes\(prepared\.meshes\)/);
+});
+
+test('model bake export locks duplicate clicks while allowing an old result during rebake', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  assert.match(script, /if \(!desktop \|\| !results\.length \|\| exporting\) return/);
+  assert.match(script, /setActionBusy\(button, true\)/);
+  assert.match(script, /上次结果 ·/);
+});
+
+test('model bake produces smart-material mesh maps and applies results to the model preview', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  const state = readFileSync(new URL('../src/renderer/scripts/model-bake-state.mjs', import.meta.url), 'utf8');
+  for (const kind of ['ao', 'normal', 'worldNormal', 'curvature', 'position', 'thickness', 'id']) {
+    assert.match(state, new RegExp(`${kind}: true`));
+  }
+  assert.match(script, /async function applyMapPreview/);
+  assert.match(script, /if \(view === 'model'\) await applyMapPreview\(defaultPreview, false, false\)/);
+  assert.match(script, /apply\.textContent = '在模型上预览'/);
+  assert.match(script, /new THREE\.MeshBasicMaterial\(\{ map: texture/);
+  assert.match(script, /imageOrientation: 'flipY'/);
+});
+
+test('model bake keeps the current view and exposes live structured stages', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../src/renderer/scripts/model-bake.css', import.meta.url), 'utf8');
+  assert.match(script, /id="bake-live-progress"/);
+  assert.match(script, /function updateBakeProgress\(data = \{\}\)/);
+  assert.match(script, /Math\.max\(lastBakeProgress, raw\)/);
+  assert.match(script, /data\.materialPosition/);
+  assert.match(script, /data\.mapPosition/);
+  assert.match(script, /if \(switchView\) setView\('model'\)/);
+  assert.doesNotMatch(script, /setView\('results'\)/);
+  assert.match(css, /\.bake-live-stages span\.active/);
+});

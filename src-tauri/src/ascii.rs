@@ -59,7 +59,9 @@ fn write_export(path: String, format: String, content: String) -> Result<String,
     let bytes = export_bytes(&format, &content)?;
     crate::safety::atomic_write(target, |writer| {
         use std::io::Write;
-        writer.write_all(&bytes).map_err(|e| format!("保存失败：{e}"))
+        writer
+            .write_all(&bytes)
+            .map_err(|e| format!("保存失败：{e}"))
     })?;
     Ok(path)
 }

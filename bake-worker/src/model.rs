@@ -1,6 +1,6 @@
 use glam::{Mat3, Mat4, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, io::Write, path::Path};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Triangle {
@@ -31,6 +31,12 @@ pub struct Model {
     pub degenerate_faces: usize,
     #[serde(default)]
     pub degenerate_examples: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub source_format: String,
+    #[serde(default)]
+    pub generated_channels: BTreeMap<usize, u32>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +72,13 @@ pub fn load(path: &Path) -> Result<Model, String> {
         units: "模型单位".into(),
         degenerate_faces: 0,
         degenerate_examples: vec![],
+        warnings: vec![],
+        source_format: path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase(),
+        generated_channels: BTreeMap::new(),
     };
     match path
         .extension()
@@ -137,6 +150,8 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
     let mut source_object = 0usize;
     let mut object_names = vec!["默认对象".to_string()];
     let mut mtllibs: Vec<String> = Vec::new();
+    let mut source_material: Option<String> = None;
+    let mut source_materials: Vec<String> = Vec::new();
     for line in
         std::io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?).lines()
     {
@@ -144,13 +159,21 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
         let mut parts = line.split('#').next().unwrap_or("").split_whitespace();
         match parts.next() {
             Some("mtllib") => {
-                if let Some(name) = parts.next() {
-                    mtllibs.push(name.to_string());
+                let name = parts.collect::<Vec<_>>().join(" ");
+                if !name.is_empty() {
+                    mtllibs.push(name);
                 }
             }
             Some("o" | "g") => {
                 object_names.push(parts.collect::<Vec<_>>().join(" "));
                 source_object = object_names.len() - 1;
+            }
+            Some("usemtl") => {
+                let name = parts.collect::<Vec<_>>().join(" ");
+                source_material = (!name.is_empty()).then_some(name.clone());
+                if !name.is_empty() && !source_materials.contains(&name) {
+                    source_materials.push(name);
+                }
             }
             Some("f") => {
                 // 只需要知道每个角是否带非空 UV/法线；百万级角上分配
@@ -173,13 +196,18 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
                         source_faces.len()
                     ));
                 }
-                source_faces.push((source_object, uv.iter().all(|flag| *flag), normal));
+                source_faces.push((
+                    source_object,
+                    uv.iter().all(|flag| *flag),
+                    normal,
+                    source_material.clone(),
+                ));
             }
             _ => {}
         }
     }
     let mut object_map = BTreeMap::new();
-    for (source, _, _) in &source_faces {
+    for (source, _, _, _) in &source_faces {
         if !object_map.contains_key(source) {
             let id = out.objects.len();
             out.objects.push(Named {
@@ -190,12 +218,13 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
         }
     }
     let mut source_index = 0;
-    // mtllib 引用的 MTL 缺失时 tobj 只报英文 io 错误；提前给出可行动提示。
+    // 材质定义不参与几何和贴图烘焙。MTL 缺失时保留 usemtl 槽位并给出警告，
+    // 不再拒绝整个 OBJ。
     for name in &mtllibs {
         let mtl = path.parent().unwrap_or(Path::new(".")).join(name);
         if !mtl.is_file() {
-            return Err(format!(
-                "找不到 OBJ 引用的材质文件 {name}：请把它与 OBJ 放在同一目录后重新导入。"
+            out.warnings.push(format!(
+                "找不到 OBJ 引用的材质文件 {name}，已从 usemtl 恢复材质槽。"
             ));
         }
     }
@@ -210,14 +239,35 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
         },
     )
     .map_err(|e| format!("OBJ: {e}"))?;
-    let materials = materials.map_err(|e| format!("OBJ 材质文件: {e}"))?;
-    out.materials = materials
+    let loaded_materials = match materials {
+        Ok(materials) => materials,
+        Err(error) => {
+            if out.warnings.is_empty() {
+                out.warnings.push(format!(
+                    "OBJ 材质文件不可读（{error}），已从 usemtl 恢复材质槽。"
+                ));
+            }
+            Vec::new()
+        }
+    };
+    let mut material_names: Vec<String> = loaded_materials.iter().map(|m| m.name.clone()).collect();
+    for name in source_materials {
+        if !material_names.contains(&name) {
+            material_names.push(name);
+        }
+    }
+    out.materials = material_names
         .iter()
         .enumerate()
-        .map(|(id, m)| Named {
+        .map(|(id, name)| Named {
             id,
-            name: m.name.clone(),
+            name: name.clone(),
         })
+        .collect();
+    let material_ids: BTreeMap<String, usize> = out
+        .materials
+        .iter()
+        .map(|m| (m.name.clone(), m.id))
         .collect();
     let default = out.materials.len();
     out.materials.push(Named {
@@ -233,7 +283,7 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
         };
         let mut offset = 0;
         for (face, arity) in arities.into_iter().enumerate() {
-            let (source, source_uv, source_normals) =
+            let (source, source_uv, source_normals, source_material) =
                 source_faces.get(source_index).ok_or("OBJ 源面映射不一致")?;
             let object = object_map[source];
             let arity = arity as usize;
@@ -248,7 +298,11 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
                 normals: [[0.; 3]; 3],
                 uvs: BTreeMap::new(),
                 object,
-                material: mesh.material_id.unwrap_or(default),
+                material: source_material
+                    .as_ref()
+                    .and_then(|name| material_ids.get(name))
+                    .copied()
+                    .unwrap_or(default),
                 source_face: source_index,
             };
             let mut uv = [[0.; 2]; 3];
@@ -286,6 +340,539 @@ fn obj(path: &Path, out: &mut Model) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, String> {
+    unsafe extern "C" {
+        fn aias_xatlas_generate(
+            positions: *const f32,
+            indices: *const u32,
+            vertex_count: u32,
+            index_count: u32,
+            output_uvs: *mut f32,
+            atlas_width: *mut u32,
+            atlas_height: *mut u32,
+        ) -> i32;
+    }
+    let triangle_indices: Vec<usize> = model
+        .triangles
+        .iter()
+        .enumerate()
+        .filter_map(|(index, triangle)| (triangle.material == material).then_some(index))
+        .collect();
+    if triangle_indices.is_empty() {
+        return Err(format!("材质 {material} 没有三角形"));
+    }
+    // The normalized model stores triangle corners independently. Weld equal
+    // positions before sending the mesh to xatlas so it sees the real surface
+    // topology and can build coherent charts instead of one chart per face.
+    let mut positions = Vec::<[f32; 3]>::with_capacity(triangle_indices.len() * 2);
+    let mut indices = Vec::<u32>::with_capacity(triangle_indices.len() * 3);
+    let mut welded = std::collections::HashMap::<(usize, u32, u32, u32), u32>::new();
+    for &index in &triangle_indices {
+        let triangle = &model.triangles[index];
+        for position in triangle.positions {
+            let key = (
+                triangle.object,
+                position[0].to_bits(),
+                position[1].to_bits(),
+                position[2].to_bits(),
+            );
+            let next = positions.len() as u32;
+            let vertex = *welded.entry(key).or_insert_with(|| {
+                positions.push(position);
+                next
+            });
+            indices.push(vertex);
+        }
+    }
+    let mut generated = vec![[f32::NAN; 2]; indices.len()];
+    let mut width = 0_u32;
+    let mut height = 0_u32;
+    let status = unsafe {
+        aias_xatlas_generate(
+            positions.as_ptr().cast::<f32>(),
+            indices.as_ptr(),
+            positions.len() as u32,
+            indices.len() as u32,
+            generated.as_mut_ptr().cast::<f32>(),
+            &mut width,
+            &mut height,
+        )
+    };
+    if status != 0 {
+        return Err(format!(
+            "材质 {material} 自动 UV 生成失败（xatlas {status}）"
+        ));
+    }
+    let channel = model
+        .triangles
+        .iter()
+        .filter(|t| t.material == material)
+        .flat_map(|t| t.uvs.keys().copied())
+        .max()
+        .map_or(0, |value| value.saturating_add(1));
+    for (local, &triangle_index) in triangle_indices.iter().enumerate() {
+        let base = local * 3;
+        model.triangles[triangle_index].uvs.insert(
+            channel,
+            [generated[base], generated[base + 1], generated[base + 2]],
+        );
+    }
+    let objects: Vec<usize> = model.objects.iter().map(|o| o.id).collect();
+    let mut report = inspect(model, material, channel, &objects);
+    if !report.valid && report.issue_count == report.issues.len() {
+        repair_generated_uv(model, material, channel, &report);
+        report = inspect(model, material, channel, &objects);
+    }
+    if !report.valid {
+        grid_pack_material(model, material, channel);
+        report = inspect(model, material, channel, &objects);
+    }
+    if !report.valid {
+        return Err(format!(
+            "材质 {material} 自动 UV 校验失败：{} 处问题",
+            report.issue_count
+        ));
+    }
+    model.generated_channels.insert(material, channel);
+    Ok(channel)
+}
+
+/// xatlas 对重复/共面拓扑可能留下极少数重叠。压缩主图集并把涉及问题的面
+/// 放进保留条带，避免为了几个坏面降低整个材质的有效分辨率。
+fn repair_generated_uv(model: &mut Model, material: usize, channel: u32, report: &UvReport) {
+    let bad: std::collections::BTreeSet<usize> = report
+        .issues
+        .iter()
+        .flat_map(|issue| [Some(issue.triangle), issue.other_triangle])
+        .flatten()
+        .collect();
+    if bad.is_empty() {
+        return;
+    }
+    for (index, triangle) in model
+        .triangles
+        .iter_mut()
+        .enumerate()
+        .filter(|(_, t)| t.material == material)
+    {
+        if bad.contains(&index) {
+            continue;
+        }
+        if let Some(uv) = triangle.uvs.get_mut(&channel) {
+            for point in uv {
+                point[0] *= 0.94;
+            }
+        }
+    }
+    let columns = (bad.len() as f32).sqrt().ceil().max(1.0) as usize;
+    let rows = bad.len().div_ceil(columns);
+    for (slot, index) in bad.into_iter().enumerate() {
+        let column = slot % columns;
+        let row = slot / columns;
+        let x0 = 0.95 + 0.04 * column as f32 / columns as f32;
+        let x1 = 0.95 + 0.04 * (column + 1) as f32 / columns as f32;
+        let y0 = 0.01 + 0.98 * row as f32 / rows as f32;
+        let y1 = 0.01 + 0.98 * (row + 1) as f32 / rows as f32;
+        let px = (x1 - x0) * 0.1;
+        let py = (y1 - y0) * 0.1;
+        model.triangles[index].uvs.insert(
+            channel,
+            [[x0 + px, y0 + py], [x1 - px, y0 + py], [x0 + px, y1 - py]],
+        );
+    }
+}
+
+/// 极端非流形网格的最终兜底：每个三角形独占网格单元，保证有限、0–1、
+/// 非退化且无重叠。正常模型和可局部修复的模型不会走到这里。
+fn grid_pack_material(model: &mut Model, material: usize, channel: u32) {
+    let indices: Vec<usize> = model
+        .triangles
+        .iter()
+        .enumerate()
+        .filter_map(|(index, t)| (t.material == material).then_some(index))
+        .collect();
+    let columns = (indices.len() as f32).sqrt().ceil().max(1.0) as usize;
+    let rows = indices.len().div_ceil(columns);
+    for (slot, index) in indices.into_iter().enumerate() {
+        let column = slot % columns;
+        let row = slot / columns;
+        let x0 = column as f32 / columns as f32;
+        let x1 = (column + 1) as f32 / columns as f32;
+        let y0 = row as f32 / rows as f32;
+        let y1 = (row + 1) as f32 / rows as f32;
+        let px = (x1 - x0) * 0.08;
+        let py = (y1 - y0) * 0.08;
+        model.triangles[index].uvs.insert(
+            channel,
+            [[x0 + px, y0 + py], [x1 - px, y0 + py], [x0 + px, y1 - py]],
+        );
+    }
+}
+
+/// 为每个材质选择实际烘焙通道；智能模式只为不存在合法源通道的材质生成 UV。
+pub fn prepare_uvs_with_progress(
+    model: &mut Model,
+    mode: &str,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<BTreeMap<usize, u32>, String> {
+    let objects: Vec<usize> = model.objects.iter().map(|o| o.id).collect();
+    let material_ids: Vec<usize> = model
+        .materials
+        .iter()
+        .filter(|m| model.triangles.iter().any(|t| t.material == m.id))
+        .map(|m| m.id)
+        .collect();
+    let mut selected = BTreeMap::new();
+    let total = material_ids.len();
+    for (position, material) in material_ids.into_iter().enumerate() {
+        progress(position, total);
+        let channels: std::collections::BTreeSet<u32> = model
+            .triangles
+            .iter()
+            .filter(|t| t.material == material)
+            .flat_map(|t| t.uvs.keys().copied())
+            .collect();
+        let valid = channels
+            .iter()
+            .copied()
+            .filter(|channel| inspect(model, material, *channel, &objects).valid)
+            .collect::<Vec<_>>();
+        let selected_channel = match mode {
+            "regenerateAll" => generate_material_uv(model, material)?,
+            "strictSource" => channels
+                .iter()
+                .copied()
+                .find(|c| *c == 0)
+                .or_else(|| channels.iter().next().copied())
+                .unwrap_or(0),
+            _ => valid
+                .iter()
+                .copied()
+                .find(|c| *c == 0)
+                .or_else(|| valid.first().copied())
+                .map(Ok)
+                .unwrap_or_else(|| generate_material_uv(model, material))?,
+        };
+        selected.insert(material, selected_channel);
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+pub fn prepare_uvs(model: &mut Model, mode: &str) -> Result<BTreeMap<usize, u32>, String> {
+    prepare_uvs_with_progress(model, mode, |_, _| {})
+}
+
+/// 写出供渲染器使用的紧凑预览。偏移量均为文件内字节偏移，数据为小端 f32。
+pub fn write_preview(model: &Model, dir: &Path) -> Result<serde_json::Value, String> {
+    let path = dir.join("preview.bin");
+    let mut writer =
+        std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+    let mut offset = 0_u64;
+    let mut grouped: BTreeMap<(usize, usize), Vec<(usize, &Triangle)>> = BTreeMap::new();
+    for (index, triangle) in model.triangles.iter().enumerate() {
+        grouped
+            .entry((triangle.object, triangle.material))
+            .or_default()
+            .push((index, triangle));
+    }
+    let mut batches = Vec::new();
+    for ((object, material), triangles) in grouped {
+        let vertex_count = triangles.len() * 3;
+        let position_offset = offset;
+        for (_, triangle) in &triangles {
+            for value in triangle.positions.iter().flatten() {
+                writer
+                    .write_all(&value.to_le_bytes())
+                    .map_err(|e| e.to_string())?;
+                offset += 4;
+            }
+        }
+        let normal_offset = offset;
+        for (_, triangle) in &triangles {
+            for value in triangle.normals.iter().flatten() {
+                writer
+                    .write_all(&value.to_le_bytes())
+                    .map_err(|e| e.to_string())?;
+                offset += 4;
+            }
+        }
+        let triangle_offset = offset;
+        for (index, _) in &triangles {
+            writer
+                .write_all(&(*index as u32).to_le_bytes())
+                .map_err(|e| e.to_string())?;
+            offset += 4;
+        }
+        let channel_ids: std::collections::BTreeSet<u32> = triangles
+            .iter()
+            .flat_map(|(_, t)| t.uvs.keys().copied())
+            .collect();
+        let mut uv_offsets = serde_json::Map::new();
+        for channel in channel_ids {
+            uv_offsets.insert(channel.to_string(), serde_json::json!(offset));
+            for (_, triangle) in &triangles {
+                let uv = triangle
+                    .uvs
+                    .get(&channel)
+                    .copied()
+                    .unwrap_or([[f32::NAN; 2]; 3]);
+                for value in uv.iter().flatten() {
+                    writer
+                        .write_all(&value.to_le_bytes())
+                        .map_err(|e| e.to_string())?;
+                    offset += 4;
+                }
+            }
+        }
+        batches.push(serde_json::json!({"object":object,"material":material,"vertexCount":vertex_count,"triangleCount":triangles.len(),"positionOffset":position_offset,"normalOffset":normal_offset,"triangleOffset":triangle_offset,"uvOffsets":uv_offsets}));
+    }
+    writer.flush().map_err(|e| e.to_string())?;
+    let manifest_path = dir.join("preview.json");
+    let manifest =
+        serde_json::json!({"version":1,"byteLength":offset,"bufferPath":path,"batches":batches});
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(
+        serde_json::json!({"manifestPath":manifest_path,"bufferPath":path,"byteLength":offset,"version":1,"batches":manifest["batches"]}),
+    )
+}
+
+fn export_name(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| {
+            if c.is_control() || "<>:\"/\\|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .take(80)
+        .collect();
+    let cleaned = cleaned.trim_matches([' ', '.']);
+    if cleaned.is_empty() {
+        "model".into()
+    } else {
+        cleaned.into()
+    }
+}
+
+fn export_obj(
+    model: &Model,
+    channels: &BTreeMap<usize, u32>,
+    output: &Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let stem = format!("{}_bake", export_name(&model.name));
+    let obj_path = output.join(format!("{stem}.obj"));
+    let mtl_path = output.join(format!("{stem}.mtl"));
+    let mut obj =
+        std::io::BufWriter::new(std::fs::File::create(&obj_path).map_err(|e| e.to_string())?);
+    writeln!(obj, "# AIAS bake-ready static mesh\nmtllib {stem}.mtl").map_err(|e| e.to_string())?;
+    let mut index = 1usize;
+    let mut active_object = usize::MAX;
+    let mut active_material = usize::MAX;
+    for triangle in &model.triangles {
+        if triangle.object != active_object {
+            active_object = triangle.object;
+            active_material = usize::MAX;
+            writeln!(
+                obj,
+                "o {}",
+                export_name(&model.objects[triangle.object].name)
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if triangle.material != active_material {
+            active_material = triangle.material;
+            writeln!(
+                obj,
+                "usemtl {}",
+                export_name(&model.materials[triangle.material].name)
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let channel = channels.get(&triangle.material).copied().unwrap_or(0);
+        let uv = triangle
+            .uvs
+            .get(&channel)
+            .ok_or_else(|| format!("材质 {} 缺少导出 UV 通道 {channel}", triangle.material))?;
+        for p in triangle.positions {
+            writeln!(obj, "v {} {} {}", p[0], p[1], p[2]).map_err(|e| e.to_string())?;
+        }
+        for t in uv {
+            writeln!(obj, "vt {} {}", t[0], t[1]).map_err(|e| e.to_string())?;
+        }
+        for n in triangle.normals {
+            writeln!(obj, "vn {} {} {}", n[0], n[1], n[2]).map_err(|e| e.to_string())?;
+        }
+        writeln!(
+            obj,
+            "f {0}/{0}/{0} {1}/{1}/{1} {2}/{2}/{2}",
+            index,
+            index + 1,
+            index + 2
+        )
+        .map_err(|e| e.to_string())?;
+        index += 3;
+    }
+    obj.flush().map_err(|e| e.to_string())?;
+    let mut mtl =
+        std::io::BufWriter::new(std::fs::File::create(&mtl_path).map_err(|e| e.to_string())?);
+    writeln!(
+        mtl,
+        "# Material slots only. Baked outputs are listed in bake-manifest.json."
+    )
+    .map_err(|e| e.to_string())?;
+    for material in &model.materials {
+        writeln!(
+            mtl,
+            "\nnewmtl {}\nKd 0.8 0.8 0.8\nKa 0 0 0\nKs 0 0 0\nd 1",
+            export_name(&material.name)
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    mtl.flush().map_err(|e| e.to_string())?;
+    Ok(vec![obj_path, mtl_path])
+}
+
+fn append_f32(buffer: &mut Vec<u8>, value: f32) {
+    buffer.extend_from_slice(&value.to_le_bytes());
+}
+
+fn export_glb(
+    model: &Model,
+    channels: &BTreeMap<usize, u32>,
+    output: &Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let path = output.join(format!("{}_bake.glb", export_name(&model.name)));
+    let mut binary = Vec::<u8>::new();
+    let mut views = Vec::new();
+    let mut accessors = Vec::new();
+    let mut meshes = Vec::new();
+    let mut nodes = Vec::new();
+    let mut by_object: BTreeMap<usize, BTreeMap<usize, Vec<&Triangle>>> = BTreeMap::new();
+    for triangle in &model.triangles {
+        by_object
+            .entry(triangle.object)
+            .or_default()
+            .entry(triangle.material)
+            .or_default()
+            .push(triangle);
+    }
+    for (object, materials) in by_object {
+        let mut primitives = Vec::new();
+        for (material, triangles) in materials {
+            let count = triangles.len() * 3;
+            let position_offset = binary.len();
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for triangle in &triangles {
+                for p in triangle.positions {
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(p[axis]);
+                        max[axis] = max[axis].max(p[axis]);
+                        append_f32(&mut binary, p[axis]);
+                    }
+                }
+            }
+            let position_view = views.len();
+            views.push(serde_json::json!({"buffer":0,"byteOffset":position_offset,"byteLength":count*12,"target":34962}));
+            let position_accessor = accessors.len();
+            accessors.push(serde_json::json!({"bufferView":position_view,"componentType":5126,"count":count,"type":"VEC3","min":min,"max":max}));
+            let normal_offset = binary.len();
+            for triangle in &triangles {
+                for n in triangle.normals {
+                    for value in n {
+                        append_f32(&mut binary, value);
+                    }
+                }
+            }
+            let normal_view = views.len();
+            views.push(serde_json::json!({"buffer":0,"byteOffset":normal_offset,"byteLength":count*12,"target":34962}));
+            let normal_accessor = accessors.len();
+            accessors.push(serde_json::json!({"bufferView":normal_view,"componentType":5126,"count":count,"type":"VEC3"}));
+            let uv_offset = binary.len();
+            let channel = channels.get(&material).copied().unwrap_or(0);
+            for triangle in &triangles {
+                let uv = triangle
+                    .uvs
+                    .get(&channel)
+                    .ok_or_else(|| format!("材质 {material} 缺少导出 UV 通道 {channel}"))?;
+                for point in uv {
+                    append_f32(&mut binary, point[0]);
+                    append_f32(&mut binary, 1.0 - point[1]);
+                }
+            }
+            let uv_view = views.len();
+            views.push(serde_json::json!({"buffer":0,"byteOffset":uv_offset,"byteLength":count*8,"target":34962}));
+            let uv_accessor = accessors.len();
+            accessors.push(serde_json::json!({"bufferView":uv_view,"componentType":5126,"count":count,"type":"VEC2"}));
+            primitives.push(serde_json::json!({"attributes":{"POSITION":position_accessor,"NORMAL":normal_accessor,"TEXCOORD_0":uv_accessor},"material":material,"mode":4}));
+        }
+        let mesh_index = meshes.len();
+        meshes.push(serde_json::json!({"name":model.objects[object].name,"primitives":primitives}));
+        nodes.push(serde_json::json!({"name":model.objects[object].name,"mesh":mesh_index}));
+    }
+    let scene_nodes: Vec<usize> = (0..nodes.len()).collect();
+    let materials: Vec<_> = model.materials.iter().map(|m| serde_json::json!({"name":m.name,"pbrMetallicRoughness":{"baseColorFactor":[0.8,0.8,0.8,1.0],"metallicFactor":0,"roughnessFactor":1}})).collect();
+    let json = serde_json::json!({
+        "asset":{"version":"2.0","generator":"AIAS Model Bake"},"scene":0,"scenes":[{"nodes":scene_nodes}],
+        "nodes":nodes,"meshes":meshes,"materials":materials,"buffers":[{"byteLength":binary.len()}],
+        "bufferViews":views,"accessors":accessors
+    });
+    let mut json_bytes = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
+    while json_bytes.len() % 4 != 0 {
+        json_bytes.push(b' ');
+    }
+    while binary.len() % 4 != 0 {
+        binary.push(0);
+    }
+    let total = 12 + 8 + json_bytes.len() + 8 + binary.len();
+    let mut writer =
+        std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+    writer
+        .write_all(&0x46546C67_u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&2_u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&(total as u32).to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&(json_bytes.len() as u32).to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&0x4E4F534A_u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer.write_all(&json_bytes).map_err(|e| e.to_string())?;
+    writer
+        .write_all(&(binary.len() as u32).to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer
+        .write_all(&0x004E4942_u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    writer.write_all(&binary).map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())?;
+    Ok(vec![path])
+}
+
+pub fn export_bake_model(
+    model: &Model,
+    channels: &BTreeMap<usize, u32>,
+    output: &Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    match model.source_format.as_str() {
+        "obj" => export_obj(model, channels, output),
+        "gltf" | "glb" => export_glb(model, channels, output),
+        _ => Err("无法确定烘焙模型的导出格式".into()),
+    }
 }
 fn gltf(path: &Path, out: &mut Model) -> Result<(), String> {
     // Only buffers are needed: material image codecs never constrain geometry import.
@@ -455,7 +1042,12 @@ pub fn overlap(a: [[f32; 2]; 3], b: [[f32; 2]; 3]) -> bool {
     }
     let origin = polygon.first().copied().unwrap_or_default();
     let area = (0..polygon.len())
-        .map(|i| cross(polygon[i] - origin, polygon[(i + 1) % polygon.len()] - origin))
+        .map(|i| {
+            cross(
+                polygon[i] - origin,
+                polygon[(i + 1) % polygon.len()] - origin,
+            )
+        })
         .sum::<f64>()
         .abs()
         * 0.5;
@@ -467,9 +1059,9 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
     let mut valid = vec![];
     let mut add = |kind: &str, index: usize, other: Option<usize>| {
         count += 1;
-        // 明细只保留前 2000 条：前端每材质只渲染 30 条，其余用于标红三角；
-        // 上限 10000 时导入响应最坏 21MB，跨 stdout/IPC 两次克隆代价高。
-        if issues.len() < 2000 {
+        // 明细只保留前 256 条：前端每材质只渲染 30 条，其余用于视口标红；
+        // 总数单独保留，避免无效源 UV 把紧凑预览 manifest 膨胀到数 MiB。
+        if issues.len() < 256 {
             let t = &model.triangles[index];
             issues.push(Issue {
                 kind: kind.into(),

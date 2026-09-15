@@ -424,6 +424,31 @@ impl Gpu {
         distance: f32,
         bias: f32,
         self_only: bool,
+        cancelled: impl FnMut() -> bool,
+    ) -> GResult<Vec<u32>> {
+        self.trace_mode(surfaces, samples, distance, bias, self_only, 0, cancelled)
+    }
+
+    pub fn trace_thickness(
+        &mut self,
+        surfaces: &[Surface],
+        samples: u32,
+        distance: f32,
+        bias: f32,
+        self_only: bool,
+        cancelled: impl FnMut() -> bool,
+    ) -> GResult<Vec<u32>> {
+        self.trace_mode(surfaces, samples, distance, bias, self_only, 1, cancelled)
+    }
+
+    fn trace_mode(
+        &mut self,
+        surfaces: &[Surface],
+        samples: u32,
+        distance: f32,
+        bias: f32,
+        self_only: bool,
+        mode: u32,
         mut cancelled: impl FnMut() -> bool,
     ) -> GResult<Vec<u32>> {
         unsafe {
@@ -472,7 +497,7 @@ impl Gpu {
                     distance.to_bits(),
                     bias.to_bits(),
                     self_only as u32,
-                    0,
+                    mode,
                 ];
                 self.list
                     .SetComputeRoot32BitConstants(4, 8, params.as_ptr() as _, 0);
@@ -508,6 +533,8 @@ impl Gpu {
 pub struct DeviceInfo {
     pub index: u32,
     pub name: String,
+    pub display_name: String,
+    pub luid: String,
     pub vendor: u32,
     pub dedicated_bytes: u64,
     pub budget_bytes: u64,
@@ -530,7 +557,10 @@ pub fn capabilities() -> Result<Vec<DeviceInfo>, String> {
             if !seen.insert((desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart)) {
                 continue;
             }
-            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+            if desc.Flags
+                & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 | DXGI_ADAPTER_FLAG_REMOTE.0 as u32)
+                != 0
+            {
                 continue;
             }
             let name = String::from_utf16_lossy(
@@ -573,9 +603,15 @@ pub fn capabilities() -> Result<Vec<DeviceInfo>, String> {
                     reason = "需要 Shader Model 6.5".into();
                 }
             }
+            let luid = format!(
+                "{:08x}:{:08x}",
+                desc.AdapterLuid.HighPart as u32, desc.AdapterLuid.LowPart
+            );
             result.push(DeviceInfo {
                 index,
+                display_name: name.clone(),
                 name,
+                luid,
                 vendor: desc.VendorId,
                 dedicated_bytes: desc.DedicatedVideoMemory as u64,
                 budget_bytes: budget.Budget,
@@ -583,6 +619,21 @@ pub fn capabilities() -> Result<Vec<DeviceInfo>, String> {
                 supported: reason.is_empty(),
                 reason,
             });
+        }
+        let mut counts = std::collections::HashMap::new();
+        for device in &result {
+            *counts.entry(device.name.clone()).or_insert(0usize) += 1;
+        }
+        let mut ordinals = std::collections::HashMap::new();
+        for device in &mut result {
+            let ordinal = ordinals.entry(device.name.clone()).or_insert(0usize);
+            *ordinal += 1;
+            let gib = device.dedicated_bytes as f64 / 1_073_741_824.0;
+            device.display_name = if counts[&device.name] > 1 {
+                format!("{} · {:.1} GiB · GPU {}", device.name, gib, ordinal)
+            } else {
+                format!("{} · {:.1} GiB", device.name, gib)
+            };
         }
         Ok(result)
     }
