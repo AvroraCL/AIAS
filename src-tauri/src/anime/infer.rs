@@ -1648,9 +1648,18 @@ pub(crate) fn try_run_birefnet_native_path(
 
     // The export already applies sigmoid; the range guard just keeps an
     // un-sigmoided rebuild from producing a fully transparent result.
-    let needs_sigmoid = mask[..mask_len]
-        .iter()
-        .any(|value| *value < -0.01 || *value > 1.01);
+    // 单次 fold 同时求 min/max：needs_sigmoid 判定与后续归一化共用，
+    // 省一遍全图扫描。
+    let (mut mi, mut ma) = (f32::INFINITY, f32::NEG_INFINITY);
+    for value in &mask[..mask_len] {
+        if *value < mi {
+            mi = *value;
+        }
+        if *value > ma {
+            ma = *value;
+        }
+    }
+    let needs_sigmoid = mi < -0.01 || ma > 1.01;
 
     // 官方 BiRefNet 导出的 sigmoid 输出整体置信度偏低（相对 ToonOut 明显平坦），
     // 直接用固定阈值拉伸会得到“全前景”的半透明掩码；rembg 对官方模型的处理
@@ -1660,8 +1669,16 @@ pub(crate) fn try_run_birefnet_native_path(
         native = native.into_iter().map(stable_sigmoid).collect();
     }
     if normalize_range && birefnet_range_normalization_enabled() {
-        let mi = native.iter().cloned().fold(f32::INFINITY, f32::min);
-        let ma = native.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        // needs_sigmoid=false 时上面的单次 fold 极值就是 native 极值，直接复用；
+        // 为 true 时 sigmoid 改变了极值，必须重算，归一化才正确。
+        let (mi, ma) = if needs_sigmoid {
+            (
+                native.iter().cloned().fold(f32::INFINITY, f32::min),
+                native.iter().cloned().fold(f32::NEG_INFINITY, f32::max),
+            )
+        } else {
+            (mi, ma)
+        };
         if ma - mi > 1e-3 {
             for value in &mut native {
                 *value = (*value - mi) / (ma - mi);
