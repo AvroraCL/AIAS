@@ -1267,6 +1267,15 @@ fn anime_cutout_inner(
     let mut completed = 0usize;
     let mut cancelled = false;
     let _ = safety::take_task_cancel();
+    // 输出目录=输入目录时，输出命名（stem_模型id.png）可能恰好命中另一张
+    // 输入图：persist 覆盖会直接销毁那张原图，写前必须识别并换名。
+    let input_paths: std::collections::HashSet<std::path::PathBuf> = options
+        .files
+        .iter()
+        .map(|file| {
+            fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file.as_str()))
+        })
+        .collect();
 
     for file in &options.files {
         if safety::take_task_cancel() {
@@ -1320,7 +1329,17 @@ fn anime_cutout_inner(
             (false, true) => "_hair",
             (false, false) => "",
         };
-        let target = Path::new(&options.output_path).join(format!("{stem}_{model_id}{suffix}.png"));
+        let output_name = |name: String| {
+            let path = Path::new(&options.output_path).join(&name);
+            // 目标恰好是本批另一张输入图：换名保原图。
+            let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if input_paths.contains(&canonical) {
+                Path::new(&options.output_path).join(name.replace(".png", "_cutout.png"))
+            } else {
+                path
+            }
+        };
+        let target = output_name(format!("{stem}_{model_id}{suffix}.png"));
         let label = input
             .file_name()
             .and_then(|value| value.to_str())
@@ -1367,7 +1386,18 @@ fn anime_cutout_inner(
                 // 用「原图 stem + 模型 id」匹配到结果，也避免残留 toonout 后缀的误导文件。
                 let final_path = if outcome.fallback {
                     let actual = format!("{stem}_{}.png", outcome.model_used);
-                    let path = Path::new(&options.output_path).join(&actual);
+                    // 回退改名目标同样可能命中另一张输入图，换名保原图。
+                    let path = {
+                        let candidate = Path::new(&options.output_path).join(&actual);
+                        let canonical =
+                            fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+                        if input_paths.contains(&canonical) {
+                            Path::new(&options.output_path)
+                                .join(actual.replace(".png", "_cutout.png"))
+                        } else {
+                            candidate
+                        }
+                    };
                     // 同一输入重复运行时允许以最新结果覆盖旧的实际模型文件；若改名
                     // 失败必须返回错误，不能悄悄把旧文件当成本次的回退结果展示给前端。
                     safety::atomic_write(&path, |writer| {

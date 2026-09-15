@@ -1431,6 +1431,7 @@ pub(crate) fn run_birefnet_on_provider(
     finish_birefnet_mask(merged, mask_w, mask_h, matting, rgb.width(), rgb.height())
 }
 
+#[cfg(test)]
 pub(crate) fn mean_with_horizontal_flip(
     direct: &[f32],
     flipped: &[f32],
