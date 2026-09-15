@@ -96,15 +96,16 @@ pub(crate) fn remove_background_islands(matte: &mut [f32], width: u32, height: u
     const MAX_AREA_RATIO: usize = 50; // 面积 < 主件 / 50
     const GAP_PX: u32 = 32;
 
-    // 8 连通域标记（0 = 背景，域号从 1 起）
-    let mut label = vec![0usize; w * h];
+    // 8 连通域标记（0 = 背景，域号从 1 起）。u32 域号足够（4K 图 8M 像素），
+    // usize 会多烧 33MB 瞬时缓冲。
+    let mut label = vec![0u32; w * h];
     let mut areas: Vec<usize> = vec![0];
     let mut queue = Vec::new();
     for start in 0..matte.len() {
         if matte[start] <= 0.5 || label[start] != 0 {
             continue;
         }
-        let id = areas.len();
+        let id = areas.len() as u32;
         areas.push(0);
         label[start] = id;
         queue.clear();
@@ -113,7 +114,7 @@ pub(crate) fn remove_background_islands(matte: &mut [f32], width: u32, height: u
         while cursor < queue.len() {
             let index = queue[cursor];
             cursor += 1;
-            areas[id] += 1;
+            areas[id as usize] += 1;
             let x = index % w;
             let y = index / w;
             let y0 = y.saturating_sub(1);
@@ -136,8 +137,8 @@ pub(crate) fn remove_background_islands(matte: &mut [f32], width: u32, height: u
     }
     let main_id = (1..areas.len())
         .max_by_key(|id| areas[*id])
-        .expect("至少两个连通域");
-    let main_area = areas[main_id];
+        .expect("至少两个连通域") as u32;
+    let main_area = areas[main_id as usize];
 
     // 到主件的 Chebyshev 距离（双向两遍扫描，步长全为 1）
     let big = u32::MAX;
@@ -198,13 +199,13 @@ pub(crate) fn remove_background_islands(matte: &mut [f32], width: u32, height: u
         if *id == 0 || *id == main_id {
             continue;
         }
-        nearest[*id] = nearest[*id].min(dist[index]);
+        nearest[*id as usize] = nearest[*id as usize].min(dist[index]);
     }
     for (index, id) in label.iter().enumerate() {
-        if *id == 0 || *id == main_id || areas[*id] * MAX_AREA_RATIO >= main_area {
+        if *id == 0 || *id == main_id || areas[*id as usize] * MAX_AREA_RATIO >= main_area {
             continue;
         }
-        if nearest[*id].saturating_sub(1) > GAP_PX {
+        if nearest[*id as usize].saturating_sub(1) > GAP_PX {
             matte[index] = 0.0;
         }
     }
