@@ -513,8 +513,18 @@ pub fn cutout_with_options(
             && model_id == "anime-specialist"
             && fallback_model == "anime-specialist"
         {
-            on_phase(0.90, "发丝精修");
-            refine_vitmatte_boundary_rgba(base, &rgb, result)
+            // 块级进度透传：8K 大图精修可达数十块，阶段内也要能看到推进。
+            on_phase(
+                0.90,
+                "发丝精修",
+            );
+            let tile_progress = |done: usize, total: usize| {
+                on_phase(
+                    0.90 + 0.04 * done as f64 / total.max(1) as f64,
+                    &format!("发丝精修 {done}/{total}"),
+                );
+            };
+            refine_vitmatte_boundary_rgba(base, &rgb, result, &tile_progress)
         } else {
             Ok(result)
         }

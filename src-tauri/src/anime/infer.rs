@@ -770,6 +770,7 @@ pub(crate) fn refine_vitmatte_boundary_rgba(
     base: &Path,
     rgb: &RgbImage,
     current: RgbaImage,
+    on_tile: &dyn Fn(usize, usize),
 ) -> Result<RgbaImage, String> {
     const BOUNDARY_RADIUS: usize = 8;
     if !is_hair_refiner_ready(base) {
@@ -783,11 +784,12 @@ pub(crate) fn refine_vitmatte_boundary_rgba(
         current.clone(),
         BOUNDARY_RADIUS,
         true,
+        on_tile,
     ) {
         Ok(result) => Ok(result),
         Err(error) if is_gpu_oom_error(&error) => {
             release_vitmatte_session();
-            try_refine_vitmatte_boundary_rgba(base, &path, rgb, current, BOUNDARY_RADIUS, false)
+            try_refine_vitmatte_boundary_rgba(base, &path, rgb, current, BOUNDARY_RADIUS, false, on_tile)
         }
         Err(error) => Err(error),
     }
@@ -1157,6 +1159,7 @@ pub(crate) fn try_refine_vitmatte_boundary_rgba(
     mut current: RgbaImage,
     radius: usize,
     use_gpu: bool,
+    on_tile: &dyn Fn(usize, usize),
 ) -> Result<RgbaImage, String> {
     const TILE: u32 = 1024;
     let (width, height) = rgb.dimensions();
@@ -1206,12 +1209,16 @@ pub(crate) fn try_refine_vitmatte_boundary_rgba(
     let mut refined_alpha = base_alpha.clone();
     // 重叠块优先取离块边缘最远的一次预测；接缝仍需实图回归检查。
     let mut best_context = vec![0u16; (width * height) as usize];
+    let total_tiles = ys.len() * xs.len();
+    let mut done_tiles = 0usize;
     for &top in &ys {
         for &left in &xs {
             // 8K 下可达数十个 1024² 块，块间响应取消，不再等整段精修跑完。
             if crate::safety::task_cancel_pending() {
                 return Err("任务已取消".into());
             }
+            on_tile(done_tiles, total_tiles);
+            done_tiles += 1;
             let tile_w = TILE.min(width - left);
             let tile_h = TILE.min(height - top);
             let has_gate = (top..top + tile_h)
