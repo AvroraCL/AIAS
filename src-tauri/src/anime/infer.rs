@@ -1376,18 +1376,27 @@ pub(crate) fn run_birefnet_on_provider(
     rgb: &RgbImage,
     use_gpu: bool,
 ) -> Result<Vec<f32>, String> {
-    let direct = try_run_birefnet(base, id, matting, rgb, use_gpu)?;
     if id != "birefnet-general" {
-        return Ok(direct);
+        return try_run_birefnet(base, id, matting, rgb, use_gpu);
     }
+    let (direct, mask_w, mask_h) = try_run_birefnet_native(base, id, matting, rgb, use_gpu)?;
     let flipped = image::imageops::flip_horizontal(rgb);
-    let flipped_mask = try_run_birefnet(base, id, matting, &flipped, use_gpu)?;
-    Ok(mean_with_horizontal_flip(
-        &direct,
-        &flipped_mask,
-        rgb.width(),
-        rgb.height(),
-    ))
+    let (flipped_mask, flipped_w, flipped_h) =
+        try_run_birefnet_native(base, id, matting, &flipped, use_gpu)?;
+    if flipped_w != mask_w || flipped_h != mask_h {
+        return Err("翻转增强两次推理输出尺寸不一致".into());
+    }
+    // 在模型原生分辨率合并翻转 TTA：Lanczos3 是线性滤波，先平均再上采样
+    // 与先各自信上采样再平均结果一致，省一次 4K 上采样与一次全图平滑。
+    let (mw, mh) = (mask_w as usize, mask_h as usize);
+    let mut merged = vec![0_f32; mw * mh];
+    for y in 0..mh {
+        for x in 0..mw {
+            let index = y * mw + x;
+            merged[index] = (direct[index] + flipped_mask[y * mw + (mw - 1 - x)]) * 0.5;
+        }
+    }
+    finish_birefnet_mask(merged, mask_w, mask_h, matting, rgb.width(), rgb.height())
 }
 
 pub(crate) fn mean_with_horizontal_flip(
@@ -1440,7 +1449,35 @@ pub(crate) fn try_run_birefnet(
         .map(|(file, _)| file.name)
         .ok_or("模型注册缺少文件")?;
     let path = models_dir(base).join(file_name);
-    try_run_birefnet_path(
+    let (native, mask_w, mask_h) = try_run_birefnet_native_path(
+        base,
+        id,
+        &path,
+        matches!(spec.kind, ModelKind::BiRefNet { .. }),
+        matting,
+        rgb,
+        use_gpu,
+    )?;
+    finish_birefnet_mask(native, mask_w, mask_h, matting, rgb.width(), rgb.height())
+}
+
+/// 返回拉伸后、尚未上采样的模型原生分辨率掩码：翻转 TTA 在原生分辨率合并，
+/// 再统一走一次上采样 + 平滑，省掉每路各一次 4K Lanczos3 与全图平滑。
+pub(crate) fn try_run_birefnet_native(
+    base: &Path,
+    id: &str,
+    matting: bool,
+    rgb: &RgbImage,
+    use_gpu: bool,
+) -> Result<(Vec<f32>, u32, u32), String> {
+    let spec = model_spec(id)?;
+    let file_name = spec
+        .files
+        .split_first()
+        .map(|(file, _)| file.name)
+        .ok_or("模型注册缺少文件")?;
+    let path = models_dir(base).join(file_name);
+    try_run_birefnet_native_path(
         base,
         id,
         &path,
@@ -1463,6 +1500,29 @@ pub(crate) fn try_run_birefnet_path(
     rgb: &RgbImage,
     use_gpu: bool,
 ) -> Result<Vec<f32>, String> {
+    let (native, mask_w, mask_h) = try_run_birefnet_native_path(
+        base,
+        session_id,
+        path,
+        normalize_range,
+        matting,
+        rgb,
+        use_gpu,
+    )?;
+    finish_birefnet_mask(native, mask_w, mask_h, matting, rgb.width(), rgb.height())
+}
+
+/// 执行 BiRefNet 推理到「min-max 拉伸后的原生分辨率掩码」为止。
+pub(crate) fn try_run_birefnet_native_path(
+    base: &Path,
+    session_id: &str,
+    path: &Path,
+    normalize_range: bool,
+    matting: bool,
+    rgb: &RgbImage,
+    use_gpu: bool,
+) -> Result<(Vec<f32>, u32, u32), String> {
+    let _ = matting;
     ensure_ort_runtime(base)?;
     prune_sessions(SessionKeep::Birefnet(session_id));
     let mut sessions = birefnet_sessions().lock().map_err(lock_error)?;
@@ -1478,6 +1538,7 @@ pub(crate) fn try_run_birefnet_path(
         .map(|(_, session)| session)
         .expect("session just ensured");
     let (w, h) = rgb.dimensions();
+    let _ = (w, h);
 
     // Exports fix the input square; fall back if a rebuild is dynamic.
     // mut 仅在测试构建（下方 cfg(test) 的尺寸覆盖）需要。
@@ -1560,6 +1621,19 @@ pub(crate) fn try_run_birefnet_path(
     }
 
     // 与预处理相反，直接把模型的方形输出缩回原图大小；不裁切任何有效区域。
+    // 上采样与后续柔化在 finish_birefnet_mask 中统一完成。
+    Ok((native, mask_w, mask_h))
+}
+
+/// BiRefNet 掩码收尾：Lanczos3 上采样回原图 + 按模型类型柔化。
+fn finish_birefnet_mask(
+    native: Vec<f32>,
+    mask_w: u32,
+    mask_h: u32,
+    matting: bool,
+    w: u32,
+    h: u32,
+) -> Result<Vec<f32>, String> {
     let upscaled_mask = if mask_w == w && mask_h == h {
         native
     } else {
