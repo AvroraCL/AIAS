@@ -350,8 +350,10 @@ pub(crate) fn smooth_matte_edges(mask: &[f32], w: u32, h: u32) -> Vec<f32> {
         return mask.to_vec();
     }
     let soft = |value: f32| value > 0.02 && value < 0.98;
-    // 带区 = 软像素集合的 3×3 膨胀；逐像素取邻域 OR 与串行互标记结果一致。
-    let band: Vec<bool> = (0..w * h)
+    const KERNEL: [f32; 9] = [1.0, 2.0, 1.0, 2.0, 4.0, 2.0, 1.0, 2.0, 1.0];
+    // 带区判定（软像素 3×3 膨胀）与高斯平滑融合为单遍：就地做膨胀判定，
+    // 省掉 8MB bool 缓冲与一整遍并行调度，输出与两遍版逐位一致。
+    (0..w * h)
         .into_par_iter()
         .map(|index| {
             let (x, y) = (index % w, index / w);
@@ -359,17 +361,10 @@ pub(crate) fn smooth_matte_edges(mask: &[f32], w: u32, h: u32) -> Vec<f32> {
             let y1 = (y + 1).min(h - 1);
             let x0 = x.saturating_sub(1);
             let x1 = (x + 1).min(w - 1);
-            (y0..=y1).any(|yy| (x0..=x1).any(|xx| soft(mask[yy * w + xx])))
-        })
-        .collect();
-    const KERNEL: [f32; 9] = [1.0, 2.0, 1.0, 2.0, 4.0, 2.0, 1.0, 2.0, 1.0];
-    (0..w * h)
-        .into_par_iter()
-        .map(|index| {
-            if !band[index] {
+            let in_band = (y0..=y1).any(|yy| (x0..=x1).any(|xx| soft(mask[yy * w + xx])));
+            if !in_band {
                 return mask[index];
             }
-            let (x, y) = (index % w, index / w);
             let mut sum = 0.0;
             let mut weights = 0.0;
             for dy in -1i64..=1 {
