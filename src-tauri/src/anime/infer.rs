@@ -697,15 +697,16 @@ pub(crate) const BIREFNET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 /// 不进行等比留边，否则竖图会浪费掉大部分有效分割面积。
 pub(crate) fn resize_birefnet_input(rgb: &RgbImage, target_w: u32, target_h: u32) -> RgbImage {
     if rgb.dimensions() == (target_w, target_h) {
-        rgb.clone()
-    } else {
-        image::imageops::resize(rgb, target_w, target_h, birefnet_resize_filter())
+        return rgb.clone();
     }
+    let downscale = (rgb.width() as f64 / target_w as f64)
+        .max(rgb.height() as f64 / target_h as f64);
+    image::imageops::resize(rgb, target_w, target_h, birefnet_resize_filter(downscale))
 }
 
 /// 上游 `preprocessor_config.json` 的 `resample: 2` 是双线性插值；A/B 仍可
 /// 显式切回其它插值验证，以避免后续调整悄悄偏离该工作流。
-pub(crate) fn birefnet_resize_filter() -> FilterType {
+pub(crate) fn birefnet_resize_filter(downscale: f64) -> FilterType {
     #[cfg(test)]
     if let Ok(value) = std::env::var("AIAS_AB_RESAMPLE") {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -715,7 +716,14 @@ pub(crate) fn birefnet_resize_filter() -> FilterType {
             _ => {}
         }
     }
-    FilterType::Triangle
+    // 大倍率缩小（4K→1024 即 3.75×）双线性只有 2×2 tap，1-2px 宽的发丝
+    // 会在降采样时混叠消失，模型直接漏检；CatmullRom 4-tap 保留更多高频。
+    // 小倍率仍用 Triangle 与上游预处理保持一致。
+    if downscale > 2.0 {
+        FilterType::CatmullRom
+    } else {
+        FilterType::Triangle
+    }
 }
 
 /// 早期 512 官方导出需要每图 range normalization 才能避免低置信度全透明；
