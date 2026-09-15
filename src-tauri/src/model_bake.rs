@@ -266,7 +266,7 @@ pub async fn bake_import(
         {
             data = execute(&app, &args, &handle, None, STALL_IMPORT);
         }
-        data?;
+        let mut data = data?;
         data["handle"] = json!(handle);
         MODELS
             .lock()
