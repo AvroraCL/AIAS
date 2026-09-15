@@ -249,19 +249,24 @@ pub async fn bake_import(
             Some("strictSource") => "strictSource",
             _ => "preserveValid",
         };
-        let mut data = execute(
-            &app,
-            &[
-                "import".as_ref(),
-                source.as_os_str(),
-                handle.as_ref(),
-                temp.path().as_os_str(),
-                uv_mode.as_ref(),
-            ],
-            &handle,
-            None,
-            STALL_IMPORT,
-        )?;
+        let args = [
+            "import".as_ref(),
+            source.as_os_str(),
+            handle.as_ref(),
+            temp.path().as_os_str(),
+            uv_mode.as_ref(),
+        ];
+        let mut data = execute(&app, &args, &handle, None, STALL_IMPORT);
+        // worker 被静默 fastfail 终止（0xc0000409/0xc0000005）在特定环境下
+        // 偶发且导入幂等：自动重试一次，间歇性崩溃不再直接阻塞用户。
+        if data
+            .as_ref()
+            .err()
+            .is_some_and(|message| message.contains("0xc0000409") || message.contains("0xc0000005"))
+        {
+            data = execute(&app, &args, &handle, None, STALL_IMPORT);
+        }
+        data?;
         data["handle"] = json!(handle);
         MODELS
             .lock()
