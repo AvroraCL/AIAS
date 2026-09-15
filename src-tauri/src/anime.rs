@@ -26,6 +26,8 @@ pub struct ModelFileSpec {
     pub size: u64,
     pub mirror_url: &'static str,
     pub origin_url: &'static str,
+    /// 下载完整性校验（空串 = 该文件尚未固化哈希，跳过校验）。
+    pub sha256: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +75,7 @@ pub(crate) const HAIR_REFINER_FILES: &[ModelFileSpec] = &[ModelFileSpec {
     size: HAIR_REFINER_SIZE,
     mirror_url: "https://hf-mirror.com/Xenova/vitmatte-small-distinctions-646/resolve/da379332422700028fcade44e2cb915b6eed3548/onnx/model.onnx",
     origin_url: "https://huggingface.co/Xenova/vitmatte-small-distinctions-646/resolve/da379332422700028fcade44e2cb915b6eed3548/onnx/model.onnx",
+            sha256: "",
 }];
 
 pub const MODELS: &[ModelSpec] = &[
@@ -87,6 +90,7 @@ pub const MODELS: &[ModelSpec] = &[
             size: ANIME_SPECIALIST_SIZE,
             mirror_url: "https://hf-mirror.com/nkta/birefnext-aniseg-ONNX/resolve/15ad03e6479a16f02cd9e10e78de2b6639f9adbb/birefnext-aniseg-int8-v0.1.onnx",
             origin_url: "https://huggingface.co/nkta/birefnext-aniseg-ONNX/resolve/15ad03e6479a16f02cd9e10e78de2b6639f9adbb/birefnext-aniseg-int8-v0.1.onnx",
+            sha256: "75642769ce491b9d76e2cd2506c9b4e26852f7e0c0a09f438c965a233de094d5",
         }],
     },
     ModelSpec {
@@ -98,6 +102,7 @@ pub const MODELS: &[ModelSpec] = &[
             size: TOONOUT_SIZE,
             mirror_url: "https://hf-mirror.com/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
             origin_url: "https://huggingface.co/sprited/birefnet-toonout-onnx/resolve/main/birefnet-toonout-fp16.onnx",
+            sha256: "213a8a98ee426ef8f02d247eb5a5a9889359e37c2e1e7e31e282d61034d08a83",
         }],
     },
     ModelSpec {
@@ -109,6 +114,7 @@ pub const MODELS: &[ModelSpec] = &[
             size: BIREFNET_GENERAL_1024_FP16_SIZE,
             mirror_url: "https://hf-mirror.com/onnx-community/BiRefNet-ONNX/resolve/534d3c82d3bb8b2f0867db6dfbc3a525b8e42f67/onnx/model_fp16.onnx",
             origin_url: "https://huggingface.co/onnx-community/BiRefNet-ONNX/resolve/534d3c82d3bb8b2f0867db6dfbc3a525b8e42f67/onnx/model_fp16.onnx",
+            sha256: "",
         }],
     },
     ModelSpec {
@@ -120,6 +126,7 @@ pub const MODELS: &[ModelSpec] = &[
             size: BIREFNET_LITE_SIZE,
             mirror_url: "https://ghfast.top/https://github.com/AvroraCL/AIAS/releases/download/models-v1/birefnet-lite-fp16.onnx",
             origin_url: "https://github.com/AvroraCL/AIAS/releases/download/models-v1/birefnet-lite-fp16.onnx",
+            sha256: "311cfd8088ee71224ba0687b00dfad1ed28fc05aae0ce64e87965cc3d4b29d6a",
         }],
     },
     ModelSpec {
@@ -131,6 +138,7 @@ pub const MODELS: &[ModelSpec] = &[
             size: ISNETIS_SIZE,
             mirror_url: "https://hf-mirror.com/skytnt/anime-seg/resolve/main/isnetis.onnx",
             origin_url: "https://huggingface.co/skytnt/anime-seg/resolve/main/isnetis.onnx",
+            sha256: "f15622d853e8260172812b657053460e20806f04b9e05147d49af7bed31a6e99",
         }],
     },
     ModelSpec {
@@ -143,12 +151,14 @@ pub const MODELS: &[ModelSpec] = &[
                 size: RTMDET_SIZE,
                 mirror_url: "https://hf-mirror.com/Faor-Mati/anime-character-segmentation/resolve/main/anime_segmentor_rtmdet_e60_simplified.onnx",
                 origin_url: "https://huggingface.co/Faor-Mati/anime-character-segmentation/resolve/main/anime_segmentor_rtmdet_e60_simplified.onnx",
+            sha256: "8826c0b7f1785f78c8a9f5f4804f227c7cadc7770b7ecb629a8a7da394703433",
             },
             ModelFileSpec {
                 name: "mask_refiner_isnetdis_refine_last_simplified.onnx",
                 size: REFINER_SIZE,
                 mirror_url: "https://hf-mirror.com/Faor-Mati/anime-character-segmentation/resolve/main/mask_refiner_isnetdis_refine_last_simplified.onnx",
                 origin_url: "https://huggingface.co/Faor-Mati/anime-character-segmentation/resolve/main/mask_refiner_isnetdis_refine_last_simplified.onnx",
+            sha256: "17b50ed2958289fd6678f1915bd11594e5e5d53f20eed2ddedc5d05a9daf3f9f",
             },
         ],
     },

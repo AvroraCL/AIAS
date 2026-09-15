@@ -333,7 +333,29 @@ fn download_model_files(
         let mut last_error = String::new();
         for url in urls {
             match curl_download(url, &dest, Some(file.size), &progress) {
-                Ok(()) => break,
+                Ok(()) => {
+                    // 固化了 SHA256 的文件在下载后校验完整性：仅靠字节数挡不住
+                    // 同尺寸的损坏或被替换文件。失败即删档报错，让外层回退镜像。
+                    if !file.sha256.is_empty() {
+                        match crate::model_bake::sha256_of_file(&dest) {
+                            Ok(actual) if actual == file.sha256 => break,
+                            Ok(actual) => {
+                                let _ = fs::remove_file(&dest);
+                                last_error = format!(
+                                    "SHA256 不匹配（实际 {actual}，期望 {}）",
+                                    file.sha256
+                                );
+                                continue;
+                            }
+                            Err(error) => {
+                                let _ = fs::remove_file(&dest);
+                                last_error = format!("校验读取失败：{error}");
+                                continue;
+                            }
+                        }
+                    }
+                    break;
+                }
                 Err(error) => {
                     last_error = error;
                     if dest.exists() {

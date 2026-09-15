@@ -34,6 +34,7 @@ pub const SUPERRES_MODELS: &[SuperResSpec] = &[
             size: ANIME_6B_SIZE,
             mirror_url: "https://hf-mirror.com/RekluzLabs/realesrgan_anime6b.onnx/resolve/main/realesrgan_anime6b.onnx",
             origin_url: "https://huggingface.co/RekluzLabs/realesrgan_anime6b.onnx/resolve/main/realesrgan_anime6b.onnx",
+            sha256: "",
         },
     },
     SuperResSpec {
@@ -44,6 +45,7 @@ pub const SUPERRES_MODELS: &[SuperResSpec] = &[
             size: GENERAL_X4_SIZE,
             mirror_url: "https://hf-mirror.com/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx",
             origin_url: "https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx",
+            sha256: "",
         },
     },
 ];

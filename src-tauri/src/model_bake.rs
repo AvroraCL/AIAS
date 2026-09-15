@@ -542,7 +542,7 @@ fn resolve_oidn_dir(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     Ok(oidn_dir_complete(&downloaded).then_some(downloaded))
 }
 
-fn sha256_of_file(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_of_file(path: &Path) -> Result<String, String> {
     // Windows 自带 certutil，避免为一次性校验引入哈希依赖。
     let output = crate::safety::quiet_command("certutil")
         .args(["-hashfile"])
