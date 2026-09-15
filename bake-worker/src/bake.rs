@@ -230,15 +230,23 @@ pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) 
     for (index, surface) in surfaces.iter().enumerate() {
         surface_at[surface.pixel as usize] = index as u32;
     }
-    let mut pixels = vec![0; nearest.len() * 4];
+    // 背景固定 128（0.5 中性），与 bake-manifest 的「0.5 = flat」约定一致。
+    let mut pixels = vec![128u8; nearest.len() * 4];
+    for rgba in pixels.chunks_exact_mut(4) {
+        rgba[3] = 255;
+    }
     for surface in surfaces {
         let pixel = surface.pixel as usize;
         let x = pixel % size;
         let y = pixel / size;
         let position = Vec3::from_array(surface.position);
         let normal = Vec3::from_array(surface.normal).normalize_or_zero();
-        let mut signed = 0.0;
-        let mut count = 0.0;
+        // 先收集 8 邻域样本（符号贡献 + 3D 距离），再按距离中位数 3 倍剔除
+        // 离群邻居：UV 岛在纹理空间相邻但 3D 空间相距很远，不剔除会在所有
+        // 岛边上描出假曲率边。
+        let mut dots = [0f32; 8];
+        let mut dists = [1f64; 8];
+        let mut sample_count = 0usize;
         for (dx, dy) in [
             (-1isize, 0isize),
             (1, 0),
@@ -264,16 +272,29 @@ pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) 
                 continue;
             }
             let delta_normal = Vec3::from_array(other.normal).normalize_or_zero() - normal;
-            signed += delta_normal.dot(delta.normalize());
+            dots[sample_count] = delta_normal.dot(delta.normalize());
+            dists[sample_count] = delta.length() as f64;
+            sample_count += 1;
+        }
+        if sample_count == 0 {
+            continue;
+        }
+        let mut sorted = dists[..sample_count].to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let cutoff = sorted[sample_count / 2] * 3.0;
+        let mut signed = 0.0;
+        let mut count = 0.0;
+        for i in 0..sample_count {
+            if dists[i] > cutoff {
+                continue;
+            }
+            signed += dots[i];
             count += 1.0;
         }
-        let value = unit_byte(
-            0.5 + if count > 0.0 {
-                signed / count * 6.0
-            } else {
-                0.0
-            },
-        );
+        if count == 0.0 {
+            continue;
+        }
+        let value = unit_byte(0.5 + signed / count * 6.0);
         pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&[value, value, value, 255]);
     }
     for (pixel, source) in nearest.iter().copied().enumerate() {
