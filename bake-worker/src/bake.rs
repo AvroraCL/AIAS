@@ -539,12 +539,21 @@ pub fn run(
     let heartbeat = if denoiser.is_some() {
         let flag = denoising.clone();
         Some(std::thread::spawn(move || {
-            while flag.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_secs(60));
+            // 短步长轮询停止标志：粗睡眠会让 run() 结束时的 join 最多空等一个周期。
+            let mut beat_elapsed = 0u64;
+            loop {
                 if !flag.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                println!("{}", serde_json::json!({ "type": "heartbeat" }));
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                beat_elapsed += 1;
+                // 每 120 步（60 秒）一行心跳，喂宿主的 stall 看门狗。
+                if beat_elapsed % 120 == 0 {
+                    println!("{}", serde_json::json!({ "type": "heartbeat" }));
+                }
             }
         }))
     } else {

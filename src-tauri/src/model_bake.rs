@@ -96,7 +96,8 @@ fn attach_kill_on_close(child: &std::process::Child) {
 /// 工作进程无输出的兜底上限：正常任务会持续产出 progress/result 行，
 /// 超时即视为挂死。挂死的任务会一直持有全局任务锁，必须由这里终止。
 const STALL_QUICK: Duration = Duration::from_secs(60);
-const STALL_IMPORT: Duration = Duration::from_secs(120);
+// 导入期有心跳喂狗（解析大模型可静默数分钟），阈值只需兜底真挂死。
+const STALL_IMPORT: Duration = Duration::from_secs(300);
 const STALL_BAKE: Duration = Duration::from_secs(300);
 
 fn execute(

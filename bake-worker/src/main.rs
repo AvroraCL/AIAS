@@ -66,6 +66,31 @@ fn main() {
                     serde_json::to_value(reports).map_err(|e| e.to_string())
                 }
                 "import" => {
+                    // model::load 解析原始 OBJ/GLB，在首条进度事件（0.55）之前
+                    // 可能静默数分钟；期间由心跳行喂宿主的 stall 看门狗，防止
+                    // 大模型导入被误杀。心跳上限 30 分钟，超过视为真挂死，
+                    // 停止心跳交还看门狗终止。
+                    let heartbeat_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let heartbeat_flag = heartbeat_done.clone();
+                    let heartbeat_job = job.clone();
+                    let heartbeat = std::thread::spawn(move || {
+                        let mut elapsed = 0u64;
+                        while !heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                            std::thread::sleep(std::time::Duration::from_secs(15));
+                            if heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                            elapsed += 15;
+                            if elapsed > 1800 {
+                                break;
+                            }
+                            println!(
+                                "{}",
+                                serde_json::json!({"jobId":heartbeat_job,"type":"heartbeat"})
+                            );
+                        }
+                    });
+                    let imported = (|| -> Result<serde_json::Value, String> {
                     let mut model = model::load(std::path::Path::new(&args[2]))?;
                     let dir = std::path::Path::new(args.get(4).ok_or("缺失输出目录")?);
                     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -100,6 +125,10 @@ fn main() {
                     Ok(
                         serde_json::json!({"name":model.name,"objects":model.objects,"materials":materials,"bounds":model.bounds,"units":model.units,"meshPath":dir.join("model.json"),"preview":preview,"triangleCount":model.triangles.len(),"degenerateFaces":model.degenerate_faces,"degenerateExamples":model.degenerate_examples,"warnings":model.warnings,"sourceFormat":model.source_format,"generatedChannels":model.generated_channels}),
                     )
+                    })();
+                    heartbeat_done.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _ = heartbeat.join();
+                    imported
                 }
                 "bake" => {
                     let options: bake::Options = serde_json::from_reader(
