@@ -1123,6 +1123,7 @@ struct GpuRuntimeState {
     runtime_installed: bool,
     ort_initialized: bool,
     cuda_active: bool,
+    cuda_fallback_reason: Option<String>,
 }
 
 #[tauri::command]
@@ -1135,12 +1136,21 @@ async fn gpu_runtime_state(app: AppHandle) -> Result<GpuRuntimeState, String> {
     let runtime_installed = anime::gpu_ort_ready(&base);
     let ort_initialized = anime::ort_initialized();
     // cuda_active 需要 ORT 已加载才准确；未初始化时不强行加载 dll。
-    let cuda_active = ort_initialized && anime::cuda_ep_compiled();
+    // CUDA 注册失败回退 CPU 时以 fallback_reason 为准，不再误报 GPU 生效。
+    let mut cuda_active = ort_initialized && anime::cuda_ep_compiled();
+    let mut cuda_fallback_reason = None;
+    if cuda_active {
+        if let Some(reason) = anime::cuda_fallback_reason() {
+            cuda_active = false;
+            cuda_fallback_reason = Some(reason);
+        }
+    }
     Ok(GpuRuntimeState {
         nvidia_gpu,
         runtime_installed,
         ort_initialized,
         cuda_active,
+        cuda_fallback_reason,
     })
 }
 
@@ -1235,7 +1245,10 @@ fn anime_cutout_inner(
         &mut logs,
         "info",
         if anime::cuda_ep_compiled() {
-            "推理后端：CUDA（GPU 加速）".to_string()
+            match anime::cuda_fallback_reason() {
+                Some(reason) => format!("推理后端：CPU（CUDA 初始化失败已回退：{reason}）"),
+                None => "推理后端：CUDA（GPU 加速）".to_string(),
+            }
         } else if anime::gpu_ort_ready(&base) {
             "推理后端：CPU（GPU 运行库未生效，重启应用后再试）".to_string()
         } else {
@@ -1521,7 +1534,10 @@ fn superres_run_inner(
         &mut logs,
         "info",
         if anime::cuda_ep_compiled() {
-            "推理后端：CUDA（GPU 加速）".to_string()
+            match anime::cuda_fallback_reason() {
+                Some(reason) => format!("推理后端：CPU（CUDA 初始化失败已回退：{reason}）"),
+                None => "推理后端：CUDA（GPU 加速）".to_string(),
+            }
         } else {
             "推理后端：CPU（通用模型较慢，NVIDIA 显卡可在 AI 抠图页下载 GPU 运行库）".to_string()
         },

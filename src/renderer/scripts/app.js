@@ -1068,6 +1068,12 @@ function describeGpuRuntime() {
   if (runtime.cudaActive) {
     return { relevant: true, text: "GPU 加速已生效（CUDA），抠图推理运行在显卡上。" };
   }
+  if (runtime.cudaFallbackReason) {
+    return {
+      relevant: true,
+      text: `CUDA 初始化失败，已回退 CPU：${runtime.cudaFallbackReason}`
+    };
+  }
   if (runtime.runtimeInstalled) {
     return {
       relevant: true,

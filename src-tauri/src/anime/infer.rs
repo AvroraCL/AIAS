@@ -52,8 +52,12 @@ pub(crate) fn bilinear_resize_luma(
     new_w: u32,
     new_h: u32,
 ) -> Vec<u8> {
-    let source = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(width, height, data.to_vec())
-        .expect("buffer size mismatch");
+    // from_raw 失败说明调用方给的尺寸与缓冲不一致（模型输出 shape 异常）：
+    // 返回 1×1 灰度而不是 panic——release 是 panic=abort，会闪退整个应用。
+    let Some(source) = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(width, height, data.to_vec())
+    else {
+        return vec![0; (new_w * new_h) as usize];
+    };
     image::imageops::resize(&source, new_w, new_h, FilterType::Triangle).into_raw()
 }
 
@@ -61,6 +65,7 @@ pub(crate) fn to_f32(data: Vec<u8>) -> Vec<f32> {
     data.into_iter().map(|value| value as f32 / 255.0).collect()
 }
 
+#[cfg(test)]
 pub(crate) fn probability_luma(probabilities: &[f32], threshold: f32) -> Vec<u8> {
     probabilities
         .iter()
@@ -607,7 +612,6 @@ pub(crate) fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, Stri
     let logits_h = (*shape.get(2).ok_or("精修输出 shape 无效")?) as usize;
     let logits_w = (*shape.get(3).ok_or("精修输出 shape 无效")?) as usize;
 
-    let mut refined = vec![0_u8; (w * h) as usize];
     let crop_x0 = pl as usize;
     let crop_y0 = pt as usize;
     let crop_w = logits_w
@@ -616,6 +620,9 @@ pub(crate) fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, Stri
     let crop_h = logits_h
         .saturating_sub(pt as usize)
         .saturating_sub(pb as usize);
+    if crop_w == 0 || crop_h == 0 {
+        return Err("精修模型输出尺寸与输入填充不一致".into());
+    }
     let mut cropped = vec![0_f32; crop_w * crop_h];
     for y in 0..crop_h {
         for x in 0..crop_w {
@@ -624,12 +631,25 @@ pub(crate) fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, Stri
             cropped[y * crop_w + x] = stable_sigmoid(value);
         }
     }
-    let prob_u8 = probability_luma(&cropped, refine_threshold());
-    let mask = bilinear_resize_luma(&prob_u8, crop_w as u32, crop_h as u32, w, h);
-    for (index, value) in mask.into_iter().enumerate() {
-        refined[index] = value;
+    // 精修输出保留 sigmoid 软概率并放大后再柔化：先在低分辨率硬二值化会把
+    // 锯齿固化进边缘（与 BiRefNet 路径同思路）。阈值作为柔化过渡带中心。
+    let upscaled_mask = if crop_w == w as usize && crop_h == h as usize {
+        cropped
+    } else {
+        let source = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
+            crop_w as u32,
+            crop_h as u32,
+            cropped,
+        )
+        .ok_or("精修概率缓冲无效")?;
+        image::imageops::resize(&source, w, h, FilterType::Lanczos3).into_raw()
+    };
+    const REFINE_BAND: f32 = 0.20;
+    let threshold = refine_threshold();
+    let mut mask = smooth_matte_edges(&upscaled_mask, w, h);
+    for value in &mut mask {
+        *value = ((*value - (threshold - REFINE_BAND)) / (2.0 * REFINE_BAND)).clamp(0.0, 1.0);
     }
-    let mut mask = to_f32(refined);
     let component_area = advanced_min_component_area(w, h);
     fill_small_background_holes(&mut mask, w, h, component_area);
     remove_small_foreground_components(&mut mask, w, h, component_area);
@@ -813,6 +833,9 @@ pub(crate) fn recover_anime_specialist_detail_alpha(
     // 下半部：同门控纵向分带补齐。GT 上 56% 的漏检位于上半部窗口之外，
     // 带内保持约 2 倍于整图推理的采样密度；多带可能重叠，取 max 只补不擦。
     for (inner, outer) in recovery_lower_bands(base_alpha, width, height) {
+        if crate::safety::task_cancel_pending() {
+            return Err("任务已取消".into());
+        }
         if !roi_contains(outer, inner) {
             continue;
         }
@@ -1145,6 +1168,10 @@ pub(crate) fn try_refine_vitmatte_boundary_rgba(
     let mut best_context = vec![0u16; (width * height) as usize];
     for &top in &ys {
         for &left in &xs {
+            // 8K 下可达数十个 1024² 块，块间响应取消，不再等整段精修跑完。
+            if crate::safety::task_cancel_pending() {
+                return Err("任务已取消".into());
+            }
             let tile_w = TILE.min(width - left);
             let tile_h = TILE.min(height - top);
             let has_gate = (top..top + tile_h)

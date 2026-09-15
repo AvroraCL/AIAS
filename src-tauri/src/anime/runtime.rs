@@ -513,9 +513,24 @@ pub(crate) fn prune_sessions(keep: SessionKeep<'_>) {
     }
 }
 
+/// CUDA 注册失败但已回退 CPU 的真实原因（None = 未回退或未尝试）。
+/// ORT 默认静默回退会让 UI 误报「GPU 加速已生效」，用户在 CPU 上跑大图
+/// 却以为在用显卡；error_on_failure 拿到真实错误后在这里透出。
+pub(crate) static CUDA_FALLBACK_REASON: std::sync::LazyLock<
+    std::sync::RwLock<Option<String>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(None));
+
+pub(crate) fn cuda_fallback_reason() -> Option<String> {
+    CUDA_FALLBACK_REASON
+        .read()
+        .ok()
+        .map(|guard| guard.clone())
+        .flatten()
+}
+
 pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, String> {
     let threads = std::thread::available_parallelism()
-        .map(|value| value.get().clamp(1, 8))
+        .map(|value| value.get().clamp(1, 16))
         .unwrap_or(4);
     preload_cuda_runtime();
     let mut builder = Session::builder()
@@ -527,7 +542,7 @@ pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, Strin
     // CPU 中间张量默认驻留 BFC arena：涨到该会话的峰值后永不归还系统，表现为
     // 推理结束后内存不回落。关掉后每次推理结束即归还 OS，代价是少量 malloc/free
     // 开销（会话输入形状固定，中间张量少而大，开销可忽略）。
-    let cpu = ort::ep::CPU::default().with_arena_allocator(false).build();
+    let cpu_ep = || ort::ep::CPU::default().with_arena_allocator(false).build();
     // 仅当 ONNX Runtime 确实编译了 CUDA EP 时才注册；CPU 版运行库注册只会静默回退并掩盖真实状态。
     if use_gpu && cuda_ep_compiled() {
         // Arena 按需扩展、cuDNN 改启发式搜索并限制 workspace：BiRefNet 官方 fp32
@@ -537,17 +552,37 @@ pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, Strin
             .with_arena_extend_strategy(ort::ep::ArenaExtendStrategy::SameAsRequested)
             .with_conv_algorithm_search(ort::ep::cuda::ConvAlgorithmSearch::Heuristic)
             .with_conv_max_workspace(false)
-            .build();
-        // CUDA EP 注册失败时 ONNX Runtime 仍会静默回退 CPU（error_on_failure 默认 false）。
-        builder = builder
-            .with_execution_providers([cuda, cpu])
-            .map_err(to_string_error)?;
-    } else {
-        builder = builder
-            .with_execution_providers([cpu])
-            .map_err(to_string_error)?;
+            .build()
+            .error_on_failure();
+        let gpu_attempt = builder
+            .with_execution_providers([cuda, cpu_ep()])
+            .map_err(to_string_error)?
+            .commit_from_file(path)
+            .map_err(|error| format!("加载模型 {} 失败：{error}", path.display()));
+        match gpu_attempt {
+            Ok(session) => {
+                if let Ok(mut guard) = CUDA_FALLBACK_REASON.write() {
+                    *guard = None;
+                }
+                return Ok(session);
+            }
+            Err(error) => {
+                // cuDNN 缺失/驱动过老/显存不足：记录真实原因，回退 CPU 重建。
+                if let Ok(mut guard) = CUDA_FALLBACK_REASON.write() {
+                    *guard = Some(error.clone());
+                }
+                builder = Session::builder()
+                    .map_err(to_string_error)?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(to_string_error)?
+                    .with_intra_threads(threads)
+                    .map_err(to_string_error)?;
+            }
+        }
     }
     builder
+        .with_execution_providers([cpu_ep()])
+        .map_err(to_string_error)?
         .commit_from_file(path)
         .map_err(|error| format!("加载模型 {} 失败：{error}", path.display()))
 }

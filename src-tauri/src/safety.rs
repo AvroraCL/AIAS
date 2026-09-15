@@ -31,6 +31,12 @@ pub(crate) fn take_task_cancel() -> bool {
     TASK_CANCEL.swap(false, Ordering::SeqCst)
 }
 
+/// 非消费式取消查询：供长推理的内部阶段边界（模型间/分块间）轮询，
+/// 不吞掉标志——文件边界的 take_task_cancel 仍是唯一消费点。
+pub(crate) fn task_cancel_pending() -> bool {
+    TASK_CANCEL.load(Ordering::SeqCst)
+}
+
 pub(crate) fn unique_stems(files: &[String]) -> Result<(), String> {
     let mut seen = HashSet::new();
     for file in files {

@@ -473,6 +473,11 @@ pub(crate) fn box_mean_f32(values: &[f32], w: usize, h: usize, radius: usize) ->
 
 /// `sat` 由调用方复用容量，引导滤波/整定一次要连续求十余路均值，
 /// 免去每次数百 MB 积分图的分配与清零；逐元素结果一致。
+///
+/// 旧版两条热循环（行内累加、跨行累加）都是单线程 O(n)，4K 下每次 30-80ms、
+/// 单张图累计 29 次调用。现拆成两遍并行：行内前缀按行并行，跨行累加按列
+/// 并行（每列是独立依赖链，列间内存互不重叠）。两遍都保持与旧串行版完全
+/// 相同的加法顺序，结果逐位一致。
 pub(crate) fn box_mean_f32_into(
     values: &[f32],
     w: usize,
@@ -483,13 +488,40 @@ pub(crate) fn box_mean_f32_into(
     let stride = w + 1;
     sat.clear();
     sat.resize(stride * (h + 1), 0.0);
-    for y in 0..h {
-        let mut row_sum = 0f64;
-        for x in 0..w {
-            row_sum += values[y * w + x] as f64;
-            sat[(y + 1) * stride + (x + 1)] = sat[y * stride + (x + 1)] + row_sum;
+    // 第一遍：行内前缀和，按行并行（与旧版行内累加同序）。
+    sat.par_chunks_mut(stride)
+        .skip(1)
+        .zip(values.par_chunks(w))
+        .for_each(|(sat_row, value_row)| {
+            let mut row_sum = 0f64;
+            for x in 0..w {
+                row_sum += value_row[x] as f64;
+                sat_row[x + 1] = row_sum;
+            }
+        });
+    // 第二遍：跨行累加，按列并行。列与列的下标互不重叠（idx 含 +x+1 项），
+    // 单列内部保持串行加法顺序（sat[y+1] = sat[y] + 行前缀）→ 逐位一致。
+    #[derive(Clone, Copy)]
+    struct SendPtr(*mut f64);
+    unsafe impl Send for SendPtr {}
+    unsafe impl Sync for SendPtr {}
+    impl SendPtr {
+        // 经方法访问强制整体捕获：edition 2021 的字段级捕获会把 .0 裸指针
+        // 直接捕获进闭包，绕过 Send/Sync 包装。
+        fn ptr(self) -> *mut f64 {
+            self.0
         }
     }
+    let sat_ptr = SendPtr(sat.as_mut_ptr());
+    (0..w).into_par_iter().for_each(move |x| unsafe {
+        let sat_ptr = sat_ptr.ptr();
+        let mut acc = 0f64;
+        for y in 0..h {
+            let idx = (y + 1) * stride + x + 1;
+            acc += *sat_ptr.add(idx);
+            *sat_ptr.add(idx) = acc;
+        }
+    });
     let mut out = vec![0f32; w * h];
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let y0 = y.saturating_sub(radius);
