@@ -1784,18 +1784,44 @@ pub(crate) fn matte_is_substantially_cleaner(
 }
 
 /// 图像四周边框环带（band_px 宽）内的 alpha 均值。
+/// 只扫 4 条矩形带（顶/底整行 + 左/右列去角），不遍历全图——band 只有
+/// 几十 px 宽时全图逐像素判断 99% 都是白跑。
 pub(crate) fn border_band_mean(matte: &[f32], w: u32, h: u32, band_px: usize) -> f32 {
     let (w, h) = (w as usize, h as usize);
+    if w == 0 || h == 0 || 2 * band_px >= w || 2 * band_px >= h {
+        // 退化：带宽覆盖全图，等价于全图均值
+        if w == 0 || h == 0 {
+            return 0.0;
+        }
+        let total: f64 = matte.iter().map(|v| *v as f64).sum();
+        return (total / (w * h) as f64) as f32;
+    }
+    let band = band_px;
     let mut sum = 0f64;
     let mut count = 0usize;
-    for y in 0..h {
+    // 顶带与底带（整行）
+    for y in 0..band {
         for x in 0..w {
-            if x < band_px || y < band_px || x >= w - band_px || y >= h - band_px {
-                sum += matte[y * w + x] as f64;
-                count += 1;
-            }
+            sum += matte[y * w + x] as f64;
         }
     }
+    for y in (h - band)..h {
+        for x in 0..w {
+            sum += matte[y * w + x] as f64;
+        }
+    }
+    count += 2 * band * w;
+    // 左带与右带（去掉与上下带重叠的角，避免重复计数）
+    let mid_rows = h - 2 * band;
+    for y in band..h - band {
+        for x in 0..band {
+            sum += matte[y * w + x] as f64;
+        }
+        for x in (w - band)..w {
+            sum += matte[y * w + x] as f64;
+        }
+    }
+    count += 2 * band * mid_rows;
     if count == 0 {
         0.0
     } else {
