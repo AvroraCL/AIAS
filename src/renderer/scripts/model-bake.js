@@ -8,7 +8,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let model = null, geometry = null, active = false, running = false, loading = false, exporting = false, disposed = false, job = '', view = 'model';
   let materials = new Set(), channels = {}, focused = null, results = [];
   let renderer, controls, scene, camera, group, resizeObserver;
-  let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false, oidnReady = false, oidnSource = '';
+  let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false, oidnReady = false, oidnSource = '', oidnStatusResolved = !desktop;
   let narrowPanel = 'settings';
   const resultTextures = new Map();
   let previewMaterialRevision = 0, resultTextureEpoch = 0, lastBakeProgress = 0;
@@ -185,7 +185,11 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0) return '遮蔽距离必须大于 0。';
     if (!Number.isInteger(+$('margin').value) || +$('margin').value < 0 || +$('margin').value > 128) return '边缘扩展应为 0–128 的整数。';
     if ((stored.ao || stored.thickness) && !devices.find(device => device.index === +stored.device)?.supported) return '当前设备不支持 DXR 1.1 光线追踪。';
-    if (stored.ao && stored.denoise && desktop && !oidnReady) return 'AI 降噪组件未下载，请先点击「下载降噪组件」。';
+    if (stored.ao && stored.denoise && desktop && !oidnReady) {
+      // 首次状态查询未返回前不判定"未下载"：内置组件的查询是毫秒级，
+      // 误报会直接挡住烘焙并诱导用户手动下载。
+      return oidnStatusResolved ? 'AI 降噪组件未下载，请先点击「下载降噪组件」。' : '正在检查内置 OIDN 组件…';
+    }
     const invalid = [...materials].find(id => {
       const material = model?.materials.find(item => item.id === id);
       return material?.channels.find(channel => channel.channel === (channels[id] ?? 0))?.valid === false;
@@ -887,10 +891,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const reason = blocker();
     const oidnDownload = $('oidn-download');
     if (oidnDownload) {
-      oidnDownload.hidden = !desktop || !stored.ao || !stored.denoise || oidnReady || locked;
+      // 状态未决时不亮出下载按钮：内置组件存在的情况下闪现下载按钮是误导。
+      oidnDownload.hidden = !desktop || !stored.ao || !stored.denoise || oidnReady || !oidnStatusResolved || locked;
       oidnDownload.disabled = locked;
     }
-    $('oidn-note').textContent = !stored.ao || !stored.denoise ? '' : oidnReady ? (oidnSource === 'bundled' ? '已使用软件内置 OIDN 2.2.2。' : 'OIDN 2.2.2 已就绪。') : '需要下载 OIDN 2.2.2。';
+    $('oidn-note').textContent = !stored.ao || !stored.denoise ? '' : oidnReady ? (oidnSource === 'bundled' ? '已使用软件内置 OIDN 2.2.2。' : 'OIDN 2.2.2 已就绪。') : !desktop ? '桌面版已内置 OIDN 2.2.2。' : oidnStatusResolved ? '需要下载 OIDN 2.2.2。' : '正在检查内置 OIDN 组件…';
+    refreshOidnStatus();
     $('run').disabled = Boolean(reason);
     $('run').title = reason || '';
     $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : exporting ? '正在导出结果…' : reason || `已就绪 · ${count} 张贴图`;
@@ -1269,13 +1275,28 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   updatePanelState('settings');
   syncDisplayControls();
   setView('model');
+  refreshOidnStatus();
+  // 下载按钮的点击处理器只在构造时绑定一次；漏掉这一步按钮就是死的。
+  bindOidnDownload();
 
+  // OIDN 状态查询的单一入口：内置组件存在时一次即成功。查询失败保持"未决"
+  //（不显示下载按钮、不判未下载），refresh() 每次自动重试自愈——一次 IPC
+  // 抖动不该把用户卡在"请手动下载"上。
+  let oidnStatusInFlight = false;
   async function refreshOidnStatus() {
-    if (!desktop) return;
+    if (!desktop || oidnReady || oidnStatusResolved || oidnStatusInFlight) return;
+    oidnStatusInFlight = true;
     try {
-      const value = await invoke('oidn_status'); oidnReady = Boolean(value.installed); oidnSource = value.source || '';
-    } catch { oidnReady = false; }
-    refresh();
+      const value = await invoke('oidn_status');
+      oidnReady = Boolean(value.installed);
+      oidnSource = value.source || '';
+      oidnStatusResolved = true;
+      refresh();
+    } catch (error) {
+      console.warn('OIDN 状态查询失败，将在下次刷新时重试', error);
+    } finally {
+      oidnStatusInFlight = false;
+    }
   }
   function bindOidnDownload() {
     const button = $('oidn-download');
@@ -1316,7 +1337,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (active) {
         init3d();
         requestAnimationFrame(() => resizeRenderer());
-        if (desktop) invoke('oidn_status').then(s => { oidnReady = Boolean(s.installed); oidnSource = s.source || ''; refresh(); }).catch(() => {});
+        refreshOidnStatus();
       }
       refresh();
     },
