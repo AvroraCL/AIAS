@@ -620,6 +620,19 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('materials').querySelectorAll('button').forEach(button => button.classList.toggle('active', +button.dataset.material === id));
   }
 
+  // 材质勾选支持按住左键滑动批量勾选：在起始复选框上按下时确定目标状态，
+  // 拖动经过的复选框统一应用该状态，松开/取消指针结束会话。鼠标无隐式指针
+  // 捕获，pointerenter 在按住拖动时照常触发，正好用作扫描目标。
+  let checkboxDrag = null;
+  function setMaterialChecked(input, id, checked) {
+    if (input.checked === checked) return;
+    input.checked = checked;
+    if (checked) materials.add(id);
+    else materials.delete(id);
+    syncMeshVisibility();
+    refresh();
+  }
+
   function lists() {
     const container = $('materials');
     container.replaceChildren();
@@ -631,11 +644,20 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       input.type = 'checkbox';
       input.checked = materials.has(item.id);
       input.setAttribute('aria-label', `材质 ${item.id} ${item.name}`);
-      input.onchange = () => {
-        if (input.checked) materials.add(item.id);
-        else materials.delete(item.id);
-        syncMeshVisibility();
-        refresh();
+      input.onchange = () => setMaterialChecked(input, item.id, input.checked);
+      input.onpointerdown = event => {
+        if (event.button !== 0 || checkboxDrag !== null) return;
+        event.preventDefault();
+        setMaterialChecked(input, item.id, !input.checked);
+        checkboxDrag = input.checked;
+      };
+      input.onpointerenter = () => {
+        if (checkboxDrag === null) return;
+        setMaterialChecked(input, item.id, checkboxDrag);
+      };
+      // 按下时已手动切换过状态；会话期间拦截原生 click 的默认翻转，避免二次取反。
+      input.onclick = event => {
+        if (checkboxDrag !== null) event.preventDefault();
       };
       const label = document.createElement('button');
       label.className = 'bake-item';
@@ -1221,6 +1243,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   };
   document.addEventListener('keydown', keyboard);
   document.addEventListener('keyup', keyboard);
+  const endCheckboxDrag = () => { checkboxDrag = null; };
+  window.addEventListener('pointerup', endCheckboxDrag);
+  window.addEventListener('pointercancel', endCheckboxDrag);
   updatePanelState('outliner');
   updatePanelState('settings');
   syncDisplayControls();
@@ -1285,6 +1310,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       resizeObserver?.disconnect();
       document.removeEventListener('keydown', keyboard);
       document.removeEventListener('keyup', keyboard);
+      window.removeEventListener('pointerup', endCheckboxDrag);
+      window.removeEventListener('pointercancel', endCheckboxDrag);
       clearResultTextures();
       unlisten?.();
       controls?.dispose();
