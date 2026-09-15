@@ -108,6 +108,20 @@ pub(crate) fn advanced_min_component_area(width: u32, height: u32) -> usize {
 
 // Simple model (ISNet / isnetis.onnx) — port of simple_anime_seg.py
 pub(crate) fn run_simple(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
+    // 显存不足时释放会话回退 CPU 重跑一次，与 BiRefNet 路径同一套兜底。
+    match run_simple_on_provider(base, rgb, true) {
+        Ok(mask) => Ok(mask),
+        Err(error) if is_gpu_oom_error(&error) => {
+            if let Ok(mut slot) = simple_slot().lock() {
+                *slot = None;
+            }
+            run_simple_on_provider(base, rgb, false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn run_simple_on_provider(base: &Path, rgb: &RgbImage, use_gpu: bool) -> Result<Vec<f32>, String> {
     ensure_ort_runtime(base)?;
     prune_sessions(SessionKeep::Simple);
     let mut guard = simple_slot().lock().map_err(lock_error)?;
@@ -117,7 +131,7 @@ pub(crate) fn run_simple(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String
             return Err("标准模型未安装，请先在参数面板下载。".into());
         }
         *guard = Some(SimpleSessions {
-            session: build_session(&path, true)?,
+            session: build_session(&path, use_gpu)?,
         });
     }
     let sessions = guard.as_mut().expect("session initialized");
@@ -285,6 +299,24 @@ pub(crate) fn resize_pad_rgb(img: &RgbImage, size: u32) -> (RgbImage, (u32, u32,
 
 // Advanced model (RTMDet + ISNetDis refiner) — port of advanced_anime_seg.py
 pub(crate) fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
+    // 显存不足时释放会话回退 CPU 重跑一次（双模型是显存最挤的组合）。
+    match run_advanced_on_provider(base, rgb, true) {
+        Ok(mask) => Ok(mask),
+        Err(error) if is_gpu_oom_error(&error) => {
+            if let Ok(mut slot) = advanced_slot().lock() {
+                *slot = None;
+            }
+            run_advanced_on_provider(base, rgb, false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn run_advanced_on_provider(
+    base: &Path,
+    rgb: &RgbImage,
+    use_gpu: bool,
+) -> Result<Vec<f32>, String> {
     ensure_ort_runtime(base)?;
     prune_sessions(SessionKeep::Advanced);
     let mut guard = advanced_slot().lock().map_err(lock_error)?;
@@ -296,8 +328,8 @@ pub(crate) fn run_advanced(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, Stri
             return Err("精细模型未安装，请先在参数面板下载。".into());
         }
         *guard = Some(AdvancedSessions {
-            seg: build_session(&seg_path, true)?,
-            refine: build_session(&refine_path, true)?,
+            seg: build_session(&seg_path, use_gpu)?,
+            refine: build_session(&refine_path, use_gpu)?,
         });
     }
     let sessions = guard.as_mut().expect("sessions initialized");
