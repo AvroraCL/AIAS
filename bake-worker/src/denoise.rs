@@ -162,7 +162,8 @@ impl Oidn {
             0,
         );
         set_filter_bool(filter, NAME_SRGB.as_ptr().cast(), false);
-        set_filter_bool(filter, NAME_HDR.as_ptr().cast(), true);
+        // AO 是 0-1 线性 LDR 数据，用 LDR 滤波模式边缘保留更贴合。
+        set_filter_bool(filter, NAME_HDR.as_ptr().cast(), false);
 
         commit_filter(filter);
         if let Some(error) = take_oidn_error(&get_device_error, device) {

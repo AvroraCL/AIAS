@@ -189,6 +189,16 @@ fn unit_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+/// 8 位标量输出的 TPDF 抖动（两路均匀噪声相减，幅度 ±1 LSB，均值 0）：
+/// AO/厚度的缓坡渐变在 8 位下会产生量化条带，抖动把它们打散为不可见噪点。
+fn dither_lsb(index: usize) -> f32 {
+    let mix = |mut x: u64| {
+        x = x.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        ((x >> 40) & 0xFFFF) as f32 / 65536.0
+    };
+    mix(index as u64) + mix((index as u64).wrapping_add(0x5DEE_CE66)) - 1.0
+}
+
 fn encode_surface_map(
     surfaces: &[Surface],
     nearest: &[u32],
@@ -335,13 +345,14 @@ fn save_scalar_map(
     } else {
         let data = nearest
             .iter()
-            .map(|source| {
-                let value = if *source == u32::MAX {
-                    background
+            .enumerate()
+            .map(|(index, source)| {
+                if *source == u32::MAX {
+                    unit_byte(background)
                 } else {
-                    values[*source as usize]
-                };
-                unit_byte(value)
+                    // 覆盖像素加 TPDF 抖动防条带；背景保持精确值。
+                    unit_byte(values[*source as usize] + dither_lsb(index) / 255.0)
+                }
             })
             .collect::<Vec<_>>();
         save(
@@ -902,11 +913,26 @@ pub fn run(
                     let denoiser = denoiser
                         .as_ref()
                         .ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
+                    // 降噪前用 dilate 最近覆盖值预填 margin：OIDN 是卷积滤波，
+                    // 未覆盖像素的 1.0 背景会把岛边 AO 拉亮并跨岛渗色。
+                    for (i, s) in nearest.iter().enumerate() {
+                        if *s != u32::MAX && *s != i as u32 {
+                            values[i] = values[*s as usize];
+                        }
+                    }
+                    let covered_original: Vec<f32> = values.clone();
                     denoiser.denoise_gray(
                         &mut values,
                         options.resolution as usize,
                         options.resolution as usize,
                     )?;
+                    // 覆盖像素写回原始值：OIDN 不应模糊本来就正确的数据，
+                    // 只让 margin 保留平滑填充的结果。
+                    for (i, s) in nearest.iter().enumerate() {
+                        if *s != u32::MAX {
+                            values[i] = covered_original[i];
+                        }
+                    }
                 }
                 emit_bake_progress(
                     &mut progress,
@@ -948,13 +974,15 @@ pub fn run(
                 } else {
                     let data: Vec<u8> = nearest
                         .iter()
-                        .map(|s| {
+                        .enumerate()
+                        .map(|(index, s)| {
                             let value = if *s == u32::MAX {
                                 1.
                             } else {
-                                values[*s as usize]
+                                // TPDF 抖动打散 8 位缓坡条带；背景保持精确 255。
+                                values[*s as usize] + dither_lsb(index) / 255.0
                             };
-                            (value * 255.).round() as u8
+                            (value * 255.).round().clamp(0., 255.) as u8
                         })
                         .collect();
                     save(
