@@ -5,7 +5,7 @@ use crate::{
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     io::Write,
     path::{Path, PathBuf},
     time::Instant,
