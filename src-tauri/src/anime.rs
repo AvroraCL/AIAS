@@ -370,6 +370,15 @@ pub fn cutout_with_options(
     })?;
     let (w, h) = rgb.dimensions();
 
+    // 阶段边界取消检查：单次推理内部无法中断，但阶段之间可以立即停止，
+    // 不必等整张图（CPU 大图可达数十分钟）跑完。
+    let check_cancel = || -> Result<(), String> {
+        if crate::safety::task_cancel_pending() {
+            return Err("任务已取消".into());
+        }
+        Ok(())
+    };
+
     on_phase(0.08, "模型推理");
     let (mask, fallback_model) = timed("2 inference+fallback", || {
         Ok::<_, String>(match model_spec(model_id)?.kind {
@@ -445,6 +454,7 @@ pub fn cutout_with_options(
     })?;
 
     let fallback = model_id == "toonout" && fallback_model != "toonout";
+    check_cancel()?;
     on_phase(0.70, "推理完成");
 
     // AB 回归可视化：引导滤波前的原始模型掩码，供滤波参数对比。
@@ -465,6 +475,7 @@ pub fn cutout_with_options(
     // 原图，再只在其自动 4px 边界带上使用原始 RGB 求解 alpha，恢复高分辨率
     // 轮廓；其它模型和较小图片保留既有输出，避免改变已验证的行为。
     let mask = if fallback_model == "anime-specialist" {
+        check_cancel()?;
         on_phase(0.72, "边界精修");
         timed("3 closed-form", || {
             refine_closed_form_boundary_alpha(&rgb, mask)
@@ -472,10 +483,12 @@ pub fn cutout_with_options(
     } else {
         mask
     };
+    check_cancel()?;
     on_phase(0.82, "合成输出");
     let result = timed("4 finalize", || {
         finalize_cutout_image(&rgb, mask, model_uses_native_edge_alpha(fallback_model))
     });
+    check_cancel()?;
     let result = timed("5 detail-recovery", || {
         if recover_details && model_id == "anime-specialist" && fallback_model == "anime-specialist"
         {

@@ -1524,6 +1524,7 @@ pub(crate) fn try_run_birefnet_native(
 /// 按模型文件执行 BiRefNet 推理。正式路径仍由 `try_run_birefnet` 通过注册表
 /// 调用；这个更底层的入口只用于开发期验证本地官方导出，避免把未验证的模型
 /// 暴露到正式 UI 或下载目录。
+#[cfg(test)]
 pub(crate) fn try_run_birefnet_path(
     base: &Path,
     session_id: &str,
