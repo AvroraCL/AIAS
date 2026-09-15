@@ -370,7 +370,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (typeof createImageBitmap === 'function') {
       return fetch(convertFileSrc(file.path))
         .then(response => { if (!response.ok) throw Error(`无法读取贴图（${response.status}）`); return response.blob(); })
-        .then(blob => createImageBitmap(blob, { resizeWidth: 512, resizeHeight: 512, resizeQuality: 'high', imageOrientation: 'flipY' }))
+        // 1024：预览是用户判断 AO 边缘/破面的依据，512 会抹平边缘细节；
+        // 4K 原图解码后降到 1024 的内存与耗时仍远低于原尺寸。
+        .then(blob => createImageBitmap(blob, { resizeWidth: 1024, resizeHeight: 1024, resizeQuality: 'high', imageOrientation: 'flipY' }))
         .then(bitmap => commit(new THREE.Texture(bitmap)));
     }
     return new Promise((resolve, reject) => {
