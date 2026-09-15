@@ -316,6 +316,72 @@ fn write_rgba_map(
     atomic_json(&options.output.join("result.json"), result)
 }
 
+/// 表面图像素：8 位常规路径 / 16 位（position/world_normal 在 bits=16 时）。
+enum SurfacePixels {
+    Bits8(Vec<u8>),
+    Bits16(Vec<u16>),
+}
+
+/// 写表面编码图（AO 以外的 Mesh Map），按位深落盘 Rgba8/Rgba16。
+fn write_surface_map(
+    options: &Options,
+    result: &mut ResultSet,
+    material: usize,
+    prefix: &str,
+    kind: &str,
+    pixels: SurfacePixels,
+) -> Result<(), String> {
+    let path = options.output.join(format!("{prefix}_{kind}.png"));
+    let image = match pixels {
+        SurfacePixels::Bits8(data) => image::DynamicImage::ImageRgba8(
+            image::RgbaImage::from_raw(options.resolution, options.resolution, data)
+                .ok_or("Mesh Map 图像尺寸错误")?,
+        ),
+        SurfacePixels::Bits16(data) => image::DynamicImage::ImageRgba16(
+            image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(
+                options.resolution,
+                options.resolution,
+                data,
+            )
+            .ok_or("Mesh Map 图像尺寸错误")?,
+        ),
+    };
+    save(&path, image)?;
+    result.files.push(Output {
+        material,
+        kind: kind.into(),
+        path,
+    });
+    atomic_json(&options.output.join("result.json"), result)
+}
+
+/// 16 位版表面编码：编码闭包直接输出 0–65535 通道值。
+fn encode_surface_map_16(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    mut encode: impl FnMut(&Surface) -> [u16; 4],
+) -> Vec<u16> {
+    let mut pixels = vec![0u16; nearest.len() * 4];
+    for (i, surface) in surfaces.iter().enumerate() {
+        pixels[i * 4..i * 4 + 4].copy_from_slice(&encode(surface));
+    }
+    // margin 像素取最近覆盖像素的编码值（与 8 位版同语义）
+    for (pixel, source) in nearest.iter().copied().enumerate() {
+        if source == u32::MAX {
+            continue;
+        }
+        let source = source as usize * 4;
+        let value = [
+            pixels[source],
+            pixels[source + 1],
+            pixels[source + 2],
+            pixels[source + 3],
+        ];
+        pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&value);
+    }
+    pixels
+}
+
 fn save_scalar_map(
     options: &Options,
     path: &Path,
@@ -739,21 +805,37 @@ pub fn run(
                     0.1,
                     None,
                 );
-                write_rgba_map(
+                let encode_normal_16 = |surface: &Surface| -> [u16; 4] {
+                    let normal = Vec3::from_array(surface.normal).normalize_or_zero();
+                    let channel = |v: f32| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    [
+                        channel(normal.x * 0.5 + 0.5),
+                        channel(normal.y * 0.5 + 0.5),
+                        channel(normal.z * 0.5 + 0.5),
+                        65535,
+                    ]
+                };
+                let encode_normal_8 = |surface: &Surface| -> [u8; 4] {
+                    let normal = Vec3::from_array(surface.normal).normalize_or_zero();
+                    [
+                        unit_byte(normal.x * 0.5 + 0.5),
+                        unit_byte(normal.y * 0.5 + 0.5),
+                        unit_byte(normal.z * 0.5 + 0.5),
+                        255,
+                    ]
+                };
+                let pixels = if options.bits == 16 {
+                    SurfacePixels::Bits16(encode_surface_map_16(&surfaces, &nearest, encode_normal_16))
+                } else {
+                    SurfacePixels::Bits8(encode_surface_map(&surfaces, &nearest, encode_normal_8))
+                };
+                write_surface_map(
                     options,
                     &mut result,
                     material,
                     &prefix,
                     "world_normal",
-                    encode_surface_map(&surfaces, &nearest, |surface| {
-                        let normal = Vec3::from_array(surface.normal).normalize_or_zero();
-                        [
-                            unit_byte(normal.x * 0.5 + 0.5),
-                            unit_byte(normal.y * 0.5 + 0.5),
-                            unit_byte(normal.z * 0.5 + 0.5),
-                            255,
-                        ]
-                    }),
+                    pixels,
                 )?;
                 map_index += 1;
             }
@@ -773,21 +855,37 @@ pub fn run(
                 );
                 let min = Vec3::from_array(model.bounds[0]);
                 let span = (Vec3::from_array(model.bounds[1]) - min).max(Vec3::splat(1e-12));
-                write_rgba_map(
+                let encode_position_16 = |surface: &Surface| -> [u16; 4] {
+                    let value = (Vec3::from_array(surface.position) - min) / span;
+                    let channel = |v: f32| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    [
+                        channel(value.x),
+                        channel(value.y),
+                        channel(value.z),
+                        65535,
+                    ]
+                };
+                let encode_position_8 = |surface: &Surface| -> [u8; 4] {
+                    let value = (Vec3::from_array(surface.position) - min) / span;
+                    [
+                        unit_byte(value.x),
+                        unit_byte(value.y),
+                        unit_byte(value.z),
+                        255,
+                    ]
+                };
+                let pixels = if options.bits == 16 {
+                    SurfacePixels::Bits16(encode_surface_map_16(&surfaces, &nearest, encode_position_16))
+                } else {
+                    SurfacePixels::Bits8(encode_surface_map(&surfaces, &nearest, encode_position_8))
+                };
+                write_surface_map(
                     options,
                     &mut result,
                     material,
                     &prefix,
                     "position",
-                    encode_surface_map(&surfaces, &nearest, |surface| {
-                        let value = (Vec3::from_array(surface.position) - min) / span;
-                        [
-                            unit_byte(value.x),
-                            unit_byte(value.y),
-                            unit_byte(value.z),
-                            255,
-                        ]
-                    }),
+                    pixels,
                 )?;
                 map_index += 1;
             }
