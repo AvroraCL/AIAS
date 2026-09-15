@@ -1345,49 +1345,103 @@ fn line(pixels: &mut [u8], n: usize, a: Vec2, b: Vec2) {
 /// 内边距扩张：每个像素给出扩张后区域内最近覆盖像素的索引，
 /// u32::MAX 表示扩张后仍未覆盖。哨兵 u32 替代 Option<usize>——
 /// Option 无 niche 优化占 16 B/槽，4096² 下多占约 200 MB。
+///
+/// 精确欧氏距离变换（Felzenszwalb 1D 两遍：先列后行），带源下标跟踪。
+/// 旧 8 邻域 BFS 是切比雪夫度量：对角方向环宽多延伸约 41%，padding 环
+/// 宽不均且平局源选取有方向偏差。阈值按四舍五入像素距（√d² < margin+0.5）
+/// 判定，margin=1 时对角邻域（d²=2）仍在环内，与旧行为兼容。
 pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
-    let mut nearest: Vec<u32> = covered
-        .iter()
-        .enumerate()
-        .map(|(i, c)| if *c { i as u32 } else { u32::MAX })
-        .collect();
-    let mut queue: VecDeque<u32> = VecDeque::new();
-    let mut distance = vec![u32::MAX; covered.len()];
+    let n = covered.len();
+    let inf: u64 = 1 << 30;
+    let mut f = vec![0u64; n];
+    let mut src_in = vec![0u32; n];
     for (i, c) in covered.iter().enumerate() {
         if *c {
-            distance[i] = 0;
-            queue.push_back(i as u32);
+            f[i] = 0;
+            src_in[i] = i as u32;
+        } else {
+            f[i] = inf;
+            src_in[i] = u32::MAX;
         }
     }
-    while let Some(i) = queue.pop_front() {
-        let i = i as usize;
-        if distance[i] >= margin {
-            continue;
+    // 第一遍：每列沿 y 的 1D 距离变换。
+    let mut col_d = vec![0u64; n];
+    let mut col_src = vec![0u32; n];
+    for x in 0..size {
+        let column: Vec<u64> = (0..size).map(|y| f[y * size + x]).collect();
+        let column_src: Vec<u32> = (0..size).map(|y| src_in[y * size + x]).collect();
+        let (d, s) = dt_1d_sq(&column, &column_src);
+        for y in 0..size {
+            col_d[y * size + x] = d[y];
+            col_src[y * size + x] = s[y];
         }
-        let x = i % size;
-        let y = i / size;
-        for (dx, dy) in [
-            (-1, -1),
-            (0, -1),
-            (1, -1),
-            (-1, 0),
-            (1, 0),
-            (-1, 1),
-            (0, 1),
-            (1, 1),
-        ] {
-            let nx = x as isize + dx;
-            let ny = y as isize + dy;
-            if nx < 0 || ny < 0 || nx >= size as isize || ny >= size as isize {
+    }
+    // 第二遍：每行沿 x 对「列内距离 + 水平位移平方」再做 1D 变换。
+    // 平方欧氏距离可分离，两遍组合即精确 2D 欧氏最近源。
+    let threshold_cmp = (2 * (margin as u64) + 1).pow(2);
+    let mut nearest = vec![u32::MAX; n];
+    for y in 0..size {
+        let row: Vec<u64> = (0..size).map(|x| col_d[y * size + x]).collect();
+        let row_src: Vec<u32> = (0..size).map(|x| col_src[y * size + x]).collect();
+        let (d, s) = dt_1d_sq(&row, &row_src);
+        for x in 0..size {
+            let index = y * size + x;
+            if covered[index] {
+                nearest[index] = index as u32;
                 continue;
             }
-            let j = ny as usize * size + nx as usize;
-            if nearest[j] == u32::MAX {
-                nearest[j] = nearest[i];
-                distance[j] = distance[i] + 1;
-                queue.push_back(j as u32);
+            // √d² < margin + 0.5 ⟺ 4·d² < (2m+1)²（全程整数运算）
+            if d[x] * 4 < threshold_cmp {
+                nearest[index] = s[x];
             }
         }
     }
     nearest
+}
+
+/// 一维平方欧氏距离变换（Felzenszwalb & Huttenlocher 下包络法）：
+/// d[q] = min_p(f[p] + (p-q)²)，并跟踪最近源下标。i64 中间量防平方溢出
+/// 与负差值下溢；z[0] = i64::MIN 保证首抛物线永不被弹出。
+fn dt_1d_sq(f: &[u64], src_in: &[u32]) -> (Vec<u64>, Vec<u32>) {
+    let n = f.len();
+    let mut d = vec![0u64; n];
+    let mut src = vec![0u32; n];
+    if n == 0 {
+        return (d, src);
+    }
+    if n == 1 {
+        d[0] = f[0];
+        src[0] = src_in[0];
+        return (d, src);
+    }
+    let mut v = vec![0usize; n]; // 包络中抛物线的顶点位置
+    let mut z = vec![0i64; n + 1]; // 相邻抛物线边界的平方距
+    let mut env_src = vec![0u32; n];
+    let mut k = 0usize;
+    v[0] = 0;
+    z[0] = i64::MIN;
+    z[1] = i64::MAX;
+    env_src[0] = src_in[0];
+    for q in 1..n {
+        let fq = f[q] as i64 + (q * q) as i64;
+        let mut s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64)) / (2 * (q - v[k]) as i64);
+        while s <= z[k] {
+            k -= 1;
+            s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64)) / (2 * (q - v[k]) as i64);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = i64::MAX;
+        env_src[k] = src_in[q];
+    }
+    let mut k = 0usize;
+    for q in 0..n {
+        while z[k + 1] < q as i64 {
+            k += 1;
+        }
+        d[q] = (q as i64 - v[k] as i64).pow(2) as u64 + f[v[k]];
+        src[q] = env_src[k];
+    }
+    (d, src)
 }

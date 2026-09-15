@@ -253,6 +253,15 @@ fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {
     let c = [false, false, false, false, true, false, false, false, false];
     let d = bake::dilate(&c, 3, 1);
     assert!(d.iter().all(|s| *s == 4));
+    // 欧氏最近源：对角平局不再有方向偏差。(4,0) 到 (4,4) 距离 4，到 (0,0)
+    // 距离 √32≈5.66，最近源必须是 (4,4)（旧切比雪夫 BFS 会按扩展顺序取到 (0,0)）。
+    let size = 5;
+    let mut c = vec![false; size * size];
+    c[0] = true;
+    c[size * size - 1] = true;
+    let d = bake::dilate(&c, size, 4);
+    assert_eq!(d[4], 0, "顶行右侧最近源是 (0,0)（距离 4 < √32）");
+    assert_eq!(d[14], (size * size - 1) as u32, "(4,2) 到 (4,4) 距离 2，最近源是 (4,4)");
     assert_ne!(bake::color(0), bake::color(1));
     assert_eq!(bake::safe_name("中文:/材质"), "中文__材质");
 }
