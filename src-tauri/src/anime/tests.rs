@@ -2138,6 +2138,7 @@ pub(super) mod toonout_tests {
                     baseline.clone(),
                     radius,
                     true,
+                    &|_, _| {},
                 )
                 .unwrap();
                 println!(
@@ -2219,7 +2220,7 @@ pub(super) mod toonout_tests {
             println!("P104 start {file} {}x{}", rgb.width(), rgb.height());
             let started = std::time::Instant::now();
             let candidate =
-                try_refine_vitmatte_boundary_rgba(&base, &model, &rgb, baseline.clone(), 8, true)
+                try_refine_vitmatte_boundary_rgba(&base, &model, &rgb, baseline.clone(), 8, true, &|_, _| {})
                     .unwrap();
             let elapsed = started.elapsed();
             let (w, h) = rgb.dimensions();
