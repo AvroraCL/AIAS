@@ -631,6 +631,10 @@ pub(crate) const GPU_ORT_WHEEL_SIZE: u64 = 244_508_327;
 
 pub(crate) const GPU_ORT_WHEEL_PATH: &str = "packages/87/da/2685c79e5ea587beddebe083601fead0bdf3620bc2f92d18756e7de8a636/onnxruntime_gpu-1.23.2-cp312-cp312-win_amd64.whl";
 
+/// PyPI 官方发布的该 wheel SHA256（pypi.org/pypi/onnxruntime-gpu/1.23.2/json）。
+pub(crate) const GPU_ORT_WHEEL_SHA256: &str =
+    "fe925a84b00e291e0ad3fac29bfd8f8e06112abc760cdc82cb711b4f3935bd95";
+
 /// 前两个为国内 PyPI 镜像，最后一个为官方源；路径在三家完全一致。
 pub(crate) const GPU_ORT_HOSTS: &[&str] = &[
     "https://pypi.tuna.tsinghua.edu.cn",
@@ -685,8 +689,19 @@ pub fn install_gpu_ort(app: Option<&AppHandle>, base: &Path) -> Result<(), Strin
         let url = format!("{host}/{GPU_ORT_WHEEL_PATH}");
         match curl_download(&url, &archive, Some(GPU_ORT_WHEEL_SIZE), &progress) {
             Ok(()) => {
-                last_error = String::new();
-                break;
+                // 244MB 的 wheel 只查字节数不够：SHA256 不匹配即删档换下一镜像。
+                match crate::model_bake::sha256_of_file(&archive) {
+                    Ok(actual) if actual == GPU_ORT_WHEEL_SHA256 => {
+                        last_error = String::new();
+                        break;
+                    }
+                    actual => {
+                        let _ = fs::remove_file(&archive);
+                        last_error = format!(
+                            "SHA256 不匹配（期望 {GPU_ORT_WHEEL_SHA256}，实际 {actual}）"
+                        );
+                    }
+                }
             }
             Err(error) => last_error = error,
         }
