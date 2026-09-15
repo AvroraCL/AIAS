@@ -589,51 +589,57 @@ pub(crate) fn guided_filter_matte(rgb: &RgbImage, p: &[f32], radius: usize, eps:
     let mbp = pair_mean(&b, p, &mut sat);
 
     // 逐像素解 3×3 线性方程 (cov_II + eps·I)·a = cov_Ip，再 b = p̄ − a·Ī。
-    // 每像素只读自己的下标，map 并行求出后按序写回，输出与串行逐字节一致。
+    // 每像素只读自己的下标，按块并行直写四个输出缓冲，不设 133MB 的
+    // tuple 中转 Vec（每像素只写自己的下标，输出与串行逐字节一致）。
     let mut a1 = vec![0f32; n];
     let mut a2 = vec![0f32; n];
     let mut a3 = vec![0f32; n];
     let mut bb = vec![0f32; n];
-    let solved: Vec<(f32, f32, f32, f32)> = (0..n)
-        .into_par_iter()
-        .map(|i| {
-            let vr = (mrr[i] - mr[i] * mr[i]) as f64 + eps;
-            let vg = (mgg[i] - mg[i] * mg[i]) as f64 + eps;
-            let vb = (mbb[i] - mb[i] * mb[i]) as f64 + eps;
-            let vrg = (mrg[i] - mr[i] * mg[i]) as f64;
-            let vrb = (mrb[i] - mr[i] * mb[i]) as f64;
-            let vgb = (mgb[i] - mg[i] * mb[i]) as f64;
-            let crp = (mrp[i] - mr[i] * mp[i]) as f64;
-            let cgp = (mgp[i] - mg[i] * mp[i]) as f64;
-            let cbp = (mbp[i] - mb[i] * mp[i]) as f64;
-            // 余因子法求逆（对称矩阵，C 与其转置相同）
-            let c00 = vg * vb - vgb * vgb;
-            let c01 = vrb * vgb - vrg * vb;
-            let c02 = vrg * vgb - vg * vrb;
-            let c11 = vr * vb - vrb * vrb;
-            let c12 = vrg * vrb - vr * vgb;
-            let c22 = vr * vg - vrg * vrg;
-            let det = vr * c00 + vrg * c01 + vrb * c02;
-            let (a1_v, a2_v, a3_v) = if det.abs() < 1e-20 {
-                (0.0, 0.0, 0.0)
-            } else {
-                let inv = 1.0 / det;
-                (
-                    ((c00 * crp + c01 * cgp + c02 * cbp) * inv) as f32,
-                    ((c01 * crp + c11 * cgp + c12 * cbp) * inv) as f32,
-                    ((c02 * crp + c12 * cgp + c22 * cbp) * inv) as f32,
-                )
-            };
-            let bb_v = mp[i] - a1_v * mr[i] - a2_v * mg[i] - a3_v * mb[i];
-            (a1_v, a2_v, a3_v, bb_v)
-        })
-        .collect();
-    for (i, (a1_v, a2_v, a3_v, bb_v)) in solved.into_iter().enumerate() {
-        a1[i] = a1_v;
-        a2[i] = a2_v;
-        a3[i] = a3_v;
-        bb[i] = bb_v;
-    }
+    const CHUNK: usize = 8192;
+    a1.par_chunks_mut(CHUNK)
+        .zip(a2.par_chunks_mut(CHUNK))
+        .zip(a3.par_chunks_mut(CHUNK))
+        .zip(bb.par_chunks_mut(CHUNK))
+        .enumerate()
+        .for_each(|(block, (((a1c, a2c), a3c), bbc))| {
+            let start = block * CHUNK;
+            let end = (start + CHUNK).min(n);
+            for i in start..end {
+                let vr = (mrr[i] - mr[i] * mr[i]) as f64 + eps;
+                let vg = (mgg[i] - mg[i] * mg[i]) as f64 + eps;
+                let vb = (mbb[i] - mb[i] * mb[i]) as f64 + eps;
+                let vrg = (mrg[i] - mr[i] * mg[i]) as f64;
+                let vrb = (mrb[i] - mr[i] * mb[i]) as f64;
+                let vgb = (mgb[i] - mg[i] * mb[i]) as f64;
+                let crp = (mrp[i] - mr[i] * mp[i]) as f64;
+                let cgp = (mgp[i] - mg[i] * mp[i]) as f64;
+                let cbp = (mbp[i] - mb[i] * mp[i]) as f64;
+                // 余因子法求逆（对称矩阵，C 与其转置相同）
+                let c00 = vg * vb - vgb * vgb;
+                let c01 = vrb * vgb - vrg * vb;
+                let c02 = vrg * vgb - vg * vrb;
+                let c11 = vr * vb - vrb * vrb;
+                let c12 = vrg * vrb - vr * vgb;
+                let c22 = vr * vg - vrg * vrg;
+                let det = vr * c00 + vrg * c01 + vrb * c02;
+                let (a1_v, a2_v, a3_v) = if det.abs() < 1e-20 {
+                    (0.0, 0.0, 0.0)
+                } else {
+                    let inv = 1.0 / det;
+                    (
+                        ((c00 * crp + c01 * cgp + c02 * cbp) * inv) as f32,
+                        ((c01 * crp + c11 * cgp + c12 * cbp) * inv) as f32,
+                        ((c02 * crp + c12 * cgp + c22 * cbp) * inv) as f32,
+                    )
+                };
+                let bb_v = mp[i] - a1_v * mr[i] - a2_v * mg[i] - a3_v * mb[i];
+                let local = i - start;
+                a1c[local] = a1_v;
+                a2c[local] = a2_v;
+                a3c[local] = a3_v;
+                bbc[local] = bb_v;
+            }
+        });
 
     // 标准 fast guided filter 第二步：对 a、b 做盒均值后再合成，避免贴边振铃。
     let ma1 = mean(&a1, &mut sat);
