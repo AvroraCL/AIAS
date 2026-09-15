@@ -2,8 +2,6 @@ export const bakeWorkspaceDefaults = Object.freeze({
   outlinerOpen: true,
   settingsOpen: true,
   projection: 'perspective',
-  grid: true,
-  axes: true,
   wireframe: false,
   mapPreview: 'ao',
 });
@@ -41,7 +39,7 @@ export function restoreBakeSettings(value) {
   if (Number.isFinite(source.distanceRatio) && source.distanceRatio > 0) out.distanceRatio = source.distanceRatio;
   for (const key of ['selfOnly', 'ao', 'normal', 'worldNormal', 'curvature', 'position', 'thickness', 'uv', 'id', 'denoise']) if (typeof source[key] === 'boolean') out[key] = source[key];
   const workspace = source.workspace && typeof source.workspace === 'object' ? source.workspace : {};
-  for (const key of ['outlinerOpen', 'settingsOpen', 'grid', 'axes', 'wireframe']) {
+  for (const key of ['outlinerOpen', 'settingsOpen', 'wireframe']) {
     if (typeof workspace[key] === 'boolean') out.workspace[key] = workspace[key];
   }
   if (workspace.projection === 'perspective' || workspace.projection === 'orthographic') {

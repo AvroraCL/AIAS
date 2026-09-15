@@ -17,15 +17,17 @@ test('bake settings restore defaults without model handles and reject invalid qu
 test('workspace preferences have independent safe defaults and accept known display options', () => {
   const defaults = restoreBakeSettings(null);
   assert.deepEqual(defaults.workspace, {
-    outlinerOpen: true, settingsOpen: true, projection: 'perspective', grid: true, axes: true, wireframe: false, mapPreview: 'ao',
+    outlinerOpen: true, settingsOpen: true, projection: 'perspective', wireframe: false, mapPreview: 'ao',
   });
   const restored = restoreBakeSettings({
     workspace: { outlinerOpen: false, settingsOpen: false, projection: 'orthographic', grid: false, axes: false, wireframe: true, mapPreview: 'position' },
   });
   assert.deepEqual(restored.workspace, {
-    outlinerOpen: false, settingsOpen: false, projection: 'orthographic', grid: false, axes: false, wireframe: true, mapPreview: 'position',
+    outlinerOpen: false, settingsOpen: false, projection: 'orthographic', wireframe: true, mapPreview: 'position',
   });
-  assert.equal(restoreBakeSettings({ workspace: { projection: 'invalid', grid: 'yes' } }).workspace.projection, 'perspective');
-  assert.equal(restoreBakeSettings({ workspace: { projection: 'invalid', grid: 'yes' } }).workspace.grid, true);
+  assert.equal(restoreBakeSettings({ workspace: { projection: 'invalid' } }).workspace.projection, 'perspective');
+  // 旧版本遗留的网格/坐标轴开关已随视口简化移除，恢复时必须被忽略。
+  assert.equal(restoreBakeSettings({ workspace: { grid: 'yes', axes: true } }).workspace.grid, undefined);
+  assert.equal(restoreBakeSettings({ workspace: { grid: 'yes', axes: true } }).workspace.axes, undefined);
   assert.equal(restoreBakeSettings({ workspace: { mapPreview: 'invalid' } }).workspace.mapPreview, 'ao');
 });

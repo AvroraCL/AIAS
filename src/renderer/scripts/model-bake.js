@@ -7,7 +7,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   const stored = restoreBakeSettings(settings);
   let model = null, geometry = null, active = false, running = false, loading = false, exporting = false, disposed = false, job = '', view = 'model';
   let materials = new Set(), channels = {}, focused = null, results = [];
-  let renderer, controls, scene, camera, group, grid, axes, resizeObserver;
+  let renderer, controls, scene, camera, group, resizeObserver;
   let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false, oidnReady = false, oidnSource = '';
   let narrowPanel = 'settings';
   const resultTextures = new Map();
@@ -76,8 +76,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         <button id="bake-projection" data-bake-display="projection" class="bake-floating-button" type="button" title="切换透视 / 正交">透视</button>
         <details class="bake-display-menu"><summary title="显示选项"><i data-lucide="eye" aria-hidden="true"></i><span>显示</span></summary><div>
           <button id="bake-wireframe" data-bake-display="wireframe" type="button">线框</button>
-          <button id="bake-grid" data-bake-display="grid" type="button">网格</button>
-          <button id="bake-axes" data-bake-display="axes" type="button">坐标轴</button>
         </div></details>
       </div>
       <div id="bake-viewport-note" class="bake-viewport-note">Alt+左键 旋转 · 中键 平移 · 滚轮 缩放 · F 聚焦 · 1/3/7 前侧顶视图</div>
@@ -224,31 +222,14 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     });
   }
 
-  function updateSceneHelpers() {
-    if (!group || !grid || !axes) return;
-    const box = selectionBox();
-    if (!box) return;
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    const span = Math.max(size.x, size.y, size.z, 0.1);
-    grid.position.set(center.x, box.min.y - span * 0.002, center.z);
-    grid.scale.set(span * 2, 1, span * 2);
-    axes.position.set(center.x, box.min.y, center.z);
-    axes.scale.setScalar(span * 0.16);
-  }
-
   function syncDisplayControls() {
     const workspace = stored.workspace;
     const projection = $('projection');
     projection.textContent = workspace.projection === 'perspective' ? '透视' : '正交';
     projection.setAttribute('aria-pressed', String(workspace.projection === 'orthographic'));
-    for (const key of ['wireframe', 'grid', 'axes']) {
-      const button = $(key);
-      button.classList.toggle('active', workspace[key]);
-      button.setAttribute('aria-pressed', String(workspace[key]));
-    }
-    if (grid) grid.visible = Boolean(model) && workspace.grid;
-    if (axes) axes.visible = Boolean(model) && workspace.axes;
+    const button = $('wireframe');
+    button.classList.toggle('active', workspace.wireframe);
+    button.setAttribute('aria-pressed', String(workspace.wireframe));
     applyWireframe();
   }
 
@@ -310,12 +291,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       light.position.set(3, 5, 4);
       scene.add(light);
       group = new THREE.Group();
-      grid = new THREE.GridHelper(1, 10, 0x5a5a5a, 0x303030);
-      grid.material.transparent = true;
-      grid.material.opacity = 0.56;
-      axes = new THREE.AxesHelper(1);
-      axes.setColors(0x999999, 0xcccccc, 0x666666);
-      scene.add(grid, axes, group);
+      scene.add(group);
       setProjection(stored.workspace.projection, false);
       resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { updatePanelState('outliner'); updatePanelState('settings'); resizeRenderer(); }) : null;
       resizeObserver?.observe($('stage'));
@@ -531,7 +507,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     for (const [id, bounds] of prepared.bounds) objectBounds.set(id, bounds);
     for (const mesh of prepared.meshes) group?.add(mesh);
     syncMeshVisibility();
-    updateSceneHelpers();
     syncDisplayControls();
   }
 
@@ -1156,13 +1131,11 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   $('projection').onclick = () => setProjection(stored.workspace.projection === 'perspective' ? 'orthographic' : 'perspective');
   $('map-preview').value = stored.workspace.mapPreview;
   $('map-preview').onchange = () => applyMapPreview($('map-preview').value);
-  for (const key of ['wireframe', 'grid', 'axes']) {
-    $(key).onclick = () => {
-      stored.workspace[key] = !stored.workspace[key];
-      syncDisplayControls();
-      persist();
-    };
-  }
+  $('wireframe').onclick = () => {
+    stored.workspace.wireframe = !stored.workspace.wireframe;
+    syncDisplayControls();
+    persist();
+  };
   root.querySelectorAll('[data-bake-panel-toggle]').forEach(button => {
     button.onclick = () => {
       const panel = button.dataset.bakePanelToggle;
@@ -1316,11 +1289,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       unlisten?.();
       controls?.dispose();
       clearMeshes();
-      [grid, axes].forEach(helper => {
-        helper?.geometry?.dispose();
-        const materials = Array.isArray(helper?.material) ? helper.material : [helper?.material];
-        materials.forEach(material => material?.dispose());
-      });
       renderer?.dispose();
       if (model && !running) invoke('bake_release', { handle: model.handle }).catch(() => {});
       if (resultHandle) invoke('bake_result_release', { resultHandle }).catch(() => {});
