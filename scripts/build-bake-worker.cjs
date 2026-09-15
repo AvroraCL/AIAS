@@ -25,10 +25,15 @@ function run(command, args) { const result = spawnSync(command, args, { cwd: roo
   run('cargo', ['build', '--locked', '--release', '--manifest-path', 'bake-worker/Cargo.toml']);
   const out = path.join(root, 'build', 'bake'); fs.mkdirSync(out, { recursive: true });
   fs.copyFileSync(path.join(root, 'bake-worker', 'target', 'release', 'aias-bake-worker.exe'), path.join(out, 'aias-bake-worker.exe'));
-  fs.copyFileSync(path.join(root, 'bake-worker', 'shaders', 'ao.dxil'), path.join(out, 'ao.dxil'));
-  // OIDN 降噪器 CPU 忒需文件（与 worker exe 同目录，Windows 加载器搜索该目录）
+  // DXIL 已在编译期 include_bytes! 进 worker exe，无需随包分发。
+  // OIDN 降噪器运行时依赖（tauri.conf.json resources 打包 build/bake/oidn/）。
+  // 缺源文件必须直接失败：静默跳过会让干净环境的发布构建在资源收集阶段挂掉，
+  // 或更糟——打包成功但组件缺失，烘焙时才报"降噪组件执行出错"。
+  const oidnOut = path.join(out, 'oidn'); fs.mkdirSync(oidnOut, { recursive: true });
   const oidnBin = path.join(root, '测试区', 'oidn-test', 'bin');
   for (const name of ['OpenImageDenoise.dll', 'OpenImageDenoise_core.dll', 'OpenImageDenoise_device_cpu.dll', 'tbb12.dll']) {
-    if (fs.existsSync(path.join(oidnBin, name))) fs.copyFileSync(path.join(oidnBin, name), path.join(out, name));
+    const source = path.join(oidnBin, name);
+    if (!fs.existsSync(source)) throw Error(`OIDN 组件缺失：${source}（请先放置 OIDN 运行时到 测试区/oidn-test/bin）`);
+    fs.copyFileSync(source, path.join(oidnOut, name));
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });

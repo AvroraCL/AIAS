@@ -36,7 +36,9 @@ test('model bake workspace keeps authored colors neutral', () => {
 test('model bake viewport follows the Marmoset/Substance control scheme', () => {
   const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
   assert.match(script, /mouseButtons = \{ LEFT: null, MIDDLE: THREE\.MOUSE\.PAN, RIGHT: THREE\.MOUSE\.PAN \}/);
-  assert.match(script, /controls\.mouseButtons\.LEFT = event\.type === 'keydown' \? THREE\.MOUSE\.ROTATE : null/);
+  // keyup 必须无条件恢复点选（target 守卫会让焦点进输入框后的松键漏掉，LEFT=ROTATE 粘滞）。
+  assert.match(script, /event\.type === 'keyup'\) \{\s*\n\s*resetAltRotate\(\);/);
+  assert.match(script, /addEventListener\('blur', resetAltRotate\)/);
   assert.match(script, /removeEventListener\('keyup', keyboard\)/);
   assert.match(script, /const standardViews = \{ 1: 'front', 3: 'side', 7: 'top' \}/);
   assert.match(script, /Alt\+左键 旋转 · 中键 平移/);

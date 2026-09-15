@@ -62,6 +62,37 @@ fn command(app: &AppHandle) -> Result<Command, String> {
     c.creation_flags(0x08000000);
     Ok(c)
 }
+
+/// 把工作进程挂入 KILL_ON_JOB_CLOSE 的 Job Object。宿主进程退出（含 panic
+/// 闪退）时内核关闭 job 句柄并随之终止工作进程，烘焙中关窗不再产生继续
+/// 占用 GPU/内存、往缓存写盘的孤儿进程。HANDLE 包装类型不持有句柄所有权。
+#[cfg(windows)]
+fn attach_kill_on_close(child: &std::process::Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::core::PCWSTR;
+    // let-else 的 scrutinee 不能直接是 unsafe 块（`} else` 解析歧义）。
+    let created = unsafe { CreateJobObjectW(None, PCWSTR::null()) };
+    let Ok(job) = created else {
+        return;
+    };
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    unsafe {
+        let _ = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        let _ = AssignProcessToJobObject(job, HANDLE(child.as_raw_handle() as _));
+    }
+}
 /// 工作进程无输出的兜底上限：正常任务会持续产出 progress/result 行，
 /// 超时即视为挂死。挂死的任务会一直持有全局任务锁，必须由这里终止。
 const STALL_QUICK: Duration = Duration::from_secs(60);
@@ -81,6 +112,8 @@ fn execute(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("启动烘焙工作进程失败：{e}"))?;
+    #[cfg(windows)]
+    attach_kill_on_close(&child);
     #[cfg(feature = "bake-validation")]
     WORKER_IDS.lock().unwrap().insert(job.into(), child.id());
     let stdout = child.stdout.take().ok_or("工作进程缺失输出")?;
@@ -110,6 +143,10 @@ fn execute(
     let mut failure = None;
     let mut cancel_at = None;
     let mut last_output = Instant::now();
+    // stdout 读取线程结束（正常 EOF，或读取失败但进程仍存活）后不能直接
+    // 退出监视循环：取消检查与 stall 看门狗必须持续到 wait() 收尸，否则
+    // 卡死的工作进程会永久占用全局任务锁、取消按钮失效。
+    let mut stdout_lost = false;
     loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(line) => {
@@ -143,7 +180,7 @@ fn execute(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => stdout_lost = true,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         if cancel.is_some_and(Path::exists) {
@@ -158,6 +195,13 @@ fn execute(
             let _ = child.kill();
             failure = Some(format!("工作进程超过 {} 秒无输出，已终止", stall.as_secs()));
             break;
+        }
+        if stdout_lost {
+            // 断开的通道让 recv_timeout 立即返回，降级为低频轮询防忙等。
+            std::thread::sleep(Duration::from_millis(200));
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
         }
     }
     let status = child.wait().map_err(|e| e.to_string())?;
@@ -593,21 +637,29 @@ pub(crate) async fn oidn_install(app: AppHandle) -> Result<serde_json::Value, St
         let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&app_data).map_err(|e| e.to_string())?;
         let staging = app_data.join(format!("oidn-install-{}", id()));
-        let staging_bin = staging.join("bin");
-        std::fs::create_dir_all(&staging_bin).map_err(|e| e.to_string())?;
-        for name in OIDN_REQUIRED {
-            fs::copy(source_root.join("bin").join(name), staging_bin.join(name))
-                .map_err(|e| format!("复制 {name} 失败：{e}"))?;
-        }
-        fs::copy(
-            source_root.join("doc").join("LICENSE.txt"),
-            staging.join("OIDN-LICENSE.txt"),
-        )
-        .map_err(|e| e.to_string())?;
-        if !oidn_dir_complete(&staging_bin) {
+        // staging 的任何一步失败都要清掉半成品，否则反复失败会在 AppData
+        // 里累积一个个 ~25MB 的 oidn-install-* 目录。
+        let staged = (|| -> Result<(), String> {
+            let staging_bin = staging.join("bin");
+            std::fs::create_dir_all(&staging_bin).map_err(|e| e.to_string())?;
+            for name in OIDN_REQUIRED {
+                fs::copy(source_root.join("bin").join(name), staging_bin.join(name))
+                    .map_err(|e| format!("复制 {name} 失败：{e}"))?;
+            }
+            fs::copy(
+                source_root.join("doc").join("LICENSE.txt"),
+                staging.join("OIDN-LICENSE.txt"),
+            )
+            .map_err(|e| e.to_string())?;
+            if !oidn_dir_complete(&staging_bin) {
+                return Err("降噪组件文件不完整".into());
+            }
+            Ok(())
+        })();
+        if staged.is_err() {
             let _ = fs::remove_dir_all(&staging);
-            return Err("降噪组件文件不完整".into());
         }
+        staged?;
         let target = app_data.join("oidn");
         let backup = app_data.join(format!("oidn-backup-{}", id()));
         if target.exists() {
@@ -671,11 +723,13 @@ fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn prune_bake_cache(root: &Path) {
+    // 锁中毒时恢复而非按空保留集执行：宁可多留，也不能把活动结果目录误删。
     let retained: std::collections::HashSet<PathBuf> = RESULTS
         .lock()
-        .ok()
-        .map(|results| results.values().cloned().collect())
-        .unwrap_or_default();
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .cloned()
+        .collect();
     let cutoff = SystemTime::now()
         .checked_sub(Duration::from_secs(24 * 60 * 60))
         .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -724,6 +778,13 @@ fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result
     let root = std::fs::canonicalize(cache_root)
         .map_err(|error| format!("烘焙缓存目录不可用：{error}"))?;
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let destination = std::fs::canonicalize(directory).map_err(|e| e.to_string())?;
+    if root.starts_with(&destination) {
+        return Err(
+            "导出目录不能是烘焙缓存目录或其上级：不同任务的贴图会互相覆盖，请另选文件夹。"
+                .into(),
+        );
+    }
     let mut exported = 0usize;
     for file in files {
         let source = std::fs::canonicalize(file)

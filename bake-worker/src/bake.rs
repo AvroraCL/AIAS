@@ -73,7 +73,9 @@ pub struct Output {
     pub kind: String,
     pub path: PathBuf,
 }
-/// 清洗非法字符、截断并去掉首尾空格/点；空结果返回空串（调用方决定回退名）。
+/// 清洗非法字符、按字节预算截断并去掉首尾空格/点。截断按 UTF-8 字节数而非
+/// 字符数：80 个汉字 = 240 字节，叠加缓存根路径会超 Windows 默认 260 路径
+/// 上限，导致该材质全部贴图保存失败。空结果返回空串（调用方决定回退名）。
 fn clean_name(name: &str) -> String {
     let s: String = name
         .chars()
@@ -84,7 +86,15 @@ fn clean_name(name: &str) -> String {
                 c
             }
         })
-        .take(80)
+        // 120 字节给目录树与 "_world_normal.png" 这类后缀留出余量。
+        .scan(0usize, |bytes, c| {
+            let len = c.len_utf8();
+            if *bytes + len > 120 {
+                return None;
+            }
+            *bytes += len;
+            Some(c)
+        })
         .collect();
     s.trim_matches([' ', '.']).to_string()
 }
@@ -108,19 +118,26 @@ pub fn material_stems(materials: &[crate::model::Named]) -> Vec<String> {
         .iter()
         .map(|material| clean_name(&material.name))
         .collect();
+    let mut used = std::collections::HashSet::new();
     materials
         .iter()
         .enumerate()
         .map(|(id, _)| {
             let name = &names[id];
-            if name.is_empty() {
-                return format!("material_{id}");
-            }
-            if names.iter().filter(|other| *other == name).count() > 1 {
+            let mut stem = if name.is_empty() {
+                format!("material_{id}")
+            } else if names.iter().filter(|other| *other == name).count() > 1 {
                 format!("{name}_{id}")
             } else {
                 name.clone()
+            };
+            // 消歧结果仍可能与另一材质的字面名重合（["Gold","Gold","Gold_0"]
+            // → 两个 "Gold_0"），按已用集合兜底追加后缀直到唯一，杜绝输出
+            // 文件静默互相覆盖。
+            while !used.insert(stem.clone()) {
+                stem = format!("{stem}_{id}");
             }
+            stem
         })
         .collect()
 }
@@ -456,6 +473,43 @@ pub fn run(
         ));
     }
     std::fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
+    // 输出目录在 %APPDATA%（通常系统盘），4K×多材质×多图可写满磁盘白烧数十
+    // 分钟 GPU。按未压缩体积 6 折预估 PNG 总量（噪声内容压缩率差；ID 这类
+    // 平色图远小于此），不足时提前报错而不是逐材质失败。
+    let pixels = u64::from(options.resolution).pow(2);
+    let rgba_maps = usize::from(options.id)
+        + usize::from(options.normal)
+        + usize::from(options.world_normal)
+        + usize::from(options.curvature)
+        + usize::from(options.position);
+    let gray_maps = usize::from(options.ao) + usize::from(options.thickness);
+    let estimate = (pixels * 4 * rgba_maps as u64
+        + pixels * u64::from(options.bits / 8) * gray_maps as u64)
+        * 3
+        / 5
+        * options.materials.len() as u64;
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let output = options.output.canonicalize().unwrap_or_else(|_| options.output.clone());
+    let disk = disks
+        .list()
+        .iter()
+        .filter(|d| {
+            output.as_os_str().as_encoded_bytes().starts_with(
+                d.mount_point().as_os_str().as_encoded_bytes(),
+            )
+        })
+        .max_by_key(|d| d.mount_point().as_os_str().len());
+    if let Some(disk) = disk {
+        let available = disk.available_space();
+        if estimate > available {
+            return Err(format!(
+                "磁盘空间不足：预计输出约 {} MiB，{} 可用 {} MiB",
+                estimate / 1048576,
+                disk.mount_point().display(),
+                available / 1048576
+            ));
+        }
+    }
     let mut result = ResultSet {
         job_id: options.job_id.clone(),
         directory: options.output.clone(),
@@ -468,6 +522,34 @@ pub fn run(
     let stems = material_stems(&model.materials);
     let material_total = options.materials.len();
     let map_total = enabled_map_count(options);
+    // 降噪组件整批只加载一次：每材质重复 LoadLibrary/FreeLibrary 并两次翻转
+    // 进程 cwd，是批量降噪失败（OIDN 错误码 3）的头号嫌疑，也白白拖慢开跑。
+    let denoiser = if options.denoise && options.ao {
+        let oidn_dir = options
+            .oidn_dir
+            .as_deref()
+            .ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
+        Some(crate::denoise::Oidn::load(std::path::Path::new(oidn_dir))?)
+    } else {
+        None
+    };
+    // OIDN CPU 降噪单次可达分钟级且期间零输出；心跳行喂宿主的 stall 看门狗，
+    // 防止低速机上正常的降噪被"无输出超时"误杀。
+    let denoising = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(denoiser.is_some()));
+    let heartbeat = if denoiser.is_some() {
+        let flag = denoising.clone();
+        Some(std::thread::spawn(move || {
+            while flag.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                println!("{}", serde_json::json!({ "type": "heartbeat" }));
+            }
+        }))
+    } else {
+        None
+    };
     for (position, material) in options.materials.iter().copied().enumerate() {
         if options.cancel_path.exists() {
             result.cancelled = true;
@@ -795,10 +877,6 @@ pub fn run(
                     Some(block),
                 );
                 if options.denoise {
-                    let oidn_dir = options
-                        .oidn_dir
-                        .as_deref()
-                        .ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
                     emit_bake_progress(
                         &mut progress,
                         format!("{material_label} · AI 降噪"),
@@ -812,7 +890,9 @@ pub fn run(
                         0.88,
                         None,
                     );
-                    let denoiser = crate::denoise::Oidn::load(std::path::Path::new(oidn_dir))?;
+                    let denoiser = denoiser
+                        .as_ref()
+                        .ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
                     denoiser.denoise_gray(
                         &mut values,
                         options.resolution as usize,
@@ -994,7 +1074,12 @@ pub fn run(
             Ok(())
         })();
         if let Err(e) = attempt {
-            result.failures.push(format!("{material_label}：{e}"));
+            // 用户主动取消不是失败：GPU trace 的"任务已取消"错误不进失败名单
+            //（未完成清单由下方 cancelled 分支统一列出），避免与 UV 校验失败、
+            // 显存不足这类真实错误混在一起。
+            if !options.cancel_path.exists() {
+                result.failures.push(format!("{material_label}：{e}"));
+            }
             if options.cancel_path.exists() {
                 result.cancelled = true;
             }
@@ -1004,6 +1089,10 @@ pub fn run(
         if result.cancelled {
             break;
         }
+    }
+    denoising.store(false, std::sync::atomic::Ordering::Relaxed);
+    if let Some(heartbeat) = heartbeat {
+        let _ = heartbeat.join();
     }
     if !result.cancelled {
         progress(serde_json::json!({

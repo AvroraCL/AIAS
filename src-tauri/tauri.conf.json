@@ -52,7 +52,6 @@
     ],
     "resources": {
       "../build/bake/aias-bake-worker.exe": "bake/aias-bake-worker.exe",
-      "../build/bake/ao.dxil": "bake/ao.dxil",
       "../build/bake/oidn/OpenImageDenoise.dll": "bake/oidn/OpenImageDenoise.dll",
       "../build/bake/oidn/OpenImageDenoise_core.dll": "bake/oidn/OpenImageDenoise_core.dll",
       "../build/bake/oidn/OpenImageDenoise_device_cpu.dll": "bake/oidn/OpenImageDenoise_device_cpu.dll",

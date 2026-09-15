@@ -38,6 +38,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "texpresso",
+ "windows 0.61.3",
 ]
 
 [[package]]

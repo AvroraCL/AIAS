@@ -322,6 +322,20 @@ fn material_stems_follow_sp_style_naming() {
     // 同名区分依据全部材质统计，批量清洗过滤不会改变已定名。
     let single = bake::material_stems(&[named(0, "同名")]);
     assert_eq!(single[0], "同名");
+    // 消歧结果与另一材质的字面名重合时，必须继续追加后缀保持唯一，
+    // 否则两个材质写出同一组贴图文件静默互相覆盖。
+    let collision = bake::material_stems(&[
+        named(0, "Gold"),
+        named(1, "Gold"),
+        named(2, "Gold_0"),
+    ]);
+    assert_eq!(collision.len(), 3);
+    assert_eq!(collision.iter().collect::<std::collections::HashSet<_>>().len(), 3);
+    // 长名截断按 UTF-8 字节预算（120 字节）而非字符数，CJK 名不会造出超长路径。
+    let long_cjk: String = "坦".repeat(90);
+    let stems = bake::material_stems(&[named(0, &long_cjk)]);
+    assert_eq!(stems[0].chars().count(), 40);
+    assert_eq!(stems[0].len(), 120);
 }
 fn hash(mut x: u32) -> u32 {
     x ^= x >> 16;

@@ -34,6 +34,11 @@ rayon = "1"
 tempfile = "3"
 base64 = "0.22"
 
+# 烘焙工作进程挂入 KILL_ON_JOB_CLOSE 的 Job Object：宿主无论正常退出还是
+# panic 闪退，内核都会随 job 句柄关闭终止工作进程，杜绝孤儿进程占 GPU/内存。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [profile.release]
 panic = "abort"
 # thin LTO：比 fat LTO 内存占用低得多（16GB 构建机可稳定完成），并行 codegen

@@ -21,11 +21,16 @@ fn main() {
             let library = root.join("x86_64-w64-mingw32").join("lib");
             if library.is_dir() {
                 println!("cargo:rustc-link-search=native={}", library.display());
+                // 线程库随工具链变体而异：MCF 变体的 libstdc++ 引用 mcfgthread，
+                // 须显式补链；POSIX/winpthreads 变体由 rustc 的 -l:libpthread.a
+                // 覆盖，硬链 mcfgthread 会在没有该库的工具链上直接断链。
+                if library.join("libmcfgthread.a").is_file() {
+                    println!("cargo:rustc-link-lib=static=mcfgthread");
+                    // GNU release 链接把 libgcc_eh 放在 Rust/Cargo 库之后；再在
+                    // 最终参数处重复一次线程库，满足静态库从左到右的符号解析顺序。
+                    println!("cargo:rustc-link-arg=-lmcfgthread");
+                }
             }
         }
-        println!("cargo:rustc-link-lib=static=mcfgthread");
-        // GNU release 链接把 libgcc_eh 放在 Rust/Cargo 库之后；再在最终参数处
-        // 重复一次线程库，满足静态库从左到右的符号解析顺序。
-        println!("cargo:rustc-link-arg=-lmcfgthread");
     }
 }

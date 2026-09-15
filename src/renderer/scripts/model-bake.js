@@ -123,7 +123,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const raw = Math.max(0, Math.min(1, Number(data.progress) || 0));
     const value = running ? Math.max(lastBakeProgress, raw) : raw;
     if (running) lastBakeProgress = value;
-    const phase = data.phase || (running ? '准备烘焙任务' : '正在处理…');
+    // 取消请求期间 worker 仍会在文件边界间继续发进度：阶段文案保持"正在
+    // 取消"，避免提示一闪即被后续 progress 事件覆盖。
+    const phase = cancelling ? '正在取消，保留已完整写入的结果…' : (data.phase || (running ? '准备烘焙任务' : '正在处理…'));
     status(phase);
     $('progress').value = value;
     progress?.(value, phase);
@@ -419,7 +421,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   // 平滑法线：按量化 position 分组，同位置顶点的法线取平均后归一化。
   // 解决模型只有面法线（每个三角形内三个顶点法线相同）导致的硬边外观。
   // 键必须尺度不变：大坐标模型里 float32 的绝对抖动会超过任何固定容差，
-  // 因此按包围盒最大边长量化到 1e6 级，相同 float32 值必然得到相同键。
+  // 因此按包围盒最大边长量化。量化级取 1e5：组合键 < 1.00004e15 < 2^53，
+  // float64 精确；1e6 级的 ~2^62 键会超出 float64 精确整数域，不同位置
+  // 折叠到同一键导致不相邻顶点被错误平均。
   function smoothNormals(geometry) {
     const pos = geometry.getAttribute('position');
     const nor = geometry.getAttribute('normal');
@@ -435,14 +439,13 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     for (let i = 0; i < count; i++) {
       span = Math.max(span, pos.getX(i) - minX, pos.getY(i) - minY, pos.getZ(i) - minZ);
     }
-    const scale = 1e6 / (span || 1);
+    const scale = 1e5 / (span || 1);
     const sums = new Map();
     for (let i = 0; i < count; i++) {
       const qx = Math.round((pos.getX(i) - minX) * scale);
       const qy = Math.round((pos.getY(i) - minY) * scale);
       const qz = Math.round((pos.getZ(i) - minZ) * scale);
-      // qx/qy/qz < 2^20，组合键 ~2^60 在 float64 内精确，数值键比字符串键快数倍。
-      const key = (qx * 2097152 + qy) * 2097152 + qz;
+      const key = (qx * 100001 + qy) * 100001 + qz;
       let sum = sums.get(key);
       if (!sum) sums.set(key, sum = { nx: 0, ny: 0, nz: 0, count: 0 });
       sum.nx += nor.getX(i); sum.ny += nor.getY(i); sum.nz += nor.getZ(i);
@@ -453,7 +456,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       const qx = Math.round((pos.getX(i) - minX) * scale);
       const qy = Math.round((pos.getY(i) - minY) * scale);
       const qz = Math.round((pos.getZ(i) - minZ) * scale);
-      const sum = sums.get((qx * 2097152 + qy) * 2097152 + qz);
+      const sum = sums.get((qx * 100001 + qy) * 100001 + qz);
       if (!sum || sum.count <= 1) continue;
       const len = Math.sqrt(sum.nx * sum.nx + sum.ny * sum.ny + sum.nz * sum.nz);
       if (!len) continue;
@@ -1019,6 +1022,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   }
 
   async function showResults(data) {
+    // 模块在烘焙期间被销毁（HMR/关窗）：新结果句柄立即释放，否则后端
+    // RESULTS 表与缓存目录要留到重启才被清理。
+    if (disposed) {
+      if (data.resultHandle) invoke('bake_result_release', { resultHandle: data.resultHandle }).catch(() => {});
+      return;
+    }
     const previousHandle = resultHandle;
     clearResultTextures();
     // 贴图已 dispose 并 close() 位图，但网格材质可能仍引用它们（本函数只在
@@ -1226,23 +1235,33 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     };
   });
   const standardViews = { 1: 'front', 3: 'side', 7: 'top' };
+  const resetAltRotate = () => {
+    if (controls) controls.mouseButtons.LEFT = null;
+  };
   const keyboard = event => {
     if (!active) return;
     // Alt：按住时左键临时映射为旋转（Marmoset/Substance 习惯），松开归还点选。
+    // keyup 无条件恢复：焦点已移进输入框（或 Alt+Tab 切窗收不到 keyup，由
+    // window blur 兜底）时若沿用 target 守卫，LEFT=ROTATE 会永久粘滞。
     if (event.key === 'Alt') {
-      if (controls && view === 'model' && !event.target.closest('input, select, textarea')) {
-        controls.mouseButtons.LEFT = event.type === 'keydown' ? THREE.MOUSE.ROTATE : null;
-        if (event.type === 'keydown') event.preventDefault();
+      if (event.type === 'keyup') {
+        resetAltRotate();
+      } else if (controls && view === 'model' && !event.target.closest('input, select, textarea')) {
+        controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+        event.preventDefault();
       }
       return;
     }
-    if (event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input, select, textarea, button, [role="combobox"], dialog')) return;
+    // 按钮不排除：点击材质名后焦点留在 <button> 上，F/1/3/7 仍需可用；
+    // 这些键与按钮的 Enter/Space 激活键不冲突。
+    if (event.ctrlKey || event.metaKey || event.altKey || event.target.closest('input, select, textarea, [role="combobox"], dialog')) return;
     if (event.key.toLowerCase() === 'f' && model && view === 'model') { event.preventDefault(); frameSelection(); }
     const view_ = standardViews[event.key];
     if (view_ && model && view === 'model') { event.preventDefault(); setStandardView(view_); }
   };
   document.addEventListener('keydown', keyboard);
   document.addEventListener('keyup', keyboard);
+  window.addEventListener('blur', resetAltRotate);
   const endCheckboxDrag = () => { checkboxDrag = null; };
   window.addEventListener('pointerup', endCheckboxDrag);
   window.addEventListener('pointercancel', endCheckboxDrag);
@@ -1251,7 +1270,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   syncDisplayControls();
   setView('model');
 
-  let oidnProgressUnlisten = null;
   async function refreshOidnStatus() {
     if (!desktop) return;
     try {
@@ -1310,6 +1328,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       resizeObserver?.disconnect();
       document.removeEventListener('keydown', keyboard);
       document.removeEventListener('keyup', keyboard);
+      window.removeEventListener('blur', resetAltRotate);
       window.removeEventListener('pointerup', endCheckboxDrag);
       window.removeEventListener('pointercancel', endCheckboxDrag);
       clearResultTextures();
