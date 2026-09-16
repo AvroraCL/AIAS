@@ -28,17 +28,17 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、AI 抠�
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.4.4
+### 下载 v5.5.13
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.4.4_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.4.4/AIAS_5.4.4_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+| [AIAS_5.5.13_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.5.13/AIAS_5.5.13_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
 
 历史版本与更新日志见 [Releases](https://github.com/AvroraCL/AIAS/releases)。
 
 ### 当前状态
 
-AIAS 的贴图管线（PBR 合成 / 拆分、Mipmap、DDS 转换）与涂装管理已稳定可用，适合涂装作者日常使用。AI 抠图处于活跃迭代期：5.4 版接入 AnimeSeg 动漫专精与官方 BiRefNet 通用模型，并持续精修边缘质量——受推理分辨率限制，极细发丝与线稿边界仍有约 2-3 像素的精度上限，导出前建议先在对比视图中确认效果。
+AIAS 的贴图管线（PBR 合成 / 拆分、Mipmap、DDS 转换）与涂装管理已稳定可用，适合涂装作者日常使用。AI 抠图已接入 6 个离线模型并持续精修边缘质量——受推理分辨率限制，极细发丝与线稿边界仍有约 2-3 像素的精度上限，导出前建议先在对比视图中确认效果。模型烘焙（AO / 厚度 / 曲率 / 位置等 Mesh Map 一键离线烘焙）已进入可用状态：DXR 光线追踪加速、AI 降噪、SP 式按材质出图、自动 UV 展开带失败回退，详见下文「模型烘焙」。
 
 ### 系统要求
 
