@@ -1495,7 +1495,7 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
         .zip(f.par_chunks(size))
         .zip(src_in.par_chunks(size))
         .enumerate()
-        .for_each(|(x, (((d_chunk, s_chunk), f_col), src_col))| {
+        .for_each(|(_, (((d_chunk, s_chunk), f_col), src_col))| {
             let (d, s) = dt_1d_sq(f_col, src_col);
             d_chunk.copy_from_slice(&d);
             s_chunk.copy_from_slice(&s);
