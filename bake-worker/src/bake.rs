@@ -1286,6 +1286,7 @@ pub fn run(
                 result.failed_materials.push(material);
             } else {
                 result.failures.push(format!("{material_label}：{e}"));
+                result.failed_materials.push(material);
             }
         }
         result.elapsed_ms = start.elapsed().as_millis();
