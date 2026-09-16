@@ -1496,8 +1496,8 @@ fn line(pixels: &mut [u8], n: usize, a: Vec2, b: Vec2) {
 /// 判定，margin=1 时对角邻域（d²=2）仍在环内，与旧行为兼容。
 pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
     let n = covered.len();
-    let inf: u64 = 1 << 30;
-    let mut f = vec![0u64; n];
+    let inf: u32 = 1 << 30;
+    let mut f = vec![0u32; n];
     let mut src_in = vec![0u32; n];
     for (i, c) in covered.iter().enumerate() {
         if *c {
@@ -1512,7 +1512,7 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
     // 列遍历是跨步访存，串行会拖慢整个烘焙（2048² 下实测 +0.9s）。
     // 列结果以转置布局存放：第一遍按 x 得到连续可变块，第二遍共享只读。
     use rayon::prelude::*;
-    let mut col_d_t = vec![0u64; n]; // col_d_t[x * size + y]
+    let mut col_d_t = vec![0u32; n]; // col_d_t[x * size + y]
     let mut col_src_t = vec![0u32; n];
     col_d_t
         .par_chunks_mut(size)
@@ -1527,13 +1527,13 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
         });
     // 第二遍：每行沿 x 对「列内距离 + 水平位移平方」再做 1D 变换。
     // 平方欧氏距离可分离，两遍组合即精确 2D 欧氏最近源。
-    let threshold_cmp = (2 * (margin as u64) + 1).pow(2);
+    let threshold_cmp: u32 = ((2 * (margin as u64) + 1).pow(2)).min(u32::MAX as u64) as u32;
     let mut nearest = vec![u32::MAX; n];
     nearest
         .par_chunks_mut(size)
         .enumerate()
         .for_each(|(y, row_out)| {
-            let row: Vec<u64> = (0..size).map(|x| col_d_t[x * size + y]).collect();
+            let row: Vec<u32> = (0..size).map(|x| col_d_t[x * size + y]).collect();
             let row_src: Vec<u32> = (0..size).map(|x| col_src_t[x * size + y]).collect();
             let (d, s) = dt_1d_sq(&row, &row_src);
             for x in 0..size {
@@ -1551,9 +1551,9 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
 /// 一维平方欧氏距离变换（Felzenszwalb & Huttenlocher 下包络法）：
 /// d[q] = min_p(f[p] + (p-q)²)，并跟踪最近源下标。i64 中间量防平方溢出
 /// 与负差值下溢；z[0] = i64::MIN 保证首抛物线永不被弹出。
-fn dt_1d_sq(f: &[u64], src_in: &[u32]) -> (Vec<u64>, Vec<u32>) {
+fn dt_1d_sq(f: &[u32], src_in: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let n = f.len();
-    let mut d = vec![0u64; n];
+    let mut d = vec![0u32; n];
     let mut src = vec![0u32; n];
     if n == 0 {
         return (d, src);
@@ -1589,7 +1589,7 @@ fn dt_1d_sq(f: &[u64], src_in: &[u32]) -> (Vec<u64>, Vec<u32>) {
         while z[k + 1] < q as i64 {
             k += 1;
         }
-        d[q] = (q as i64 - v[k] as i64).pow(2) as u64 + f[v[k]];
+        d[q] = ((q as i64 - v[k] as i64).pow(2) + f[v[k]] as i64) as u32;
         src[q] = env_src[k];
     }
     (d, src)
