@@ -1,7 +1,7 @@
 // 风格实验室参数状态：10 套图片转风格化样式的参数白名单、默认值与恢复逻辑。
 // 纯函数模块（无 DOM 依赖），node --test 可直接覆盖。
 
-export const STYLE_IDS = ['glitch', 'camo', 'wear', 'oil', 'halftone', 'sketch', 'thermal', 'neon', 'cross', 'marble'];
+export const STYLE_IDS = ['glitch', 'camo', 'wear', 'oil', 'halftone', 'sketch', 'thermal', 'neon', 'cross', 'marble', 'duotone', 'watercolor', 'lowpoly', 'pixel', 'woodcut', 'film'];
 
 export const STYLE_LABELS = {
   glitch: '故障艺术',
@@ -14,6 +14,12 @@ export const STYLE_LABELS = {
   neon: '赛博霓虹',
   cross: '十字绣',
   marble: '大理石纹',
+  duotone: '双色调',
+  watercolor: '水彩晕染',
+  lowpoly: '低多边形',
+  pixel: '像素画',
+  woodcut: '版画木刻',
+  film: '胶片颗粒',
 };
 
 // 每套样式的参数默认值；inspector 按此渲染，处理函数按此消费。
@@ -28,6 +34,12 @@ export const STYLE_DEFAULTS = {
   neon: { edge: 70, glow: 55, hue: 185, dark: 70 },
   cross: { levels: 10, stitch: 10, fabric: 35, grid: true },
   marble: { octaves: 5, turbulence: 45, vein: 42, palette: 'auto', scale: 60 },
+  duotone: { shadow: '#1a1a2e', highlight: '#e8c547', midpoint: 50, softness: 30 },
+  watercolor: { bleed: 55, edge: 65, paper: 40, washes: 3, saturation: 70 },
+  lowpoly: { cell: 24, jitter: 40, flat: 35, palette: 'auto', colors: 6 },
+  pixel: { size: 6, levels: 6, dither: 'ordered', palette: 'auto', paletteN: 8 },
+  woodcut: { lineWidth: 3, angle: 0, contrast: 65, roughness: 35 },
+  film: { grain: 45, halation: 35, fade: 25, warmth: 40 },
 };
 
 export const STYLE_ENUMS = {
@@ -40,6 +52,8 @@ export const STYLE_ENUMS = {
   thermal: [['lut', [['iron', '铁红'], ['rainbow', '彩虹'], ['nightvision', '夜视'], ['gold', '鎏金'], ['ice', '冰蓝']]]],
   cross: [['levels', null]],
   marble: [['palette', [['auto', '取色于原图'], ['blackwhite', '黑白'], ['jade', '青玉'], ['amber', '琥珀']]]],
+  lowpoly: [['palette', [['auto', '取色于原图'], ['warm', '暖调'], ['cool', '冷调']]]],
+  pixel: [['dither', [['none', '关闭'], ['ordered', '有序'], ['diffusion', '误差扩散']]]],
 };
 
 // 参数恢复白名单：键 → [类型, 最小, 最大]（min/max 仅数值用）。
@@ -54,6 +68,12 @@ const PARAM_RANGES = {
   neon: { edge: [10, 100], glow: [0, 100], hue: [0, 360], dark: [0, 100] },
   cross: { levels: [3, 24], stitch: [4, 24], fabric: [0, 100] },
   marble: { octaves: [2, 7], turbulence: [5, 100], vein: [10, 90], scale: [10, 100] },
+  duotone: { midpoint: [10, 90], softness: [0, 100] },
+  watercolor: { bleed: [10, 100], edge: [10, 100], paper: [0, 100], washes: [1, 6], saturation: [0, 100] },
+  lowpoly: { cell: [8, 64], jitter: [0, 100], flat: [0, 100], colors: [3, 12] },
+  pixel: { size: [2, 16], levels: [2, 16] },
+  woodcut: { lineWidth: [1, 8], angle: [0, 180], contrast: [10, 100], roughness: [0, 100] },
+  film: { grain: [0, 100], halation: [0, 100], fade: [0, 100], warmth: [0, 100] },
 };
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));

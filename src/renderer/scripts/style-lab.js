@@ -1,4 +1,5 @@
 import { STYLE_IDS, STYLE_LABELS, STYLE_DEFAULTS, restoreStyleLabSettings, makeFbm, makeNoise2D, mulberry32, extractPalette } from './style-lab-state.mjs';
+import { renderDuotone, renderWatercolor, renderLowpoly, renderPixelArt, renderWoodcut, renderFilm } from './style-lab-styles2.js';
 import './style-lab.css';
 
 const EXPORT_MAX = 4096;
@@ -69,6 +70,42 @@ const STYLE_SCHEMA = {
     { key: 'turbulence', type: 'range', label: '湍流强度', min: 5, max: 100, step: 1 },
     { key: 'vein', type: 'range', label: '脉络对比', min: 10, max: 90, step: 1 },
   ],
+  duotone: [
+    { key: 'shadow', type: 'color', label: '暗部色', def: '#1a1a2e' },
+    { key: 'highlight', type: 'color', label: '亮部色', def: '#e8c547' },
+    { key: 'midpoint', type: 'range', label: '明暗分界', min: 10, max: 90, step: 1 },
+    { key: 'softness', type: 'range', label: '过渡柔和', min: 0, max: 100, step: 1 },
+  ],
+  watercolor: [
+    { key: 'bleed', type: 'range', label: '晕染范围', min: 10, max: 100, step: 1 },
+    { key: 'edge', type: 'range', label: '轮廓加深', min: 10, max: 100, step: 1 },
+    { key: 'paper', type: 'range', label: '纸纹', min: 0, max: 100, step: 1 },
+    { key: 'washes', type: 'range', label: '罩染层数', min: 1, max: 6, step: 1 },
+    { key: 'saturation', type: 'range', label: '饱和度', min: 0, max: 100, step: 1 },
+  ],
+  lowpoly: [
+    { key: 'cell', type: 'range', label: '多边形尺寸', min: 8, max: 64, step: 1 },
+    { key: 'jitter', type: 'range', label: '顶点抖动', min: 0, max: 100, step: 1 },
+    { key: 'flat', type: 'range', label: '平面化', min: 0, max: 100, step: 1 },
+    { key: 'palette', type: 'select', label: '调色板', options: [['auto', '取色于原图'], ['warm', '暖调'], ['cool', '冷调']] },
+    { key: 'colors', type: 'range', label: '色彩数', min: 3, max: 12, step: 1 },
+  ],
+  pixel: [
+    { key: 'size', type: 'range', label: '像素大小', min: 2, max: 16, step: 1 },
+    { key: 'levels', type: 'range', label: '色彩级数', min: 2, max: 16, step: 1 },
+  ],
+  woodcut: [
+    { key: 'lineWidth', type: 'range', label: '线宽', min: 1, max: 8, step: 1 },
+    { key: 'angle', type: 'range', label: '排线角度', min: 0, max: 180, step: 15 },
+    { key: 'contrast', type: 'range', label: '对比', min: 10, max: 100, step: 1 },
+    { key: 'roughness', type: 'range', label: '粗糙度', min: 0, max: 100, step: 1 },
+  ],
+  film: [
+    { key: 'grain', type: 'range', label: '颗粒', min: 0, max: 100, step: 1 },
+    { key: 'halation', type: 'range', label: '光晕', min: 0, max: 100, step: 1 },
+    { key: 'fade', type: 'range', label: '褪色', min: 0, max: 100, step: 1 },
+    { key: 'warmth', type: 'range', label: '暖调', min: 0, max: 100, step: 1 },
+  ],
 };
 
 const BUILTIN_PRESETS = {
@@ -112,6 +149,30 @@ const BUILTIN_PRESETS = {
   marble: [
     { name: '黑白大理石', settings: { palette: 'blackwhite', scale: 55, octaves: 5, turbulence: 55, vein: 55 } },
     { name: '青玉纹理', settings: { palette: 'jade', scale: 40, octaves: 6, turbulence: 65, vein: 45 } },
+  ],
+  duotone: [
+    { name: '午夜金', settings: { shadow: '#1a1a2e', highlight: '#e8c547', midpoint: 50, softness: 30 } },
+    { name: '墨绿红', settings: { shadow: '#0d2818', highlight: '#ff6b6b', midpoint: 45, softness: 40 } },
+  ],
+  watercolor: [
+    { name: '淡彩速写', settings: { bleed: 40, edge: 35, paper: 55, washes: 2, saturation: 60 } },
+    { name: '浓彩水墨', settings: { bleed: 80, edge: 75, paper: 30, washes: 5, saturation: 85 } },
+  ],
+  lowpoly: [
+    { name: '暖调低多边形', settings: { cell: 20, jitter: 45, flat: 30, palette: 'warm', colors: 6 } },
+    { name: '冷调低多边形', settings: { cell: 28, jitter: 30, flat: 45, palette: 'cool', colors: 5 } },
+  ],
+  pixel: [
+    { name: 'GameBoy', settings: { size: 8, levels: 4, dither: 'ordered' } },
+    { name: 'CGA 16色', settings: { size: 5, levels: 10, dither: 'diffusion' } },
+  ],
+  woodcut: [
+    { name: '木刻版画', settings: { lineWidth: 3, angle: 0, contrast: 80, roughness: 30 } },
+    { name: '细纹铜版', settings: { lineWidth: 2, angle: 90, contrast: 60, roughness: 50 } },
+  ],
+  film: [
+    { name: 'Portra 400', settings: { grain: 35, halation: 40, fade: 30, warmth: 55 } },
+    { name: 'Cinestill 800T', settings: { grain: 50, halation: 70, fade: 15, warmth: 10 } },
   ],
 };
 
@@ -187,6 +248,13 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
         select.dataset.param = p.key;
         for (const [v, text] of p.options) select.append(new Option(text, v));
         label.append(select);
+        grid.append(label);
+      } else if (p.type === 'color') {
+        const label = document.createElement('label');
+        label.textContent = p.label;
+        const input = document.createElement('input');
+        input.type = 'color'; input.dataset.param = p.key; input.value = p.def || '#000000';
+        label.append(input);
         grid.append(label);
       } else if (p.type === 'check') {
         const label = document.createElement('label');
@@ -498,6 +566,15 @@ function prepareStyle(style, src, w, h, p) {
     pre.fbm = makeFbm(3157, Math.round(p.octaves));
     pre.palette = p.palette === 'auto' ? extractPalette(src, 4) : null;
   }
+  if (style === 'duotone' || style === 'watercolor' || style === 'film' || style === 'woodcut') {
+    pre.gray = prepareGray(src, w, h);
+  }
+  if (style === 'lowpoly' || style === 'pixel') {
+    pre.palette = (p.palette === 'warm' || p.palette === 'cool') ? p.palette : 'auto';
+  }
+  if (style === 'watercolor') {
+    pre.fbm = makeFbm(7777, 4);
+  }
   return pre;
 }
 
@@ -529,7 +606,13 @@ function renderRows(style, dst, src, w, h, y0, y1, p, pre) {
     case 'neon': return renderNeon(dst, w, h, y0, y1, p, pre);
     case 'cross': return renderCross(dst, src, w, h, y0, y1, p);
     case 'marble': return renderMarble(dst, w, h, y0, y1, p, pre);
-    default: return copyRows(dst, src, w, y0, y1);
+    case 'duotone': return renderDuotone(dst, w, h, y0, y1, p, pre.gray);
+    case 'watercolor': return renderWatercolor(dst, src, w, h, y0, y1, p, pre);
+    case 'lowpoly': return renderLowpoly(dst, src, w, h, y0, y1, p, pre);
+    case 'pixel': return renderPixelArt(dst, src, w, h, y0, y1, p);
+    case 'woodcut': return renderWoodcut(dst, src, w, h, y0, y1, p, pre.gray);
+    case 'film': return renderFilm(dst, src, w, h, y0, y1, p, pre.gray, pre.blur || boxBlur(pre.gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 80))));
+    default: return copyRows(dst, src, w, y0, y1); return copyRows(dst, src, w, y0, y1);
   }
 }
 
