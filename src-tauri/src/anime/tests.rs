@@ -262,6 +262,37 @@ pub(super) mod toonout_tests {
     /// 端到端验证 ToonOut：下载 470MB 模型 + 真实推理，仅在手动运行：
     /// `cargo test toonout -- --ignored --nocapture`
     #[test]
+
+    #[ignore = "手动执行：advanced 管线真实模型推理（RTMDet+精修软边缘路径）"]
+    fn advanced_real_model_smoke() {
+        let base = dirs::data_dir()
+            .expect("无法定位用户目录")
+            .join("studio.avroracl.aias");
+        let input = std::env::var_os("AIAS_AB_INPUT")
+            .map(PathBuf::from)
+            .expect("AIAS_AB_INPUT 必须指向测试图片");
+        let rgb = image::open(&input).unwrap().to_rgb8();
+        ensure_ort_runtime(&base).unwrap();
+        let matte = run_advanced(&base, &rgb).unwrap();
+        let (w, h) = rgb.dimensions();
+        let (mut strong, mut weak) = (0usize, 0usize);
+        for value in &matte {
+            if *value > 0.9 {
+                strong += 1;
+            } else if *value < 0.1 {
+                weak += 1;
+            }
+        }
+        let total = (w * h) as usize;
+        println!(
+            "advanced mask {w}x{h} strong={strong} weak={weak} coverage={:.2}%",
+            strong as f64 / total as f64 * 100.0
+        );
+        assert!(strong > 0, "无任何高置信前景像素：软精修路径可能异常");
+        assert!(matte.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            "掩码出现非有限或越界值");
+    }
+
     #[ignore = "下载并运行 470MB 模型，手动执行"]
     fn toonout_end_to_end() {
         let base = std::env::temp_dir().join("aias-toonout-e2e");
