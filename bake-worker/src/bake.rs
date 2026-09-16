@@ -956,7 +956,7 @@ pub fn run(
                         .collect();
                     let vertices: Vec<_> = selected.iter().flat_map(|t| t.positions).collect();
                     let objects: Vec<_> = selected.iter().map(|t| t.object as u32).collect();
-                    gpu = Some(Gpu::new(options.device, &vertices, &objects)?);
+                    gpu = Some(Gpu::new(options.device, &vertices, &objects, options.self_only)?);
                 }
                 let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
                 let mut values = vec![1f32; covered.len()];
@@ -1146,7 +1146,7 @@ pub fn run(
                         .collect();
                     let vertices: Vec<_> = selected.iter().flat_map(|t| t.positions).collect();
                     let objects: Vec<_> = selected.iter().map(|t| t.object as u32).collect();
-                    gpu = Some(Gpu::new(options.device, &vertices, &objects)?);
+                    gpu = Some(Gpu::new(options.device, &vertices, &objects, options.self_only)?);
                 }
                 let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
                 let diagonal = (Vec3::from_array(model.bounds[1])

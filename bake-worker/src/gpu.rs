@@ -123,8 +123,8 @@ unsafe fn barrier(
     }
 }
 impl Gpu {
-    pub fn new(index: u32, vertices: &[[f32; 3]], object_ids: &[u32]) -> GResult<Self> {
-        Self::with_budget(index, vertices, object_ids, None)
+    pub fn new(index: u32, vertices: &[[f32; 3]], object_ids: &[u32], self_only: bool) -> GResult<Self> {
+        Self::with_budget(index, vertices, object_ids, None, self_only)
     }
     #[cfg(test)]
     pub fn remove_device(&self) {
@@ -137,6 +137,7 @@ impl Gpu {
         vertices: &[[f32; 3]],
         object_ids: &[u32],
         budget_limit: Option<u64>,
+        self_only: bool,
     ) -> GResult<Self> {
         unsafe {
             if vertices.is_empty() || vertices.len() != object_ids.len() * 3 {
@@ -181,7 +182,14 @@ impl Gpu {
             let objects = upload(&device, object_ids)?;
             let geometry = D3D12_RAYTRACING_GEOMETRY_DESC {
                 Type: D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-                Flags: D3D12_RAYTRACING_GEOMETRY_FLAG_NONE,
+                // selfOnly=false（默认）时几何标记 OPAQUE：命中自动提交、
+                // 硬件可走最快遍历路径；selfOnly=true 需要按对象过滤候选，
+                // 必须保持非不透明。
+                Flags: if self_only {
+                    D3D12_RAYTRACING_GEOMETRY_FLAG_NONE
+                } else {
+                    D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE
+                },
                 Anonymous: D3D12_RAYTRACING_GEOMETRY_DESC_0 {
                     Triangles: D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC {
                         VertexFormat: DXGI_FORMAT_R32G32B32_FLOAT,

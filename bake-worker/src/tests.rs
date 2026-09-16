@@ -423,7 +423,7 @@ fn gpu_matches_cpu_distance_self_and_repeat() {
             pixel: i,
         })
         .collect();
-    let mut gpu = Gpu::new(0, &v, &objects).unwrap();
+    let mut gpu = Gpu::new(0, &v, &objects, false).unwrap();
     let top = [Surface {
         position: [0., 0.5, 0.],
         normal: [0., 1., 0.],
@@ -464,7 +464,7 @@ fn gpu_matches_cpu_distance_self_and_repeat() {
     assert!(gpu
         .trace(&surfaces, 32, 2., 0.0001, false, || false)
         .is_ok());
-    assert!(Gpu::with_budget(0, &v, &objects, Some(1024))
+    assert!(Gpu::with_budget(0, &v, &objects, Some(1024), false)
         .err()
         .unwrap()
         .contains("显存"));
@@ -473,7 +473,7 @@ fn gpu_matches_cpu_distance_self_and_repeat() {
         .trace(&surfaces, 32, 2., 0.0001, false, || false)
         .is_err());
     drop(gpu);
-    let mut retry = Gpu::new(0, &v, &objects).unwrap();
+    let mut retry = Gpu::new(0, &v, &objects, false).unwrap();
     assert!(retry
         .trace(&surfaces, 32, 2., 0.0001, false, || false)
         .is_ok());

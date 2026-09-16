@@ -27,20 +27,29 @@ void main(uint3 id : SV_DispatchThreadID) {
         // 处把起点挪进邻面之下，产生假遮蔽黑斑，薄壁件厚度也会读零。
         ray.Origin=s.position; ray.TMin=bias; ray.TMax=distance;
         ray.Direction=direction;
-        if (mode == 0) {
+        // selfOnly=1：BLAS 为非不透明几何，逐候选做对象过滤后提交。
+        if (selfOnly == 1) {
             RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
             query.TraceRayInline(scene,RAY_FLAG_NONE,255,ray);
             while(query.Proceed()) {
-                if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && (selfOnly==0 || objects[query.CandidatePrimitiveIndex()]==s.objectId)) query.CommitNonOpaqueTriangleHit();
+                if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && objects[query.CandidatePrimitiveIndex()]==s.objectId) query.CommitNonOpaqueTriangleHit();
             }
+            if(query.CommittedStatus()==COMMITTED_TRIANGLE_HIT) {
+                value += mode == 0 ? 1 : (uint)round(saturate(query.CommittedRayT()/distance)*65535.0);
+            }
+        } else if (mode == 0) {
+            // selfOnly=0：几何标记 OPAQUE，命中自动提交；AO 只计二值命中，
+            // 任一命中即终止遍历，走硬件最快路径。不透明命中在 Proceed 中
+            // 自动提交，首个命中后遍历即结束。
+            RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+            query.TraceRayInline(scene,RAY_FLAG_NONE,255,ray);
+            while(query.Proceed()) {}
             if(query.CommittedStatus()==COMMITTED_TRIANGLE_HIT) value += 1;
         } else {
-            // 厚度需要最近命中距离，保持完整遍历。
-            RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+            // 厚度：完整遍历取最近命中距离。
+            RayQuery<RAY_FLAG_NONE> query;
             query.TraceRayInline(scene,RAY_FLAG_NONE,255,ray);
-            while(query.Proceed()) {
-                if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && (selfOnly==0 || objects[query.CandidatePrimitiveIndex()]==s.objectId)) query.CommitNonOpaqueTriangleHit();
-            }
+            while(query.Proceed()) {}
             if(query.CommittedStatus()==COMMITTED_TRIANGLE_HIT) {
                 value += (uint)round(saturate(query.CommittedRayT()/distance)*65535.0);
             }

@@ -15,7 +15,7 @@ fn main() {
                 [0., 0.5, 2.],
                 [2., 0.5, -2.],
             ];
-            let mut gpu = gpu::Gpu::new(0, &vertices, &[0, 1])?;
+            let mut gpu = gpu::Gpu::new(0, &vertices, &[0, 1], false)?;
             let surfaces = [gpu::Surface {
                 position: [0., 0., 0.],
                 normal: [0., 1., 0.],
