@@ -55,6 +55,9 @@ pub struct ResultSet {
     pub directory: PathBuf,
     pub files: Vec<Output>,
     pub failures: Vec<String>,
+    /// 失败/未完成材质的结构化列表，供前端在材质列表上打徽标。
+    #[serde(default)]
+    pub failed_materials: Vec<usize>,
     pub cancelled: bool,
     pub elapsed_ms: u128,
     #[serde(default)]
@@ -1278,11 +1281,11 @@ pub fn run(
             // 用户主动取消不是失败：GPU trace 的"任务已取消"错误不进失败名单
             //（未完成清单由下方 cancelled 分支统一列出），避免与 UV 校验失败、
             // 显存不足这类真实错误混在一起。
-            if !options.cancel_path.exists() {
-                result.failures.push(format!("{material_label}：{e}"));
-            }
             if options.cancel_path.exists() {
                 result.cancelled = true;
+                result.failed_materials.push(material);
+            } else {
+                result.failures.push(format!("{material_label}：{e}"));
             }
         }
         result.elapsed_ms = start.elapsed().as_millis();
@@ -1320,9 +1323,7 @@ pub fn run(
             .collect();
         for m in &options.materials {
             if !complete.contains(m) {
-                result
-                    .failures
-                    .push(format!("{} 未完成（取消）", model.materials[*m].name));
+                result.failed_materials.push(*m);
             }
         }
     }
