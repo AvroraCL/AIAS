@@ -773,6 +773,20 @@ fn export_obj(
     channels: &BTreeMap<usize, u32>,
     output: &Path,
 ) -> Result<Vec<std::path::PathBuf>, String> {
+    // 材质名清洗后可能碰撞（"a:b" 与 "a|b" 同为 a_b）：按首见顺序追加 _{n}
+    // 后缀保证唯一，否则重导入时同名 newmtl 会静默合并材质槽。
+    let mut material_names: std::collections::BTreeMap<usize, String> = Default::default();
+    let mut used_names = std::collections::HashSet::new();
+    for m in &model.materials {
+        let base = export_name(&m.name);
+        let mut name = base.clone();
+        let mut n = 0usize;
+        while !used_names.insert(name.clone()) {
+            n += 1;
+            name = format!("{base}_{n}");
+        }
+        material_names.insert(m.id, name);
+    }
     let stem = format!("{}_bake", export_name(&model.name));
     let obj_path = output.join(format!("{stem}.obj"));
     let mtl_path = output.join(format!("{stem}.mtl"));
@@ -798,7 +812,7 @@ fn export_obj(
             writeln!(
                 obj,
                 "usemtl {}",
-                export_name(&model.materials[triangle.material].name)
+                material_names[&triangle.material]
             )
             .map_err(|e| e.to_string())?;
         }
@@ -838,7 +852,7 @@ fn export_obj(
         writeln!(
             mtl,
             "\nnewmtl {}\nKd 0.8 0.8 0.8\nKa 0 0 0\nKs 0 0 0\nd 1",
-            export_name(&material.name)
+            material_names[&material.id]
         )
         .map_err(|e| e.to_string())?;
     }
