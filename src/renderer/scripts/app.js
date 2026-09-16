@@ -61,7 +61,17 @@ import {
   LayoutGrid,
   CircleDot,
   ClipboardCopy,
-  PenLine
+  PenLine,
+  Zap,
+  Target,
+  Brush,
+  Palette,
+  Grip,
+  Pencil,
+  Flame,
+  Sparkles,
+  Grid3x3,
+  Waves
 } from "lucide";
 
 const defaults = {

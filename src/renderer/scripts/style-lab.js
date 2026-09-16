@@ -117,7 +117,6 @@ const BUILTIN_PRESETS = {
 
 export function createStyleLab({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, busy, changed, notify }) {
   let config = restoreStyleLabSettings(settings), source = null, sourceName = "", result = null, disposed = false;
-  let source = null, sourceName = '', result = null;
   let active = false, exporting = false, importing = false, computing = false, revision = 0, importRevision = 0;
   let view = 'result', zoom = 1, saveTimer;
   let styleLabUI = null; void styleLabUI;
