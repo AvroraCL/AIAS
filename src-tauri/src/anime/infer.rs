@@ -809,6 +809,7 @@ pub(crate) fn recover_anime_specialist_details_rgba(
     base: &Path,
     rgb: &RgbImage,
     mut current: RgbaImage,
+    on_band: &dyn Fn(usize, usize),
 ) -> Result<RgbaImage, String> {
     const MIN_LONG_SIDE: u32 = 1600;
     if rgb.width().max(rgb.height()) < MIN_LONG_SIDE {
@@ -821,7 +822,8 @@ pub(crate) fn recover_anime_specialist_details_rgba(
         .pixels()
         .map(|pixel| pixel[3] as f32 / 255.0)
         .collect();
-    let (recovered, changed) = recover_anime_specialist_detail_alpha(base, rgb, &base_alpha)?;
+    let (recovered, changed) =
+        recover_anime_specialist_detail_alpha(base, rgb, &base_alpha, on_band)?;
     if changed.iter().any(|changed| *changed) {
         // Any newly visible pixel must be recolored from the source image;
         // transparent RGB from the earlier result is not a valid foreground.
@@ -842,6 +844,7 @@ pub(crate) fn recover_anime_specialist_detail_alpha(
     base: &Path,
     rgb: &RgbImage,
     base_alpha: &[f32],
+    on_band: &dyn Fn(usize, usize),
 ) -> Result<(Vec<f32>, Vec<bool>), String> {
     let (width, height) = rgb.dimensions();
     if base_alpha.len() != (width as usize).saturating_mul(height as usize) {
@@ -878,7 +881,11 @@ pub(crate) fn recover_anime_specialist_detail_alpha(
 
     // 下半部：同门控纵向分带补齐。GT 上 56% 的漏检位于上半部窗口之外，
     // 带内保持约 2 倍于整图推理的采样密度；多带可能重叠，取 max 只补不擦。
-    for (inner, outer) in recovery_lower_bands(base_alpha, width, height) {
+    let bands: Vec<_> = recovery_lower_bands(base_alpha, width, height);
+    let band_total = bands.len();
+    for (band_index, (inner, outer)) in bands.into_iter().enumerate() {
+        // 带间透传进度并响应取消：每带一次完整推理，CPU 上可达数十秒。
+        on_band(band_index, band_total);
         if crate::safety::task_cancel_pending() {
             return Err("任务已取消".into());
         }

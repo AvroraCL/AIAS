@@ -199,7 +199,7 @@ fn ab_production_detail_recovery_path() {
     assert_eq!(rgb.dimensions(), baseline.dimensions());
 
     let started = std::time::Instant::now();
-    let candidate = recover_anime_specialist_details_rgba(&base, &rgb, baseline.clone()).unwrap();
+    let candidate = recover_anime_specialist_details_rgba(&base, &rgb, baseline.clone(), &|_, _| {}).unwrap();
     let elapsed_ms = started.elapsed().as_millis();
     let mut changed = 0usize;
     for (before, after) in baseline.pixels().zip(candidate.pixels()) {

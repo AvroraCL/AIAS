@@ -503,7 +503,13 @@ pub fn cutout_with_options(
         if recover_details && model_id == "anime-specialist" && fallback_model == "anime-specialist"
         {
             on_phase(0.85, "细节恢复");
-            recover_anime_specialist_details_rgba(base, &rgb, result)
+            let band_progress = |done: usize, total: usize| {
+                on_phase(
+                    0.85 + 0.03 * done as f64 / total.max(1) as f64,
+                    &format!("细节恢复 {done}/{total}"),
+                );
+            };
+            recover_anime_specialist_details_rgba(base, &rgb, result, &band_progress)
         } else {
             Ok(result)
         }
