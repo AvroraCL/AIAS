@@ -478,3 +478,30 @@ fn gpu_matches_cpu_distance_self_and_repeat() {
         .trace(&surfaces, 32, 2., 0.0001, false, || false)
         .is_ok());
 }
+
+#[test]
+fn dither_lsb_stays_within_one_lsb_and_averages_near_zero() {
+    let mut sum = 0f64;
+    for i in 0..10_000usize {
+        let v = bake::dither_lsb(i);
+        assert!((-1.0..=1.0).contains(&v), "抖动越界: {v}");
+        sum += v as f64;
+    }
+    assert!((sum / 10_000.0).abs() < 0.05, "抖动均值应接近 0");
+}
+
+#[test]
+fn dt_1d_sq_reports_exact_squared_distances_and_sources() {
+    let inf = 1u32 << 30;
+    let mut f = vec![inf; 8];
+    f[0] = 0;
+    f[7] = 0;
+    let src = [0u32, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, 7u32];
+    let (d, s) = bake::dt_1d_sq(&f, &src);
+    let expect = [0u32, 1, 4, 9, 9, 4, 1, 0];
+    for (i, e) in expect.iter().enumerate() {
+        assert_eq!(d[i], *e, "位置 {i} 平方距离不符");
+    }
+    assert_eq!(s[2], 0, "位置 2 最近源是 0");
+    assert_eq!(s[5], 7, "位置 5 最近源是 7");
+}

@@ -191,7 +191,7 @@ fn unit_byte(value: f32) -> u8 {
 
 /// 8 位标量输出的 TPDF 抖动（两路均匀噪声相减，幅度 ±1 LSB，均值 0）：
 /// AO/厚度的缓坡渐变在 8 位下会产生量化条带，抖动把它们打散为不可见噪点。
-fn dither_lsb(index: usize) -> f32 {
+pub(crate) fn dither_lsb(index: usize) -> f32 {
     let mix = |mut x: u64| {
         x = x.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         ((x >> 40) & 0xFFFF) as f32 / 65536.0
@@ -1551,7 +1551,7 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
 /// 一维平方欧氏距离变换（Felzenszwalb & Huttenlocher 下包络法）：
 /// d[q] = min_p(f[p] + (p-q)²)，并跟踪最近源下标。i64 中间量防平方溢出
 /// 与负差值下溢；z[0] = i64::MIN 保证首抛物线永不被弹出。
-fn dt_1d_sq(f: &[u32], src_in: &[u32]) -> (Vec<u32>, Vec<u32>) {
+pub(crate) fn dt_1d_sq(f: &[u32], src_in: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let n = f.len();
     let mut d = vec![0u32; n];
     let mut src = vec![0u32; n];
