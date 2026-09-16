@@ -288,10 +288,13 @@ pub(crate) fn resize_pad_rgb(img: &RgbImage, size: u32) -> (RgbImage, (u32, u32,
     let pad_l = (size - new_w) / 2;
     let pad_t = (size - new_h) / 2;
     let mut canvas = RgbImage::new(size, size);
+    let resized_raw = resized.as_raw();
     for y in 0..new_h {
-        for x in 0..new_w {
-            canvas.put_pixel(pad_l + x, pad_t + y, *resized.get_pixel(x, y));
-        }
+        // 整行连续拷贝替代逐像素 get/put_pixel。
+        let src = (y * new_w) as usize * 3;
+        let dst = ((pad_t + y) * size + pad_l) as usize * 3;
+        canvas.as_raw()[dst..dst + new_w as usize * 3]
+            .copy_from_slice(&resized_raw[src..src + new_w as usize * 3]);
     }
     let pads = (pad_t, size - new_h - pad_t, pad_l, size - new_w - pad_l);
     (canvas, pads)
