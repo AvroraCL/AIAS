@@ -152,7 +152,7 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
         writer.flush().map_err(|e| e.to_string())?;
     }
     f.as_file().sync_all().map_err(|e| e.to_string())?;
-    f.persist(path).map_err(|e| e.to_string())?;
+    persist_with_retry(f, path)?;
     Ok(())
 }
 fn save(path: &Path, image: image::DynamicImage) -> Result<(), String> {
@@ -177,7 +177,7 @@ fn save(path: &Path, image: image::DynamicImage) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     f.as_file().sync_all().map_err(|e| e.to_string())?;
-    f.persist(path).map_err(|e| e.to_string())?;
+    persist_with_retry(f, path)?;
     Ok(())
 }
 pub fn color(material: usize) -> [u8; 4] {
@@ -223,6 +223,27 @@ fn encode_surface_map(
         pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&value);
     }
     pixels
+}
+
+/// Windows 上刚写完的文件可能被杀软/索引器短暂持有，persist 的 rename 会
+/// 撞"拒绝访问"(os error 5)。带退避重试，每次失败取回 NamedTempFile 句柄，
+/// 清除这类瞬时失败而不损数据。
+fn persist_with_retry(f: tempfile::NamedTempFile, path: &Path) -> Result<(), String> {
+    let mut file = f;
+    let mut delay = 50u64;
+    let mut last = String::new();
+    for _ in 0..5 {
+        match file.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last = e.error.to_string();
+                file = e.file;
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                delay = (delay * 2).min(800);
+            }
+        }
+    }
+    Err(last)
 }
 
 pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<u8> {

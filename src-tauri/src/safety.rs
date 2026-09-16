@@ -69,7 +69,28 @@ pub(crate) fn atomic_write(
         writer.flush().map_err(|e| e.to_string())?;
     }
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
-    temp.persist(path).map_err(|e| e.error.to_string())?;
+    // Windows 上目标文件可能被杀软/索引器短暂持有导致 rename 拒绝访问：
+    // 带退避重试，每次失败取回临时文件句柄再试，清除瞬时失败。
+    let mut delay = 50u64;
+    let mut last = String::new();
+    let mut persisted = false;
+    for _ in 0..5 {
+        match temp.persist(path) {
+            Ok(_) => {
+                persisted = true;
+                break;
+            }
+            Err(e) => {
+                last = e.error.to_string();
+                temp = e.file;
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+                delay = (delay * 2).min(800);
+            }
+        }
+    }
+    if !persisted {
+        return Err(last);
+    }
     Ok(())
 }
 
