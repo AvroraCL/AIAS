@@ -400,6 +400,16 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
             &mut height,
         )
     };
+    if status == -5 {
+        return Err(format!(
+            "材质 {material} 自动 UV 生成失败：展开器内存不足，请关闭其它程序后重试，或将模型拆分为更小的部分"
+        ));
+    }
+    if status == -6 {
+        return Err(format!(
+            "材质 {material} 自动 UV 生成失败：展开器内部异常"
+        ));
+    }
     if status != 0 {
         return Err(format!(
             "材质 {material} 自动 UV 生成失败（xatlas {status}）"

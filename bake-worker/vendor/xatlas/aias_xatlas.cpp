@@ -15,6 +15,10 @@ extern "C" int aias_xatlas_generate(
 {
     if (!positions || !indices || !output_uvs || vertex_count == 0 || index_count == 0 || index_count % 3 != 0)
         return -1;
+    // 异常绝不能穿越 extern "C" 边界进入 Rust：xatlas 内部的 C++ 分配/逻辑
+    // 异常（典型为 bad_alloc）一旦越过 FFI 会在 Rust 侧 terminate→abort，
+    // 表现为静默 0xc0000409。在此整体捕获并映射为错误码。
+    try {
     xatlas::Atlas *atlas = xatlas::Create();
     if (!atlas)
         return -2;
@@ -70,4 +74,9 @@ extern "C" int aias_xatlas_generate(
             return -4;
     }
     return 0;
+    } catch (const std::bad_alloc &) {
+        return -5; // 展开器内存不足
+    } catch (...) {
+        return -6; // 展开器内部异常
+    }
 }
