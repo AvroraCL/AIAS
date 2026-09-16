@@ -1082,24 +1082,18 @@ pub fn run(
                         .ok_or("已启用 AI 降噪但缺少降噪组件目录")?;
                     // 降噪前用 dilate 最近覆盖值预填 margin：OIDN 是卷积滤波，
                     // 未覆盖像素的 1.0 背景会把岛边 AO 拉亮并跨岛渗色。
+                    // 预填后整图降噪，覆盖像素的降噪结果就是输出（不做写回，
+                    // 否则「AI 降噪」对落盘 AO 零效果）。
                     for (i, s) in nearest.iter().enumerate() {
                         if *s != u32::MAX && *s != i as u32 {
                             values[i] = values[*s as usize];
                         }
                     }
-                    let covered_original: Vec<f32> = values.clone();
                     denoiser.denoise_gray(
                         &mut values,
                         options.resolution as usize,
                         options.resolution as usize,
                     )?;
-                    // 覆盖像素写回原始值：OIDN 不应模糊本来就正确的数据，
-                    // 只让 margin 保留平滑填充的结果。
-                    for (i, s) in nearest.iter().enumerate() {
-                        if *s != u32::MAX {
-                            values[i] = covered_original[i];
-                        }
-                    }
                 }
                 emit_bake_progress(
                     &mut progress,
