@@ -432,7 +432,8 @@ pub(crate) fn decontaminate_colors(rgb: &RgbImage, matte: &[f32]) -> Vec<[u8; 3]
     }
     out.resize(total, [0u8; 3]);
     out.par_iter_mut().enumerate().for_each(|(index, slot)| {
-        let pixel = rgb.get_pixel((index % w) as u32, (index / w) as u32);
+        // 连续切片索引替代逐像素 get_pixel（并行闭包内逐像素 3 次跨界检查）。
+        let pixel = &rgb_raw[index * 3..index * 3 + 3];
         let a = matte[index];
         let wsum = mean_w[index];
         if a >= CEIL || a <= 0.0 || (wsum as f64) < BG_PRESENCE_MIN {
