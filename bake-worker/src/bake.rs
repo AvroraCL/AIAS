@@ -1334,6 +1334,7 @@ pub fn run(
         "selectedChannels": options.channels,
         "generatedChannels": model.generated_channels,
         "meshMapConventions": {
+            "padding": "margin px of exact euclidean nearest-covered dilation; background: ao/thickness constant, curvature 0.5",
             "ao": "linear grayscale; 1 = unoccluded",
             "normal": "OpenGL tangent space; +Y",
             "world_normal": "RGB = world XYZ remapped from -1..1 to 0..1",
