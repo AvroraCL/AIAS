@@ -19,12 +19,22 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let importRevision = 0, previewRequest = 0, uvDrawRevision = 0;
   const previewPending = new Map();
   const previewWorker = typeof Worker === 'function' ? new Worker(new URL('./model-bake-preview-worker.js', import.meta.url), { type: 'module' }) : null;
-  if (previewWorker) previewWorker.onmessage = event => {
-    const pending = previewPending.get(event.data.id);
-    if (!pending) return;
-    previewPending.delete(event.data.id);
-    if (event.data.error) pending.reject(Error(event.data.error)); else pending.resolve(event.data.buffer);
-  };
+  if (previewWorker) {
+    previewWorker.onmessage = event => {
+      const pending = previewPending.get(event.data.id);
+      if (!pending) return;
+      previewPending.delete(event.data.id);
+      if (event.data.error) pending.reject(Error(event.data.error)); else pending.resolve(event.data.buffer);
+    };
+    // worker 脚本加载失败/被终止时若不应答，导入会永久挂在 loadPreview 且
+    // UI 全锁；统一拒绝并清空在途请求，让导入以明确错误收场。
+    const rejectAllPending = () => {
+      for (const pending of previewPending.values()) pending.reject(Error('预览 worker 已崩溃，请重试导入'));
+      previewPending.clear();
+    };
+    previewWorker.onerror = rejectAllPending;
+    previewWorker.onmessageerror = rejectAllPending;
+  }
   let reportTimer, reportPending = false, reportInFlight = false, inFlightSignature = '', lastReportSignature = '';
   const objectBounds = new Map();
   const scratchSize = new THREE.Vector3();

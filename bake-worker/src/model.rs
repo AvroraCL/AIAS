@@ -719,9 +719,11 @@ pub fn write_preview(model: &Model, dir: &Path) -> Result<serde_json::Value, Str
             for (_, triangle) in &triangles {
                 let uv = triangle
                     .uvs
+                    // 批内个别三角形缺失该通道时填 0.5 中性 UV：NaN 属性会让
+                    // WebGL 整批 draw 消失，drawUv 也画不出对应三角形。
                     .get(&channel)
                     .copied()
-                    .unwrap_or([[f32::NAN; 2]; 3]);
+                    .unwrap_or([[0.5; 2]; 3]);
                 for value in uv.iter().flatten() {
                     writer
                         .write_all(&value.to_le_bytes())

@@ -1032,7 +1032,9 @@ pub fn run(
                     }
                     let done = (chunk_index * block + chunk.len()) as f64 / surfaces.len() as f64;
                     let percent = (done * 100.0) as i64;
-                    if percent != last_percent && last_emit.elapsed().as_millis() >= 100 {
+                    // 「换档」或距上次 ≥500ms 都发：4096² 慢块下整数档 5-10s
+                    // 不动一档，纯换档门会让进度长时间停滞。
+                    if percent != last_percent || last_emit.elapsed().as_millis() >= 500 {
                         last_emit = Instant::now();
                         last_percent = percent;
                         emit_bake_progress(
@@ -1215,7 +1217,9 @@ pub fn run(
                     }
                     let done = (chunk_index * block + chunk.len()) as f64 / surfaces.len() as f64;
                     let percent = (done * 100.0) as i64;
-                    if percent != last_percent && last_emit.elapsed().as_millis() >= 100 {
+                    // 「换档」或距上次 ≥500ms 都发：4096² 慢块下整数档 5-10s
+                    // 不动一档，纯换档门会让进度长时间停滞。
+                    if percent != last_percent || last_emit.elapsed().as_millis() >= 500 {
                         last_emit = Instant::now();
                         last_percent = percent;
                         emit_bake_progress(
@@ -1316,20 +1320,36 @@ pub fn run(
             .filter(|f| f.kind == completion_kind(options))
             .map(|f| f.material)
             .collect();
+        // BTreeSet 去重：attempt 失败与补全扫描可能登记同一材质
+        let already: std::collections::BTreeSet<_> = result.failed_materials.iter().copied().collect();
         for m in &options.materials {
-            if !complete.contains(m) {
+            if !complete.contains(m) && !already.contains(m) {
                 result.failed_materials.push(*m);
             }
         }
+        result.failed_materials.sort_unstable();
+        result.failed_materials.dedup();
     }
     result.elapsed_ms = start.elapsed().as_millis();
     result.selected_channels = options.channels.clone();
-    if !model.generated_channels.is_empty() {
-        for path in crate::model::export_bake_model(&model, &options.channels, &options.output)? {
-            result.artifacts.push(Artifact {
-                kind: "model".into(),
-                path,
-            });
+    // 取消后跳过模型重导出（数十 MB 逐面写出会让「取消」多等数十秒）；
+    // 导出失败降级为警告 + artifact 缺失，不再让整个 run 在清单落盘前中止
+    //（否则贴图全在却报「部分完成」且缺 bake-manifest.json）。
+    if !result.cancelled && !model.generated_channels.is_empty() {
+        match crate::model::export_bake_model(&model, &options.channels, &options.output) {
+            Ok(paths) => {
+                for path in paths {
+                    result.artifacts.push(Artifact {
+                        kind: "model".into(),
+                        path,
+                    });
+                }
+            }
+            Err(error) => {
+                result
+                    .failures
+                    .push(format!("重导出带自动 UV 的模型失败：{error}"));
+            }
         }
     }
     let manifest_path = options.output.join("bake-manifest.json");
@@ -1350,6 +1370,16 @@ pub fn run(
         "sourceFormat": model.source_format,
         "selectedChannels": options.channels,
         "generatedChannels": model.generated_channels,
+        "bakeSettings": {
+            "resolution": options.resolution,
+            "samples": options.samples,
+            "bits": options.bits,
+            "distance": options.distance,
+            "margin": options.margin,
+            "denoise": options.denoise,
+            "units": model.units,
+            "bounds": model.bounds,
+        },
         "meshMapConventions": {
             "padding": "margin px of exact euclidean nearest-covered dilation; background: ao/thickness constant, curvature 0.5",
             "ao": "linear grayscale; 1 = unoccluded",
