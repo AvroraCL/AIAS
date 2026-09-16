@@ -9,6 +9,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let materials = new Set(), channels = {}, focused = null, results = [];
   let renderer, controls, scene, camera, group, resizeObserver;
   let highlightedTriangle = null, inspecting = false, inspectionError = '', cancelling = false, oidnReady = false, oidnSource = '', oidnStatusResolved = !desktop;
+  let failedMaterials = new Set();
   let narrowPanel = 'settings';
   const resultTextures = new Map();
   let previewMaterialRevision = 0, resultTextureEpoch = 0, lastBakeProgress = 0;
@@ -669,10 +670,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         if (checkboxDrag !== null) event.preventDefault();
       };
       const label = document.createElement('button');
-      label.className = 'bake-item';
+      label.className = 'bake-item' + (failedMaterials.has(item.id) ? ' bake-failed' : '');
       label.type = 'button';
-      label.textContent = item.name;
-      label.title = item.name;
+      label.textContent = item.name + (failedMaterials.has(item.id) ? ' ⚠' : '');
+      label.title = failedMaterials.has(item.id) ? `${item.name}（上次烘焙失败）` : item.name;
       label.dataset.material = item.id;
       label.onclick = () => focusMaterial(item.id);
       row.append(input, label);
@@ -986,6 +987,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       pendingModel = null;
       if (previousModel) invoke('bake_release', { handle: previousModel.handle }).catch(() => {});
       if (previousResultHandle) invoke('bake_result_release', { resultHandle: previousResultHandle }).catch(() => {});
+      failedMaterials = new Set();
       $('model-info').textContent = `${model.name} · ${model.objects.length} 对象 · ${model.triangleCount.toLocaleString()} 三角形`;
       if (model.degenerateFaces > 0) {
         const examples = (model.degenerateExamples || []).join('、');
@@ -1036,6 +1038,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (data.resultHandle) invoke('bake_result_release', { resultHandle: data.resultHandle }).catch(() => {});
       return;
     }
+    failedMaterials = new Set(data.failedMaterials || []);
     const previousHandle = resultHandle;
     clearResultTextures();
     // 贴图已 dispose 并 close() 位图，但网格材质可能仍引用它们（本函数只在
@@ -1108,6 +1111,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       $('results').append(card);
     }
     if (previousHandle && previousHandle !== resultHandle) invoke('bake_result_release', { resultHandle: previousHandle }).catch(() => {});
+    lists(); // 失败材质在左侧列表同步打 ⚠ 标记
     const defaultPreview = results.some(file => file.kind === 'ao') ? 'ao' : (results.find(file => file.kind !== 'uv')?.kind || 'uv');
     if (view === 'model') await applyMapPreview(defaultPreview, false, false);
     status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${view === 'model' ? ' · 已更新模型预览' : ' · 当前视图保持不变'}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
@@ -1117,6 +1121,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (blocker()) return;
     job = crypto.randomUUID();
     running = true; cancelling = false; lastBakeProgress = 0; $('progress').value = 0;
+    failedMaterials = new Set();
     refresh();
     updateBakeProgress({ phase: '准备烘焙任务', stage: 'prepare', progress: 0, materialTotal: materials.size, mapTotal: meshMapKeys.filter(key => stored[key]).length });
     try {

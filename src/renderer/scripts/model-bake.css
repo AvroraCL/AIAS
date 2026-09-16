@@ -38,6 +38,8 @@
 .bake-outliner-section h3, .bake-control-section h3 { margin: 0 0 8px; color: var(--text-dim); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
 .bake-select-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
 .bake-select-row > input[type=checkbox] { width: 15px; height: 15px; min-height: 0; padding: 0; margin: 0; flex: 0 0 15px; accent-color: var(--accent); }
+/* 上次烘焙失败的材质：行名琥珀色警示（不遮盖可再次勾选重烘的交互） */
+.bake-select-row .bake-item.bake-failed { color: #e0a458; }
 .bake-item { flex: 1; min-width: 0; overflow: hidden; padding: 7px 6px; border: 0; border-radius: 5px; color: var(--text-soft); background: transparent; font-size: 12px; text-align: left; white-space: nowrap; text-overflow: ellipsis; }
 .bake-item:hover:not(:disabled), .bake-item.active { color: var(--text); background: var(--surface-hover); }
 
