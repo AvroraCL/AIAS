@@ -125,6 +125,12 @@ export function restoreStyleLabSettings(value = {}) {
   }
   if (typeof source.exportScale === 'number' && [1, 2].includes(source.exportScale)) out.exportScale = source.exportScale;
   else out.exportScale = 1;
+  if (Array.isArray(source.customPresets)) {
+    result.customPresets = source.customPresets
+      .filter(p => p && typeof p.name === 'string' && p.name.trim() && p.settings && typeof p.settings === 'object')
+      .slice(0, 10)
+      .map(p => ({ name: p.name.slice(0, 20), settings: { ...p.settings } }));
+  }
   return out;
 }
 

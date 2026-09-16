@@ -257,13 +257,40 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     const presets = BUILTIN_PRESETS[config.style] || [];
     const presetSection = document.createElement('section');
     presetSection.className = 'inspector-group';
-    presetSection.innerHTML = `<button class="group-toggle" type="button" aria-expanded="true"><span>预设 · ${styleLabel()}</span><i data-lucide="chevron-down"></i></button><div class="group-content"><div class="style-lab-presets"></div></div>`;
+    presetSection.innerHTML = `<button class="group-toggle" type="button" aria-expanded="true"><span>预设 · ${styleLabel()}</span><i data-lucide="chevron-down"></i></button><div class="group-content"><div class="style-lab-presets"></div><div class="style-lab-preset-save"><input maxlength="20" placeholder="预设名称" aria-label="预设名称" data-stylize-preset-name><button class="secondary-action" type="button" data-stylize-preset-save>保存当前</button></div></div>`;
     const presetWrap = presetSection.querySelector('.style-lab-presets');
     for (const preset of presets) {
       const chip = document.createElement('button');
       chip.type = 'button'; chip.className = 'style-lab-preset-chip'; chip.textContent = preset.name;
       chip.onclick = () => { config = restoreStyleLabSettings({ style: config.style, ...preset.settings, style: config.style }); syncControls(); schedule(); };
       presetWrap.append(chip);
+    }
+    // 用户自定义预设
+    const saved = config.customPresets || [];
+    for (const preset of saved) {
+      const chip = document.createElement('button');
+      chip.type = 'button'; chip.className = 'style-lab-preset-chip'; chip.textContent = preset.name;
+      chip.onclick = () => { config = restoreStyleLabSettings({ style: config.style, ...preset.settings, style: config.style }); syncControls(); schedule(); };
+      const cross = document.createElement('span'); cross.className = 'style-lab-preset-remove'; cross.textContent = '×';
+      cross.onclick = event => {
+        event.stopPropagation();
+        config.customPresets = (config.customPresets || []).filter(p => p.name !== preset.name);
+        persist(); renderControls();
+      };
+      chip.append(cross);
+      presetWrap.append(chip);
+    }
+    const presetNameInput = presetSection.querySelector('[data-stylize-preset-name]');
+    const presetSaveBtn = presetSection.querySelector('[data-stylize-preset-save]');
+    if (presetNameInput && presetSaveBtn) {
+      presetSaveBtn.onclick = () => {
+        const name = (presetNameInput.value || '').trim();
+        if (!name) { presetNameInput.focus(); return; }
+        config.customPresets = [{ name: name.slice(0, 20), settings: { ...config } }, ...(config.customPresets || [])].slice(0, 10);
+        presetNameInput.value = '';
+        persist(); renderControls();
+        status(`预设「${name}」已保存。`);
+      };
     }
     controls.append(presetSection);
 
