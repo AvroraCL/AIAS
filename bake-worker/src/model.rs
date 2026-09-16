@@ -421,8 +421,9 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
         .max()
         .map_or(0, |value| value.saturating_add(1));
 
-    // 平面投影回退：取包围盒两个最大延展轴归一化。展开器任何形式的失败
-    // （含 SEH 故障被 catch(...) 吞掉）都回退到它，保证材质始终有可用 UV。
+    // 平面投影回退：取包围盒两个最大延展轴归一化。展开器失败（SEH 故障被
+    // catch(...) 吞掉的内部异常等）都回退到它，保证材质始终有可用 UV；
+    // -5 内存不足例外：继续硬失败并给可行动提示（见下方 status == -5 分支）。
     let mut bmin = [f64::MAX; 3];
     let mut bmax = [-f64::MAX; 3];
     for p in &positions {
@@ -493,6 +494,7 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
         } else {
             let mut offset = 0usize;
             for (local, tri) in corner_ids.iter().enumerate() {
+                let _ = tri;
                 if degenerate[local] {
                     continue;
                 }
@@ -544,75 +546,7 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
     Ok(channel)
 }
 
-fn repair_generated_uv(model: &mut Model, material: usize, channel: u32, report: &UvReport) {
-    let bad: std::collections::BTreeSet<usize> = report
-        .issues
-        .iter()
-        .flat_map(|issue| [Some(issue.triangle), issue.other_triangle])
-        .flatten()
-        .collect();
-    if bad.is_empty() {
-        return;
-    }
-    for (index, triangle) in model
-        .triangles
-        .iter_mut()
-        .enumerate()
-        .filter(|(_, t)| t.material == material)
-    {
-        if bad.contains(&index) {
-            continue;
-        }
-        if let Some(uv) = triangle.uvs.get_mut(&channel) {
-            for point in uv {
-                point[0] *= 0.94;
-            }
-        }
-    }
-    let columns = (bad.len() as f32).sqrt().ceil().max(1.0) as usize;
-    let rows = bad.len().div_ceil(columns);
-    for (slot, index) in bad.into_iter().enumerate() {
-        let column = slot % columns;
-        let row = slot / columns;
-        let x0 = 0.95 + 0.04 * column as f32 / columns as f32;
-        let x1 = 0.95 + 0.04 * (column + 1) as f32 / columns as f32;
-        let y0 = 0.01 + 0.98 * row as f32 / rows as f32;
-        let y1 = 0.01 + 0.98 * (row + 1) as f32 / rows as f32;
-        let px = (x1 - x0) * 0.1;
-        let py = (y1 - y0) * 0.1;
-        model.triangles[index].uvs.insert(
-            channel,
-            [[x0 + px, y0 + py], [x1 - px, y0 + py], [x0 + px, y1 - py]],
-        );
-    }
-}
 
-/// 极端非流形网格的最终兜底：每个三角形独占网格单元，保证有限、0–1、
-/// 非退化且无重叠。正常模型和可局部修复的模型不会走到这里。
-fn grid_pack_material(model: &mut Model, material: usize, channel: u32) {
-    let indices: Vec<usize> = model
-        .triangles
-        .iter()
-        .enumerate()
-        .filter_map(|(index, t)| (t.material == material).then_some(index))
-        .collect();
-    let columns = (indices.len() as f32).sqrt().ceil().max(1.0) as usize;
-    let rows = indices.len().div_ceil(columns);
-    for (slot, index) in indices.into_iter().enumerate() {
-        let column = slot % columns;
-        let row = slot / columns;
-        let x0 = column as f32 / columns as f32;
-        let x1 = (column + 1) as f32 / columns as f32;
-        let y0 = row as f32 / rows as f32;
-        let y1 = (row + 1) as f32 / rows as f32;
-        let px = (x1 - x0) * 0.08;
-        let py = (y1 - y0) * 0.08;
-        model.triangles[index].uvs.insert(
-            channel,
-            [[x0 + px, y0 + py], [x1 - px, y0 + py], [x0 + px, y1 - py]],
-        );
-    }
-}
 
 /// 为每个材质选择实际烘焙通道；智能模式只为不存在合法源通道的材质生成 UV。
 pub fn prepare_uvs_with_progress(

@@ -1271,9 +1271,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       const cy = event.clientY - rect.top;
       const factor = event.deltaY < 0 ? 1.2 : 1 / 1.2;
       const next = Math.min(16, Math.max(1, uvZoom * factor));
-      // 保持光标下的内容点不动：pan' = c - (c - pan) * (next/zoom)
-      uvPanX = cx - (cx - uvPanX) * (next / uvZoom);
-      uvPanY = cy - (cy - uvPanY) * (next / uvZoom);
+      // 保持光标下的内容点不动：锚点含 12px 基准偏移，pan' = (c-12) - (c-12-pan)·r
+      uvPanX = cx - 12 - (cx - 12 - uvPanX) * (next / uvZoom);
+      uvPanY = cy - 12 - (cy - 12 - uvPanY) * (next / uvZoom);
       uvZoom = next;
       clampPan();
       drawUv();

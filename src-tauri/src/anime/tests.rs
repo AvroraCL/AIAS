@@ -259,10 +259,8 @@ pub(super) mod toonout_tests {
         assert_eq!(combined, vec![0.8, 0.2, 0.25, 0.75]);
     }
 
-    /// 端到端验证 ToonOut：下载 470MB 模型 + 真实推理，仅在手动运行：
-    /// `cargo test toonout -- --ignored --nocapture`
-    #[test]
-
+    /// 手动执行：advanced 管线真实模型推理（RTMDet+精修软边缘路径）。
+    /// `AIAS_AB_INPUT=<测试图> cargo test advanced_real_model_smoke -- --ignored --nocapture`
     #[ignore = "手动执行：advanced 管线真实模型推理（RTMDet+精修软边缘路径）"]
     fn advanced_real_model_smoke() {
         let base = dirs::data_dir()
@@ -293,6 +291,9 @@ pub(super) mod toonout_tests {
             "掩码出现非有限或越界值");
     }
 
+    /// 端到端验证 ToonOut：下载 470MB 模型 + 真实推理，仅在手动运行：
+    /// `cargo test toonout -- --ignored --nocapture`
+    #[test]
     #[ignore = "下载并运行 470MB 模型，手动执行"]
     fn toonout_end_to_end() {
         let base = std::env::temp_dir().join("aias-toonout-e2e");
