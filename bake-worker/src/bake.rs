@@ -231,7 +231,7 @@ fn encode_surface_map(
 /// Windows 上刚写完的文件可能被杀软/索引器短暂持有，persist 的 rename 会
 /// 撞"拒绝访问"(os error 5)。带退避重试，每次失败取回 NamedTempFile 句柄，
 /// 清除这类瞬时失败而不损数据。
-fn persist_with_retry(f: tempfile::NamedTempFile, path: &Path) -> Result<(), String> {
+pub(crate) fn persist_with_retry(f: tempfile::NamedTempFile, path: &Path) -> Result<(), String> {
     let mut file = f;
     let mut delay = 50u64;
     let mut last = String::new();

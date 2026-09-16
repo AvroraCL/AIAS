@@ -671,8 +671,7 @@ pub fn prepare_uvs(model: &mut Model, mode: &str) -> Result<BTreeMap<usize, u32>
 /// 写出供渲染器使用的紧凑预览。偏移量均为文件内字节偏移，数据为小端 f32。
 pub fn write_preview(model: &Model, dir: &Path) -> Result<serde_json::Value, String> {
     let path = dir.join("preview.bin");
-    let mut writer =
-        std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
     let mut offset = 0_u64;
     let mut grouped: BTreeMap<(usize, usize), Vec<(usize, &Triangle)>> = BTreeMap::new();
     for (index, triangle) in model.triangles.iter().enumerate() {
@@ -682,59 +681,66 @@ pub fn write_preview(model: &Model, dir: &Path) -> Result<serde_json::Value, Str
             .push((index, triangle));
     }
     let mut batches = Vec::new();
-    for ((object, material), triangles) in grouped {
-        let vertex_count = triangles.len() * 3;
-        let position_offset = offset;
-        for (_, triangle) in &triangles {
-            for value in triangle.positions.iter().flatten() {
-                writer
-                    .write_all(&value.to_le_bytes())
-                    .map_err(|e| e.to_string())?;
-                offset += 4;
-            }
-        }
-        let normal_offset = offset;
-        for (_, triangle) in &triangles {
-            for value in triangle.normals.iter().flatten() {
-                writer
-                    .write_all(&value.to_le_bytes())
-                    .map_err(|e| e.to_string())?;
-                offset += 4;
-            }
-        }
-        let triangle_offset = offset;
-        for (index, _) in &triangles {
-            writer
-                .write_all(&(*index as u32).to_le_bytes())
-                .map_err(|e| e.to_string())?;
-            offset += 4;
-        }
-        let channel_ids: std::collections::BTreeSet<u32> = triangles
-            .iter()
-            .flat_map(|(_, t)| t.uvs.keys().copied())
-            .collect();
-        let mut uv_offsets = serde_json::Map::new();
-        for channel in channel_ids {
-            uv_offsets.insert(channel.to_string(), serde_json::json!(offset));
+    {
+        let mut writer = std::io::BufWriter::new(temp.as_file_mut());
+        for ((object, material), triangles) in grouped {
+            let vertex_count = triangles.len() * 3;
+            let position_offset = offset;
             for (_, triangle) in &triangles {
-                let uv = triangle
-                    .uvs
-                    // 批内个别三角形缺失该通道时填 0.5 中性 UV：NaN 属性会让
-                    // WebGL 整批 draw 消失，drawUv 也画不出对应三角形。
-                    .get(&channel)
-                    .copied()
-                    .unwrap_or([[0.5; 2]; 3]);
-                for value in uv.iter().flatten() {
+                for value in triangle.positions.iter().flatten() {
                     writer
                         .write_all(&value.to_le_bytes())
                         .map_err(|e| e.to_string())?;
                     offset += 4;
                 }
             }
+            let normal_offset = offset;
+            for (_, triangle) in &triangles {
+                for value in triangle.normals.iter().flatten() {
+                    writer
+                        .write_all(&value.to_le_bytes())
+                        .map_err(|e| e.to_string())?;
+                    offset += 4;
+                }
+            }
+            let triangle_offset = offset;
+            for (index, _) in &triangles {
+                writer
+                    .write_all(&(*index as u32).to_le_bytes())
+                    .map_err(|e| e.to_string())?;
+                offset += 4;
+            }
+            let channel_ids: std::collections::BTreeSet<u32> = triangles
+                .iter()
+                .flat_map(|(_, t)| t.uvs.keys().copied())
+                .collect();
+            let mut uv_offsets = serde_json::Map::new();
+            for channel in channel_ids {
+                uv_offsets.insert(channel.to_string(), serde_json::json!(offset));
+                for (_, triangle) in &triangles {
+                    let uv = triangle
+                        .uvs
+                        // 批内个别三角形缺失该通道时填 0.5 中性 UV：NaN 属性会让
+                        // WebGL 整批 draw 消失，drawUv 也画不出对应三角形。
+                        .get(&channel)
+                        .copied()
+                        .unwrap_or([[0.5; 2]; 3]);
+                    for value in uv.iter().flatten() {
+                        writer
+                            .write_all(&value.to_le_bytes())
+                            .map_err(|e| e.to_string())?;
+                        offset += 4;
+                    }
+                }
+            }
+            batches.push(serde_json::json!({"object":object,"material":material,"vertexCount":vertex_count,"triangleCount":triangles.len(),"positionOffset":position_offset,"normalOffset":normal_offset,"triangleOffset":triangle_offset,"uvOffsets":uv_offsets}));
         }
-        batches.push(serde_json::json!({"object":object,"material":material,"vertexCount":vertex_count,"triangleCount":triangles.len(),"positionOffset":position_offset,"normalOffset":normal_offset,"triangleOffset":triangle_offset,"uvOffsets":uv_offsets}));
+        writer.flush().map_err(|e| e.to_string())?;
     }
-    writer.flush().map_err(|e| e.to_string())?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    crate::bake::persist_with_retry(temp, &path)?;
     let manifest_path = dir.join("preview.json");
     let manifest =
         serde_json::json!({"version":1,"byteLength":offset,"bufferPath":path,"batches":batches});
@@ -790,8 +796,9 @@ fn export_obj(
     let stem = format!("{}_bake", export_name(&model.name));
     let obj_path = output.join(format!("{stem}.obj"));
     let mtl_path = output.join(format!("{stem}.mtl"));
-    let mut obj =
-        std::io::BufWriter::new(std::fs::File::create(&obj_path).map_err(|e| e.to_string())?);
+    // 原子落盘：进程中途被杀不留看似有效的半截模型
+    let mut obj_temp = tempfile::NamedTempFile::new_in(output).map_err(|e| e.to_string())?;
+    let mut obj = std::io::BufWriter::new(&mut obj_temp);
     writeln!(obj, "# AIAS bake-ready static mesh\nmtllib {stem}.mtl").map_err(|e| e.to_string())?;
     let mut index = 1usize;
     let mut active_object = usize::MAX;
@@ -841,8 +848,14 @@ fn export_obj(
         index += 3;
     }
     obj.flush().map_err(|e| e.to_string())?;
-    let mut mtl =
-        std::io::BufWriter::new(std::fs::File::create(&mtl_path).map_err(|e| e.to_string())?);
+    drop(obj);
+    obj_temp
+        .as_file()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    crate::bake::persist_with_retry(obj_temp, &obj_path)?;
+    let mut mtl_temp = tempfile::NamedTempFile::new_in(output).map_err(|e| e.to_string())?;
+    let mut mtl = std::io::BufWriter::new(mtl_temp.as_file_mut());
     writeln!(
         mtl,
         "# Material slots only. Baked outputs are listed in bake-manifest.json."
@@ -857,6 +870,12 @@ fn export_obj(
         .map_err(|e| e.to_string())?;
     }
     mtl.flush().map_err(|e| e.to_string())?;
+    drop(mtl);
+    mtl_temp
+        .as_file()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    crate::bake::persist_with_retry(mtl_temp, &mtl_path)?;
     Ok(vec![obj_path, mtl_path])
 }
 
@@ -953,8 +972,8 @@ fn export_glb(
         binary.push(0);
     }
     let total = 12 + 8 + json_bytes.len() + 8 + binary.len();
-    let mut writer =
-        std::io::BufWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+    let mut glb_temp = tempfile::NamedTempFile::new_in(output).map_err(|e| e.to_string())?;
+    let mut writer = std::io::BufWriter::new(glb_temp.as_file_mut());
     writer
         .write_all(&0x46546C67_u32.to_le_bytes())
         .map_err(|e| e.to_string())?;
@@ -979,6 +998,12 @@ fn export_glb(
         .map_err(|e| e.to_string())?;
     writer.write_all(&binary).map_err(|e| e.to_string())?;
     writer.flush().map_err(|e| e.to_string())?;
+    drop(writer);
+    glb_temp
+        .as_file()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    crate::bake::persist_with_retry(glb_temp, &path)?;
     Ok(vec![path])
 }
 
