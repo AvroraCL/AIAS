@@ -123,8 +123,15 @@ backtrace:
                 }
             }
         }
-        // EXCEPTION_POINTERS.ExceptionRecord.ExceptionCode 位于偏移 0
-        let code = unsafe { *(info as *const u32) } as u64;
+        // EXCEPTION_POINTERS 偏移 0 是 ExceptionRecord 指针，其偏移 0 才是码
+        let code = unsafe {
+            let record = *(info as *const *const u32);
+            if record.is_null() {
+                0u32
+            } else {
+                *record
+            }
+        } as u64;
         let _ = std::fs::write(
             dir.join(format!("unhandled-{}.log", std::process::id())),
             format!("未处理异常 code={code:#x} dump={}

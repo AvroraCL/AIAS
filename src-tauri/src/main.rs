@@ -1456,6 +1456,13 @@ fn anime_cutout_inner(
                 }
             }
             Err(error) => {
+                // 阶段间取消返回的「任务已取消」不算失败：计入停止、终止剩余
+                // 文件，否则前端把未完成的最后一张误报为已完成。
+                if error.contains("任务已取消") {
+                    cancelled = true;
+                    push_log(app, &mut logs, "warn", format!("已停止：{stem} 未完成"));
+                    break;
+                }
                 push_log(app, &mut logs, "error", format!("失败 {stem}：{error}"));
             }
         }

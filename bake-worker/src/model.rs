@@ -504,10 +504,8 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
         }
     }
     if fallback {
+        // 展开器失败：全部三角形（含 live）统一平面投影，不留 NaN 角点
         for (local, tri) in corner_ids.iter().enumerate() {
-            if !degenerate[local] && live_count > 0 {
-                continue;
-            }
             let uvs = planar_triangle(tri);
             for k in 0..3 {
                 generated[local * 3 + k] = uvs[k];
@@ -516,6 +514,16 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
         model.warnings.push(format!(
             "材质 {material} 自动 UV 展开器异常，已改用简易平面投影（该材质接缝位置与展开器方案不同）"
         ));
+    } else {
+        // 展开成功：仅退化三角形补平面投影
+        for (local, tri) in corner_ids.iter().enumerate() {
+            if degenerate[local] {
+                let uvs = planar_triangle(tri);
+                for k in 0..3 {
+                    generated[local * 3 + k] = uvs[k];
+                }
+            }
+        }
     }
     // 任何残留 NaN 角点（防御）：以 0.5 中性填充
     for uv in &mut generated {
@@ -532,6 +540,7 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
             [generated[base], generated[base + 1], generated[base + 2]],
         );
     }
+    model.generated_channels.insert(material, channel);
     Ok(channel)
 }
 

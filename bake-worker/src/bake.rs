@@ -1563,7 +1563,7 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
                 let index = y * size + x;
                 if covered[index] {
                     row_out[x] = index as u32;
-                } else if d[x] * 4 < threshold_cmp {
+                } else if d[x] as u64 * 4 < threshold_cmp as u64 {
                     row_out[x] = s[x];
                 }
             }
@@ -1596,10 +1596,13 @@ pub(crate) fn dt_1d_sq(f: &[u32], src_in: &[u32]) -> (Vec<u32>, Vec<u32>) {
     env_src[0] = src_in[0];
     for q in 1..n {
         let fq = f[q] as i64 + (q * q) as i64;
-        let mut s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64)) / (2 * (q - v[k]) as i64);
+        // Meijster 包络要求欧几里得除法：分子可为负，向零截断会算错边界
+        let mut s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64))
+            .div_euclid(2 * (q - v[k]) as i64);
         while s <= z[k] {
             k -= 1;
-            s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64)) / (2 * (q - v[k]) as i64);
+            s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64))
+                .div_euclid(2 * (q - v[k]) as i64);
         }
         k += 1;
         v[k] = q;
