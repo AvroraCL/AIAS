@@ -1,4 +1,6 @@
 import { createAscii } from "./ascii.js";
+import { createStyleLab } from "./style-lab.js";
+import { STYLE_IDS as STYLE_LAB_IDS, STYLE_LABELS as STYLE_LAB_LABELS, STYLE_DEFAULTS as STYLE_LAB_DEFAULTS } from "./style-lab-state.mjs";
 let asciiUI;
 import { createMaterialMaps } from "./material-maps.js";
 let materialMapsUI;
@@ -105,6 +107,16 @@ const modeMeta = {
   "ascii-block": { title: "方块", description: "将图片按亮度映射为实心方块马赛克，支持原图颜色与透明底，导出 PNG" },
   "ascii-dot": { title: "波点", description: "将图片按亮度映射为半调圆点，支持原图颜色与透明底，导出 PNG" },
   "ascii-hatch": { title: "线条款描", description: "用不同角度的平行排线表现明暗，铜版画/素描风格，支持原图颜色与透明底" },
+  "stylize-glitch": { title: "故障艺术", description: "通道色散、块位移与扫描线的故障屏风格，导出 PNG" },
+  "stylize-camo": { title: "迷彩生成", description: "从图片取色生成斑块/数码/豹纹等迷彩图案，导出 PNG" },
+  "stylize-wear": { title: "磨损掉漆", description: "噪声与边缘驱动的掉漆、划痕与底漆露出，军模旧化利器" },
+  "stylize-oil": { title: "油画厚涂", description: "Kuwahara 最小方差均值滤波，笔触块状厚涂效果" },
+  "stylize-halftone": { title: "半调印刷", description: "圆/方/菱/线网点与 CMY 四色套印的印刷半调" },
+  "stylize-sketch": { title: "素描炭笔", description: "反色减淡 + 轮廓加深 + 纸面颗粒的铅笔素描" },
+  "stylize-thermal": { title: "热感假彩", description: "铁红/彩虹/夜视等渐变 LUT 假彩色映射" },
+  "stylize-neon": { title: "赛博霓虹", description: "Sobel 边缘辉光按色相着色，背景压暗的霓虹描边" },
+  "stylize-cross": { title: "十字绣", description: "色彩量化 + 交叉针脚与布纹的十字绣质感" },
+  "stylize-marble": { title: "大理石纹", description: "fBm 湍流域扭曲的大理石/青玉脉络纹理" },
   "normal-map": { title: "生成法线图", description: "从素材高度变化生成法线贴图，支持可移动光照预览" },
   "model-bake": { title: "模型烘焙", description: "生成 AO、曲率、世界法线等智能材质 Mesh Maps，并在模型上检查" },
   "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
@@ -177,6 +189,16 @@ const modeRegistry = {
   "ascii-block": asciiRegistryEntry(),
   "ascii-dot": asciiRegistryEntry(),
   "ascii-hatch": asciiRegistryEntry(),
+  "stylize-glitch": stylizeRegistryEntry(),
+  "stylize-camo": stylizeRegistryEntry(),
+  "stylize-wear": stylizeRegistryEntry(),
+  "stylize-oil": stylizeRegistryEntry(),
+  "stylize-halftone": stylizeRegistryEntry(),
+  "stylize-sketch": stylizeRegistryEntry(),
+  "stylize-thermal": stylizeRegistryEntry(),
+  "stylize-neon": stylizeRegistryEntry(),
+  "stylize-cross": stylizeRegistryEntry(),
+  "stylize-marble": stylizeRegistryEntry(),
   "anime-cutout": {
     run: "run-anime-cutout", log: "anime-log", output: "anime-output",
     blocker() {
@@ -220,6 +242,15 @@ function asciiRegistryEntry() {
     run: "ascii-run",
     blocker: () => asciiUI?.blocker() || null,
     drop: paths => asciiUI?.addFiles(paths)
+  };
+}
+
+let styleLabUI;
+function stylizeRegistryEntry() {
+  return {
+    run: "stylize-run",
+    blocker: () => styleLabUI?.blocker() || null,
+    drop: paths => styleLabUI?.addFiles(paths)
   };
 }
 
@@ -2553,7 +2584,7 @@ function applyMode(mode) {
   });
   $("footer-settings")?.classList.toggle("active", mode === "settings");
   // 超分两个入口共用同一个视图；风格化三个入口共用 view-ascii
-  const viewId = mode === "normal-map" || mode === "height-map" ? "view-material-maps" : mode.startsWith("superres") ? "view-superres" : mode.startsWith("ascii") ? "view-ascii" : `view-${mode}`;
+  const viewId = mode === "normal-map" || mode === "height-map" ? "view-material-maps" : mode.startsWith("superres") ? "view-superres" : mode.startsWith("ascii") ? "view-ascii" : mode.startsWith("stylize") ? "view-style-lab" : `view-${mode}`;
   document.querySelectorAll(".mode-view").forEach((view) => {
     view.classList.toggle("active", view.id === viewId);
   });
@@ -2579,6 +2610,7 @@ function applyMode(mode) {
     renderSuperresGallery();
   }
   asciiUI?.activate(mode);
+  styleLabUI?.activate(mode);
   materialMapsUI?.activate(mode);
   modelBakeUI?.activate(mode);
   syncActiveLog(mode);
@@ -3227,6 +3259,14 @@ async function boot() {
     save: async ascii => { state.settings = await api.settings.set({ ascii }); },
     setBusy, syncSelect: syncCustomSelect, busy: () => state.taskProgressActive, changed: updateStatus,
     notify: (message, tone) => addActivity("图片转 ASCII", message, tone),
+  });
+  styleLabUI = createStyleLab({
+    root: $("view-style-lab"), inspector: document.querySelector(".inspector-scroll"), runArea: document.querySelector(".run-area"),
+    desktop: isTauriRuntime, open, saveDialog, convertFileSrc, invoke,
+    settings: state.settings.styleLab,
+    save: async styleLab => { state.settings = await api.settings.set({ styleLab }); },
+    setBusy, busy: () => state.taskProgressActive, changed: updateStatus,
+    notify: (message, tone) => addActivity("风格实验室", message, tone),
   });
   materialMapsUI = createMaterialMaps({
     root: $("view-material-maps"), desktop: isTauriRuntime, invoke, open, openPath,

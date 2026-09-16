@@ -39,6 +39,8 @@ struct Settings {
     #[serde(default)]
     ascii: serde_json::Value,
     #[serde(default)]
+    style_lab: serde_json::Value,
+    #[serde(default)]
     model_bake: serde_json::Value,
     pbr_input_path: String,
     pbr_output_path: String,
@@ -92,6 +94,7 @@ impl Default for Settings {
             auto_update: false,
             material_maps: serde_json::Value::Null,
             ascii: serde_json::Value::Null,
+            style_lab: serde_json::Value::Null,
             model_bake: serde_json::Value::Null,
             pbr_input_path: String::new(),
             pbr_output_path: String::new(),
