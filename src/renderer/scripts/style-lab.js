@@ -329,6 +329,15 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     }
     controls.append(paramSection);
     if (resetButton) controls.append(resetButton);
+
+    // 导出设置
+    const exportSection = document.createElement('section');
+    exportSection.className = 'inspector-group';
+    exportSection.innerHTML = `<button class="group-toggle" type="button" aria-expanded="true"><span>导出设置</span><i data-lucide="chevron-down"></i></button><div class="group-content"><label>导出倍率<select data-stylize-exportScale><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label><small>倍率越高导出越清晰（不影响预览）。</small></div>`;
+    controls.append(exportSection);
+    const exportScaleEl = exportSection.querySelector('[data-stylize-exportScale]');
+    if (exportScaleEl) exportScaleEl.value = String(config.exportScale || 1);
+    if (exportScaleEl) exportScaleEl.onchange = () => { config.exportScale = Number(exportScaleEl.value); persist(); };
     syncControls();
   }
 
@@ -421,9 +430,14 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     const name = `${sourceName.replace(/\.[^.]+$/, '')}_${config.style}.png`;
     exporting = true; setBusy(run, true);
     try {
+      const scale = config.exportScale || 1;
       const canvas = document.createElement('canvas');
-      canvas.width = result.width; canvas.height = result.height;
-      canvas.getContext('2d').putImageData(result, 0, 0);
+      canvas.width = result.width * scale; canvas.height = result.height * scale;
+      const ctx = canvas.getContext('2d');
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = result.width; tempCanvas.height = result.height;
+      tempCanvas.getContext('2d').putImageData(result, 0, 0);
+      ctx.drawImage(tempCanvas, 0, 0, canvas.width, canvas.height);
       const blob = await new Promise((resolve, reject) => canvas.toBlob(v => v ? resolve(v) : reject(Error('PNG 编码失败。')), 'image/png'));
       let path = name;
       if (desktop) {
