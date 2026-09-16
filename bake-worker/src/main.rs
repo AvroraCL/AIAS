@@ -86,11 +86,15 @@ fn main() {
                             }
                             println!(
                                 "{}",
-                                serde_json::json!({"jobId":heartbeat_job,"type":"heartbeat"})
+                                serde_json::json!({"jobId":heartbeat_job,"type":"progress","data":{"phase":"读取模型几何…","progress":0.05}})
                             );
                         }
                     });
                     let imported = (|| -> Result<serde_json::Value, String> {
+                    println!(
+                        "{}",
+                        serde_json::json!({"jobId":job,"type":"progress","data":{"phase":"读取模型","progress":0.02}})
+                    );
                     let mut model = model::load(std::path::Path::new(&args[2]))?;
                     let dir = std::path::Path::new(args.get(4).ok_or("缺失输出目录")?);
                     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
