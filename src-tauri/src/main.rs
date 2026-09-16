@@ -1255,6 +1255,17 @@ fn anime_cutout_inner(
             "推理后端：CPU（检测到 NVIDIA 显卡时可在「GPU 加速」中下载运行库）".to_string()
         },
     );
+    // CUDA 回退 CPU 时给出耗时预警：CPU 上 2K+ 输入单张可达数分钟，
+    // 提前告知比让用户误以为卡死更好。
+    if anime::cuda_ep_compiled() && anime::cuda_fallback_reason().is_some() {
+        push_log(
+            app,
+            &mut logs,
+            "warn",
+            "当前以 CPU 推理：大图单张可能需要数分钟，可勾选更少增强选项或缩小图片提速。"
+                .to_string(),
+        );
+    }
     if options.recover_details {
         push_log(
             app,
