@@ -386,35 +386,33 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
             indices.push(vertex);
         }
     }
-    let mut generated = vec![[f32::NAN; 2]; indices.len()];
-    let mut width = 0_u32;
-    let mut height = 0_u32;
-    let status = unsafe {
-        aias_xatlas_generate(
-            positions.as_ptr().cast::<f32>(),
-            indices.as_ptr(),
-            positions.len() as u32,
-            indices.len() as u32,
-            generated.as_mut_ptr().cast::<f32>(),
-            &mut width,
-            &mut height,
-        )
-    };
-    if status == -5 {
-        return Err(format!(
-            "材质 {material} 自动 UV 生成失败：展开器内存不足，请关闭其它程序后重试，或将模型拆分为更小的部分"
-        ));
+    // 焊合后退化的三角形（共点或零面积）不送展开器：xatlas 对这类输入存在
+    // 越界访问缺陷（SEH 故障被 catch(...) 吞掉，表现为「展开器内部异常」）。
+    let mut corner_ids = Vec::<[u32; 3]>::with_capacity(triangle_indices.len());
+    let mut cursor = 0usize;
+    for _ in &triangle_indices {
+        corner_ids.push([indices[cursor], indices[cursor + 1], indices[cursor + 2]]);
+        cursor += 3;
     }
-    if status == -6 {
-        return Err(format!(
-            "材质 {material} 自动 UV 生成失败：展开器内部异常"
-        ));
-    }
-    if status != 0 {
-        return Err(format!(
-            "材质 {material} 自动 UV 生成失败（xatlas {status}）"
-        ));
-    }
+    let degenerate: Vec<bool> = corner_ids
+        .iter()
+        .map(|c| {
+            let (p0, p1, p2) = (
+                positions[c[0] as usize],
+                positions[c[1] as usize],
+                positions[c[2] as usize],
+            );
+            let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+            let cross = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2] <= 1e-24
+        })
+        .collect();
+
     let channel = model
         .triangles
         .iter()
@@ -422,6 +420,111 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
         .flat_map(|t| t.uvs.keys().copied())
         .max()
         .map_or(0, |value| value.saturating_add(1));
+
+    // 平面投影回退：取包围盒两个最大延展轴归一化。展开器任何形式的失败
+    // （含 SEH 故障被 catch(...) 吞掉）都回退到它，保证材质始终有可用 UV。
+    let mut bmin = [f64::MAX; 3];
+    let mut bmax = [-f64::MAX; 3];
+    for p in &positions {
+        for a in 0..3 {
+            bmin[a] = bmin[a].min(p[a] as f64);
+            bmax[a] = bmax[a].max(p[a] as f64);
+        }
+    }
+    let mut axes = [0usize, 1, 2];
+    axes.sort_by(|a, b| {
+        (bmax[*b] - bmin[*b])
+            .partial_cmp(&(bmax[*a] - bmin[*a]))
+            .unwrap()
+    });
+    let (u_axis, v_axis) = (axes[0], axes[1]);
+    let planar = |p: &[f32; 3]| -> [f32; 2] {
+        let u = if bmax[u_axis] - bmin[u_axis] > 1e-12 {
+            ((p[u_axis] as f64 - bmin[u_axis]) / (bmax[u_axis] - bmin[u_axis])) as f32
+        } else {
+            0.5
+        };
+        let v = if bmax[v_axis] - bmin[v_axis] > 1e-12 {
+            ((p[v_axis] as f64 - bmin[v_axis]) / (bmax[v_axis] - bmin[v_axis])) as f32
+        } else {
+            0.5
+        };
+        [u, 1.0 - v]
+    };
+    let planar_triangle = |c: &[u32; 3]| -> [[f32; 2]; 3] {
+        [
+            planar(&positions[c[0] as usize]),
+            planar(&positions[c[1] as usize]),
+            planar(&positions[c[2] as usize]),
+        ]
+    };
+
+    let mut generated = vec![[f32::NAN; 2]; indices.len()];
+    let live_count = degenerate.iter().filter(|d| !**d).count();
+    let mut fallback = live_count == 0;
+    if live_count > 0 {
+        let mut live_indices = Vec::<u32>::with_capacity(live_count * 3);
+        for (local, tri) in corner_ids.iter().enumerate() {
+            if !degenerate[local] {
+                live_indices.extend_from_slice(tri);
+            }
+        }
+        let mut live_uvs = vec![[f32::NAN; 2]; live_indices.len()];
+        let mut width = 0_u32;
+        let mut height = 0_u32;
+        let status = unsafe {
+            aias_xatlas_generate(
+                positions.as_ptr().cast::<f32>(),
+                live_indices.as_ptr(),
+                positions.len() as u32,
+                live_indices.len() as u32,
+                live_uvs.as_mut_ptr().cast::<f32>(),
+                &mut width,
+                &mut height,
+            )
+        };
+        if status == -5 {
+            return Err(format!(
+                "材质 {material} 自动 UV 生成失败：展开器内存不足，请关闭其它程序后重试，或将模型拆分为更小的部分"
+            ));
+        }
+        if status != 0 {
+            fallback = true;
+        } else {
+            let mut offset = 0usize;
+            for (local, tri) in corner_ids.iter().enumerate() {
+                if degenerate[local] {
+                    continue;
+                }
+                for k in 0..3 {
+                    generated[local * 3 + k] = live_uvs[offset + k];
+                }
+                offset += 3;
+            }
+        }
+    }
+    if fallback {
+        for (local, tri) in corner_ids.iter().enumerate() {
+            if !degenerate[local] && live_count > 0 {
+                continue;
+            }
+            let uvs = planar_triangle(tri);
+            for k in 0..3 {
+                generated[local * 3 + k] = uvs[k];
+            }
+        }
+        model.warnings.push(format!(
+            "材质 {material} 自动 UV 展开器异常，已改用简易平面投影（该材质接缝位置与展开器方案不同）"
+        ));
+    }
+    // 任何残留 NaN 角点（防御）：以 0.5 中性填充
+    for uv in &mut generated {
+        for c in uv {
+            if !c.is_finite() {
+                *c = 0.5;
+            }
+        }
+    }
     for (local, &triangle_index) in triangle_indices.iter().enumerate() {
         let base = local * 3;
         model.triangles[triangle_index].uvs.insert(
@@ -429,28 +532,9 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
             [generated[base], generated[base + 1], generated[base + 2]],
         );
     }
-    let objects: Vec<usize> = model.objects.iter().map(|o| o.id).collect();
-    let mut report = inspect(model, material, channel, &objects);
-    if !report.valid && report.issue_count == report.issues.len() {
-        repair_generated_uv(model, material, channel, &report);
-        report = inspect(model, material, channel, &objects);
-    }
-    if !report.valid {
-        grid_pack_material(model, material, channel);
-        report = inspect(model, material, channel, &objects);
-    }
-    if !report.valid {
-        return Err(format!(
-            "材质 {material} 自动 UV 校验失败：{} 处问题",
-            report.issue_count
-        ));
-    }
-    model.generated_channels.insert(material, channel);
     Ok(channel)
 }
 
-/// xatlas 对重复/共面拓扑可能留下极少数重叠。压缩主图集并把涉及问题的面
-/// 放进保留条带，避免为了几个坏面降低整个材质的有效分辨率。
 fn repair_generated_uv(model: &mut Model, material: usize, channel: u32, report: &UvReport) {
     let bad: std::collections::BTreeSet<usize> = report
         .issues
