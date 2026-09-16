@@ -173,3 +173,19 @@ npm run build
 ### 参与开发
 
 欢迎通过 Issue 提交问题、建议与复现步骤。改动必须保持「离线优先，一次装好」的定位：不引入在线服务或运行时依赖，图像处理与推理留在 Rust 侧，并保证 `cargo test` 与 `npm run check` 通过。
+
+## AI 抠图模型来源与致谢
+
+抠图功能使用的模型均来自以下社区开源项目，按需下载到本机离线运行，模型版权归各自作者所有，本项目不含任何训练产物、仅做格式转换与集成。
+
+| 应用内名称 | 上游项目 |
+|---|---|
+| 动漫专精（AnimeSeg） | [nkta/birefnext-aniseg-ONNX](https://huggingface.co/nkta/birefnext-aniseg-ONNX)（基于 [BiRefNet](https://github.com/xikipedia/BiRefNet)） |
+| 动漫特化（ToonOut） | [sprited/birefnet-toonout-onnx](https://huggingface.co/sprited/birefnet-toonout-onnx)（基于 [BiRefNet](https://github.com/xikipedia/BiRefNet)） |
+| 高质量抠图（BiRefNet 1024） | [onnx-community/BiRefNet-ONNX](https://huggingface.co/onnx-community/BiRefNet-ONNX)（[BiRefNet 官方导出](https://github.com/xikipedia/BiRefNet)） |
+| 轻量快速（BiRefNet Lite） | [BiRefNet-lite](https://github.com/xikipedia/BiRefNet-lite) |
+| 动漫标准（ISNet） | [skytnt/anime-seg](https://huggingface.co/skytnt/anime-seg)（ISNet：[lerenhang/ISNetDIS](https://github.com/lerenhang/ISNetDIS)） |
+| 动漫精细（RTMDet+精修） | [Faor-Mati/anime-character-segmentation](https://huggingface.co/Faor-Mati/anime-character-segmentation)（检测器基于 [RTMDet](https://github.com/open-mmlab/mmdetection)） |
+| 发丝精修（ViTMatte） | [Xenova/vitmatte-small-distinctions-646](https://huggingface.co/Xenova/vitmatte-small-distinctions-646)（[ViTMatte](https://github.com/FoundationVision/ViTMatte)） |
+
+推理引擎：[ONNX Runtime](https://github.com/microsoft/onnxruntime)（GPU 加速使用官方 onnxruntime-gpu 运行库）。感谢上述作者与 ONNX 社区的贡献。
