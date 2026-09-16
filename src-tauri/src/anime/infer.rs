@@ -369,10 +369,10 @@ fn run_advanced_on_provider(
     let thumb_raw = thumb.as_raw();
     for y in 0..sh {
         let src_row = y as usize * sw as usize * 3;
-        let dst_row = ((y as usize + pad_h) * seg_w + (pad_w as usize)) * 3;
+        let dst_row = (y as usize + pad_h) * seg_w + pad_w as usize;
         for x in 0..sw as usize {
             let s = src_row + x * 3;
-            let d = dst_row + x * 3;
+            let d = dst_row + x;
             // arr[::-1] maps B->mean[0], G->mean[1], R->mean[2].
             input[d] = (thumb_raw[s + 2] as f32 - MEAN[0]) / STD[0];
             input[plane + d] = (thumb_raw[s + 1] as f32 - MEAN[1]) / STD[1];
