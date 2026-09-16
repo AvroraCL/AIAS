@@ -226,15 +226,33 @@ fn encode_surface_map(
 }
 
 pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<u8> {
+    let values = curvature_values(surfaces, nearest, size);
+    let mut pixels = vec![0u8; nearest.len() * 4];
+    for (rgba, value) in pixels.chunks_exact_mut(4).zip(&values) {
+        let v = unit_byte(*value);
+        rgba[..4].copy_from_slice(&[v, v, v, 255]);
+    }
+    pixels
+}
+
+/// 16 位曲率图：磨损/边缘污垢遮罩用途下对条带敏感，动态范围 ×256。
+pub(crate) fn curvature_map_16(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<u16> {
+    let values = curvature_values(surfaces, nearest, size);
+    let mut pixels = vec![0u16; nearest.len() * 4];
+    for (rgba, value) in pixels.chunks_exact_mut(4).zip(&values) {
+        let v = (value.clamp(0.0, 1.0) * 65535.0).round() as u16;
+        rgba[..4].copy_from_slice(&[v, v, v, 65535]);
+    }
+    pixels
+}
+
+/// 曲率值计算（0.5 中性背景 + 折痕处的符号偏移）。
+fn curvature_values(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<f32> {
     let mut surface_at = vec![u32::MAX; nearest.len()];
     for (index, surface) in surfaces.iter().enumerate() {
         surface_at[surface.pixel as usize] = index as u32;
     }
-    // 背景固定 128（0.5 中性），与 bake-manifest 的「0.5 = flat」约定一致。
-    let mut pixels = vec![128u8; nearest.len() * 4];
-    for rgba in pixels.chunks_exact_mut(4) {
-        rgba[3] = 255;
-    }
+    let mut values = vec![0.5f32; nearest.len()];
     for surface in surfaces {
         let pixel = surface.pixel as usize;
         let x = pixel % size;
@@ -294,23 +312,16 @@ pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) 
         if count == 0.0 {
             continue;
         }
-        let value = unit_byte(0.5 + signed / count * 6.0);
-        pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&[value, value, value, 255]);
+        values[pixel] = 0.5 + signed / count * 6.0;
     }
+    // margin 填充在值域完成：最近覆盖像素的曲率值复制到扩张区。
     for (pixel, source) in nearest.iter().copied().enumerate() {
         if source == u32::MAX {
             continue;
         }
-        let source = source as usize * 4;
-        let value = [
-            pixels[source],
-            pixels[source + 1],
-            pixels[source + 2],
-            pixels[source + 3],
-        ];
-        pixels[pixel * 4..pixel * 4 + 4].copy_from_slice(&value);
+        values[pixel] = values[source as usize];
     }
-    pixels
+    values
 }
 
 fn write_rgba_map(
@@ -924,13 +935,26 @@ pub fn run(
                     0.1,
                     None,
                 );
-                write_rgba_map(
+                let pixels = if options.bits == 16 {
+                    SurfacePixels::Bits16(curvature_map_16(
+                        &surfaces,
+                        &nearest,
+                        options.resolution as usize,
+                    ))
+                } else {
+                    SurfacePixels::Bits8(curvature_map(
+                        &surfaces,
+                        &nearest,
+                        options.resolution as usize,
+                    ))
+                };
+                write_surface_map(
                     options,
                     &mut result,
                     material,
                     &prefix,
                     "curvature",
-                    curvature_map(&surfaces, &nearest, options.resolution as usize),
+                    pixels,
                 )?;
                 map_index += 1;
             }
