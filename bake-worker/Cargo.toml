@@ -14,6 +14,8 @@ gltf = "1.4"
 glam = { version = "0.30", features = ["serde"] }
 base64 = "0.22"
 sysinfo = "0.33"
+# 距离变换两遍（列/行）彼此独立，按线并行喂多核
+rayon = "1"
 tempfile = "3"
 
 [build-dependencies]

@@ -28,8 +28,7 @@ void main(uint3 id : SV_DispatchThreadID) {
         ray.Origin=s.position; ray.TMin=bias; ray.TMax=distance;
         ray.Direction=direction;
         if (mode == 0) {
-            // AO 只计二值命中：任一命中即结束遍历，遮挡区射线成本约减半。
-            RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+            RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
             query.TraceRayInline(scene,RAY_FLAG_NONE,255,ray);
             while(query.Proceed()) {
                 if(query.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE && (selfOnly==0 || objects[query.CandidatePrimitiveIndex()]==s.objectId)) query.CommitNonOpaqueTriangleHit();

@@ -31,6 +31,7 @@ dependencies = [
  "gltf",
  "image",
  "libloading",
+ "rayon",
  "serde",
  "serde_json",
  "sysinfo",

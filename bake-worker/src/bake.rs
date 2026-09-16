@@ -1483,38 +1483,43 @@ pub fn dilate(covered: &[bool], size: usize, margin: u32) -> Vec<u32> {
             src_in[i] = u32::MAX;
         }
     }
-    // 第一遍：每列沿 y 的 1D 距离变换。
-    let mut col_d = vec![0u64; n];
-    let mut col_src = vec![0u32; n];
-    for x in 0..size {
-        let column: Vec<u64> = (0..size).map(|y| f[y * size + x]).collect();
-        let column_src: Vec<u32> = (0..size).map(|y| src_in[y * size + x]).collect();
-        let (d, s) = dt_1d_sq(&column, &column_src);
-        for y in 0..size {
-            col_d[y * size + x] = d[y];
-            col_src[y * size + x] = s[y];
-        }
-    }
+    // 两遍 DT 各线（列/行）彼此独立，用 rayon 按线并行：
+    // 列遍历是跨步访存，串行会拖慢整个烘焙（2048² 下实测 +0.9s）。
+    // 列结果以转置布局存放：第一遍按 x 得到连续可变块，第二遍共享只读。
+    use rayon::prelude::*;
+    let mut col_d_t = vec![0u64; n]; // col_d_t[x * size + y]
+    let mut col_src_t = vec![0u32; n];
+    col_d_t
+        .par_chunks_mut(size)
+        .zip(col_src_t.par_chunks_mut(size))
+        .zip(f.par_chunks(size))
+        .zip(src_in.par_chunks(size))
+        .enumerate()
+        .for_each(|(x, (((d_chunk, s_chunk), f_col), src_col))| {
+            let (d, s) = dt_1d_sq(f_col, src_col);
+            d_chunk.copy_from_slice(&d);
+            s_chunk.copy_from_slice(&s);
+        });
     // 第二遍：每行沿 x 对「列内距离 + 水平位移平方」再做 1D 变换。
     // 平方欧氏距离可分离，两遍组合即精确 2D 欧氏最近源。
     let threshold_cmp = (2 * (margin as u64) + 1).pow(2);
     let mut nearest = vec![u32::MAX; n];
-    for y in 0..size {
-        let row: Vec<u64> = (0..size).map(|x| col_d[y * size + x]).collect();
-        let row_src: Vec<u32> = (0..size).map(|x| col_src[y * size + x]).collect();
-        let (d, s) = dt_1d_sq(&row, &row_src);
-        for x in 0..size {
-            let index = y * size + x;
-            if covered[index] {
-                nearest[index] = index as u32;
-                continue;
+    nearest
+        .par_chunks_mut(size)
+        .enumerate()
+        .for_each(|(y, row_out)| {
+            let row: Vec<u64> = (0..size).map(|x| col_d_t[x * size + y]).collect();
+            let row_src: Vec<u32> = (0..size).map(|x| col_src_t[x * size + y]).collect();
+            let (d, s) = dt_1d_sq(&row, &row_src);
+            for x in 0..size {
+                let index = y * size + x;
+                if covered[index] {
+                    row_out[x] = index as u32;
+                } else if d[x] * 4 < threshold_cmp {
+                    row_out[x] = s[x];
+                }
             }
-            // √d² < margin + 0.5 ⟺ 4·d² < (2m+1)²（全程整数运算）
-            if d[x] * 4 < threshold_cmp {
-                nearest[index] = s[x];
-            }
-        }
-    }
+        });
     nearest
 }
 
