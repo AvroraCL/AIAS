@@ -147,11 +147,13 @@ const BUILTIN_PRESETS = {
   glitch: [
     { name: 'VHS 录像带', settings: { split: 26, blocks: 30, wave: 55, scanline: 60, noise: 40 } },
     { name: '数据崩坏', settings: { split: 60, blocks: 85, wave: 15, scanline: 20, noise: 70 } },
+    { name: '轻微色差', settings: { split: 12, blocks: 5, wave: 10, scanline: 10, noise: 8 } },
   ],
   camo: [
     { name: '林地迷彩', settings: { pattern: 'blotch', colors: 4, scale: 55, sharp: 35, contrast: 65 } },
     { name: '数码迷彩', settings: { pattern: 'digital', colors: 4, scale: 30, sharp: 90, contrast: 70 } },
     { name: '豹纹点', settings: { pattern: 'leopard', colors: 3, scale: 22, sharp: 70, contrast: 80 } },
+    { name: '沙漠裂纹', settings: { pattern: 'crack', colors: 5, scale: 60, sharp: 45, contrast: 55 } },
   ],
   wear: [
     { name: '战损掉漆', settings: { strength: 70, edge: 80, scratches: 55, grain: 35, baseColor: true } },
