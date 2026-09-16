@@ -17,6 +17,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let capabilitiesRequested = false;
   let saveTimer, renderFrame, unlisten, outputDirectory = '', resultHandle = '', reportRevision = 0, orthographicHeight = 2, renderWidth = 0, renderHeight = 0;
   let importRevision = 0, previewRequest = 0, uvDrawRevision = 0;
+  // UV 视图变换：zoom=1 时 pan 恒为基准偏移；issue 定位自动居中放大
+  let uvZoom = 1, uvPanX = 0, uvPanY = 0;
   const previewPending = new Map();
   const previewWorker = typeof Worker === 'function' ? new Worker(new URL('./model-bake-preview-worker.js', import.meta.url), { type: 'module' }) : null;
   if (previewWorker) {
@@ -773,10 +775,20 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
   }
 
-  function drawUv(highlight = highlightedTriangle) {
+  function drawUv(highlight = highlightedTriangle, focusTriangle = null) {
     highlightedTriangle = highlight;
     if (!model || focused === null) return;
     if (view !== 'uv') { ++uvDrawRevision; return; }
+    const applyFocus = (valuesFor, finder) => {
+      if (focusTriangle == null) return;
+      // 以目标三角形 UV 包围盒中心居中放大（zoom 至少 4），便于定位小缺陷面
+      const found = finder(focusTriangle);
+      if (!found) return;
+      const { minU, maxU, minV, maxV } = found;
+      uvZoom = Math.max(uvZoom, 4);
+      uvPanX = size / 2 - 12 - ((minU + maxU) / 2) * (size - 24) * uvZoom;
+      uvPanY = size / 2 - 12 - (1 - (minV + maxV) / 2) * (size - 24) * uvZoom;
+    };
     const canvas = $('uv-canvas');
     const stage = $('stage');
     const safe = getComputedStyle(root.querySelector('.bake-workspace'));
@@ -792,6 +804,24 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const drawRevision = ++uvDrawRevision;
     const batches = geometry.batches.filter(batch => batch.material === focused && batch.uvOffsets[String(channels[focused] ?? 0)] != null)
       .map(batch => ({ batch, values: new Float32Array(geometry.buffer, batch.uvOffsets[String(channels[focused] ?? 0)], batch.vertexCount * 2), triangleIds: new Uint32Array(geometry.buffer, batch.triangleOffset, batch.triangleCount) }));
+    if (focusTriangle != null) {
+      applyFocus(valuesFor => {
+        // 在批内查目标三角形的 UV 包围盒
+        for (const { values, triangleIds } of batches) {
+          const local = triangleIds.indexOf(focusTriangle);
+          if (local >= 0) {
+            const base = local * 6;
+            return {
+              minU: Math.min(values[base], values[base + 2], values[base + 4]),
+              maxU: Math.max(values[base], values[base + 2], values[base + 4]),
+              minV: Math.min(values[base + 1], values[base + 3], values[base + 5]),
+              maxV: Math.max(values[base + 1], values[base + 3], values[base + 5]),
+            };
+          }
+        }
+        return null;
+      });
+    }
     let batchIndex = 0, triangle = 0;
     // 按样式分桶合并 path：同色三角形合成一条路径一次 stroke，绘制调用
     // 降一个数量级（大网格 4K 线框的 Canvas 成本大头就在逐三角形 stroke）。
@@ -811,8 +841,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         const path = bucket.path;
         for (let point = 0; point < 3; point++) {
           const base = triangle * 6 + point * 2;
-          const x = 12 + values[base] * (size - 24);
-          const y = 12 + (1 - values[base + 1]) * (size - 24);
+          const x = uvPanX + 12 + values[base] * (size - 24) * uvZoom;
+          const y = uvPanY + 12 + (1 - values[base + 1]) * (size - 24) * uvZoom;
           if (point) path.lineTo(x, y); else path.moveTo(x, y);
         }
         path.closePath();
@@ -840,7 +870,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         button.className = 'bake-issue';
         button.type = 'button';
         button.textContent = `对象 ${issue.object} · 源面 ${issue.face}：${issue.kind}${issue.otherTriangle != null ? `（与三角形 ${issue.otherTriangle}）` : ''}`;
-        button.onclick = () => { setView('uv'); drawUv(issue.triangle); };
+        button.onclick = () => { setView('uv'); drawUv(issue.triangle, issue.triangle); };
         issues.append(button);
       }
       if (report.issueCount > report.issues.length) {
@@ -1227,6 +1257,46 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
     refresh();
   };
+  {
+    // UV 视图交互：滚轮以光标为锚缩放，拖拽平移，缩到 1 即复位
+    const canvas = $('uv-canvas');
+    const clampPan = () => {
+      if (uvZoom <= 1) { uvZoom = 1; uvPanX = 0; uvPanY = 0; }
+    };
+    canvas.addEventListener('wheel', event => {
+      if (view !== 'uv') return;
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const cx = event.clientX - rect.left;
+      const cy = event.clientY - rect.top;
+      const factor = event.deltaY < 0 ? 1.2 : 1 / 1.2;
+      const next = Math.min(16, Math.max(1, uvZoom * factor));
+      // 保持光标下的内容点不动：pan' = c - (c - pan) * (next/zoom)
+      uvPanX = cx - (cx - uvPanX) * (next / uvZoom);
+      uvPanY = cy - (cy - uvPanY) * (next / uvZoom);
+      uvZoom = next;
+      clampPan();
+      drawUv();
+    }, { passive: false });
+    let panning = null;
+    canvas.addEventListener('pointerdown', event => {
+      if (view !== 'uv' || event.button !== 0) return;
+      panning = { x: event.clientX, y: event.clientY, panX: uvPanX, panY: uvPanY };
+      canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', event => {
+      if (!panning) return;
+      uvPanX = panning.panX + event.clientX - panning.x;
+      uvPanY = panning.panY + event.clientY - panning.y;
+      clampPan();
+      drawUv();
+    });
+    canvas.addEventListener('pointerup', () => { panning = null; });
+    canvas.addEventListener('dblclick', () => {
+      uvZoom = 1; uvPanX = 0; uvPanY = 0;
+      drawUv();
+    });
+  }
   for (const key of Object.keys(defaults)) {
     const element = $(key);
     if (!element || key === 'workspace') continue;
