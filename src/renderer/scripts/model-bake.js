@@ -793,6 +793,13 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const batches = geometry.batches.filter(batch => batch.material === focused && batch.uvOffsets[String(channels[focused] ?? 0)] != null)
       .map(batch => ({ batch, values: new Float32Array(geometry.buffer, batch.uvOffsets[String(channels[focused] ?? 0)], batch.vertexCount * 2), triangleIds: new Uint32Array(geometry.buffer, batch.triangleOffset, batch.triangleCount) }));
     let batchIndex = 0, triangle = 0;
+    // 按样式分桶合并 path：同色三角形合成一条路径一次 stroke，绘制调用
+    // 降一个数量级（大网格 4K 线框的 Canvas 成本大头就在逐三角形 stroke）。
+    const buckets = {
+      normal: { style: '#a8a8a8', width: 1, path: new Path2D() },
+      bad: { style: '#ff6278', width: 1, path: new Path2D() },
+      highlight: { style: '#ffd166', width: 3, path: new Path2D() },
+    };
     const drawChunk = () => {
       if (drawRevision !== uvDrawRevision || view !== 'uv') return;
       const deadline = performance.now() + 9;
@@ -800,21 +807,26 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         const { batch, values, triangleIds } = batches[batchIndex];
         if (triangle >= batch.triangleCount) { batchIndex++; triangle = 0; continue; }
         const index = triangleIds[triangle];
-        context.beginPath();
+        const bucket = highlight === index ? buckets.highlight : bad.has(index) ? buckets.bad : buckets.normal;
+        const path = bucket.path;
         for (let point = 0; point < 3; point++) {
           const base = triangle * 6 + point * 2;
           const x = 12 + values[base] * (size - 24);
           const y = 12 + (1 - values[base + 1]) * (size - 24);
-          if (point) context.lineTo(x, y); else context.moveTo(x, y);
+          if (point) path.lineTo(x, y); else path.moveTo(x, y);
         }
-        context.closePath();
-        context.strokeStyle = highlight === index ? '#ffd166' : bad.has(index) ? '#ff6278' : '#a8a8a8';
-        context.lineWidth = highlight === index ? 3 : 1;
-        if (bad.has(index)) { context.fillStyle = '#ff627833'; context.fill(); }
-        context.stroke();
+        path.closePath();
+        if (bad.has(index)) { context.fillStyle = '#ff627833'; context.fill(path); }
         triangle++;
       }
       if (batchIndex < batches.length) requestAnimationFrame(drawChunk);
+      else {
+        for (const bucket of Object.values(buckets)) {
+          context.strokeStyle = bucket.style;
+          context.lineWidth = bucket.width;
+          context.stroke(bucket.path);
+        }
+      }
     };
     drawChunk();
     const issues = $('issues');
