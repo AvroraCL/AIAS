@@ -1,5 +1,6 @@
 import { STYLE_IDS, STYLE_LABELS, STYLE_DEFAULTS, restoreStyleLabSettings, makeFbm, makeNoise2D, mulberry32, extractPalette } from './style-lab-state.mjs';
 import { renderDuotone, renderWatercolor, renderLowpoly, renderPixelArt, renderWoodcut, renderFilm } from './style-lab-styles2.js';
+import { renderRipple, renderGlassR, renderMosaic, renderHeatwave, renderPastel, renderHolo } from './style-lab-styles3.js';
 import './style-lab.css';
 
 const EXPORT_MAX = 4096;
@@ -105,6 +106,40 @@ const STYLE_SCHEMA = {
     { key: 'halation', type: 'range', label: '光晕', min: 0, max: 100, step: 1 },
     { key: 'fade', type: 'range', label: '褪色', min: 0, max: 100, step: 1 },
     { key: 'warmth', type: 'range', label: '暖调', min: 0, max: 100, step: 1 },
+  ],
+  ripple: [
+    { key: 'amplitude', type: 'range', label: '波幅', min: 2, max: 60, step: 1 },
+    { key: 'wavelength', type: 'range', label: '波长', min: 8, max: 100, step: 1 },
+    { key: 'speed', type: 'range', label: '速度', min: 0, max: 100, step: 1 },
+    { key: 'mix', type: 'range', label: '混合', min: 0, max: 100, step: 1 },
+  ],
+  glass: [
+    { key: 'refraction', type: 'range', label: '折射强度', min: 5, max: 100, step: 1 },
+    { key: 'blur', type: 'range', label: '模糊', min: 0, max: 40, step: 1 },
+    { key: 'tint', type: 'range', label: '色调', min: 0, max: 60, step: 1 },
+  ],
+  mosaic: [
+    { key: 'tile', type: 'range', label: '砖块尺寸', min: 4, max: 40, step: 1 },
+    { key: 'gap', type: 'range', label: '缝隙', min: 0, max: 8, step: 1 },
+    { key: 'jitter', type: 'range', label: '抖动', min: 0, max: 100, step: 1 },
+    { key: 'grout', type: 'range', label: '填缝暗度', min: 0, max: 60, step: 1 },
+  ],
+  heatwave: [
+    { key: 'strength', type: 'range', label: '扭曲强度', min: 5, max: 100, step: 1 },
+    { key: 'speed', type: 'range', label: '速度', min: 0, max: 100, step: 1 },
+    { key: 'freq', type: 'range', label: '频率', min: 5, max: 50, step: 1 },
+  ],
+  pastel: [
+    { key: 'softness', type: 'range', label: '柔化', min: 20, max: 100, step: 1 },
+    { key: 'grain', type: 'range', label: '蜡笔颗粒', min: 0, max: 100, step: 1 },
+    { key: 'bloom', type: 'range', label: '晕开', min: 0, max: 100, step: 1 },
+    { key: 'paper', type: 'range', label: '纸纹', min: 0, max: 100, step: 1 },
+  ],
+  holo: [
+    { key: 'intensity', type: 'range', label: '强度', min: 10, max: 100, step: 1 },
+    { key: 'spectrum', type: 'range', label: '光谱宽度', min: 10, max: 100, step: 1 },
+    { key: 'scanline', type: 'range', label: '扫描线', min: 0, max: 80, step: 1 },
+    { key: 'shimmer', type: 'range', label: '闪光', min: 0, max: 100, step: 1 },
   ],
 };
 
@@ -575,6 +610,13 @@ function prepareStyle(style, src, w, h, p) {
   if (style === 'watercolor') {
     pre.fbm = makeFbm(7777, 4);
   }
+  if (style === 'ripple' || style === 'glass' || style === 'heatwave' || style === 'pastel' || style === 'holo') {
+    pre.gray3 = prepareGray(src, w, h);
+    if (style === 'glass' || style === 'pastel' || style === 'holo') {
+      pre.blur3 = boxBlur(pre.gray3, w, h, Math.max(2, Math.round(Math.min(w, h) / 80)));
+      pre.edge3 = sobelMagnitude(pre.gray3, w, h);
+    }
+  }
   return pre;
 }
 
@@ -612,7 +654,19 @@ function renderRows(style, dst, src, w, h, y0, y1, p, pre) {
     case 'pixel': return renderPixelArt(dst, src, w, h, y0, y1, p);
     case 'woodcut': return renderWoodcut(dst, src, w, h, y0, y1, p, pre.gray);
     case 'film': return renderFilm(dst, src, w, h, y0, y1, p, pre.gray, pre.blur || boxBlur(pre.gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 80))));
-    default: return copyRows(dst, src, w, y0, y1); return copyRows(dst, src, w, y0, y1);
+    case 'ripple': return rippleImpl(dst, src, w, h, y0, y1, p, pre);
+    case 'glass': return glassDispatch(dst, src, w, h, y0, y1, p, pre);
+    case 'mosaic': return mosaicDispatch(dst, src, w, h, y0, y1, p);
+    case 'heatwave': return heatwaveDispatch(dst, src, w, h, y0, y1, p);
+    case 'pastel': return pastelDispatch(dst, src, w, h, y0, y1, p, pre);
+    case 'holo': return holoDispatch(dst, src, w, h, y0, y1, p, pre);
+    case 'ripple': return renderRipple(dst, src, w, h, y0, y1, p, pre);
+    case 'glass': return renderGlassR(dst, src, w, h, y0, y1, p, pre);
+    case 'mosaic': return renderMosaic(dst, src, w, h, y0, y1, p);
+    case 'heatwave': return renderHeatwave(dst, src, w, h, y0, y1, p, pre);
+    case 'pastel': return renderPastel(dst, src, w, h, y0, y1, p, pre);
+    case 'holo': return renderHolo(dst, src, w, h, y0, y1, p, pre);
+    default: return copyRows(dst, src, w, y0, y1);
   }
 }
 
@@ -934,4 +988,27 @@ function renderMarble(dst, w, h, y0, y1, p, pre) {
       dst[i] = c[0]; dst[i + 1] = c[1]; dst[i + 2] = c[2]; dst[i + 3] = 255;
     }
   }
+}
+
+
+function glassDispatch(dst, src, w, h, y0, y1, p, pre) {
+  const gray3 = pre.gray3 || prepareGray(src, w, h);
+  const blur3 = pre.blur3 || boxBlur(gray3, w, h, Math.max(1, Math.round((p.blur || 12) / 5)));
+  renderGlassR(dst, src, w, h, y0, y1, p, { gray: gray3, blur: blur3 });
+}
+function mosaicDispatch(dst, src, w, h, y0, y1, p) {
+  renderMosaic(dst, src, w, h, y0, y1, p);
+}
+function heatwaveDispatch(dst, src, w, h, y0, y1, p) {
+  renderHeatwave(dst, src, w, h, y0, y1, p);
+}
+function pastelDispatch(dst, src, w, h, y0, y1, p, pre) {
+  const gray3 = pre.gray3 || prepareGray(src, w, h);
+  const blur3 = pre.blur3 || boxBlur(gray3, w, h, Math.max(2, Math.round(Math.min(w, h) / 80)));
+  renderPastel(dst, src, w, h, y0, y1, p, { gray: gray3, blur: blur3 });
+}
+function holoDispatch(dst, src, w, h, y0, y1, p, pre) {
+  const gray3 = pre.gray3 || prepareGray(src, w, h);
+  const blur3 = pre.blur3 || boxBlur(gray3, w, h, Math.max(2, Math.round(Math.min(w, h) / 60)));
+  renderHolo(dst, src, w, h, y0, y1, p, { gray: gray3, blur: blur3 });
 }

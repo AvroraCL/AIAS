@@ -1,7 +1,7 @@
 // 风格实验室参数状态：10 套图片转风格化样式的参数白名单、默认值与恢复逻辑。
 // 纯函数模块（无 DOM 依赖），node --test 可直接覆盖。
 
-export const STYLE_IDS = ['glitch', 'camo', 'wear', 'oil', 'halftone', 'sketch', 'thermal', 'neon', 'cross', 'marble', 'duotone', 'watercolor', 'lowpoly', 'pixel', 'woodcut', 'film'];
+export const STYLE_IDS = ['glitch', 'camo', 'wear', 'oil', 'halftone', 'sketch', 'thermal', 'neon', 'cross', 'marble', 'duotone', 'watercolor', 'lowpoly', 'pixel', 'woodcut', 'film', 'ripple', 'glass', 'mosaic', 'heatwave', 'pastel', 'holo'];
 
 export const STYLE_LABELS = {
   glitch: '故障艺术',
@@ -20,6 +20,12 @@ export const STYLE_LABELS = {
   pixel: '像素画',
   woodcut: '版画木刻',
   film: '胶片颗粒',
+  ripple: '水波纹',
+  glass: '玻璃折射',
+  mosaic: '马赛克拼贴',
+  heatwave: '热浪扭曲',
+  pastel: '蜡笔粉彩',
+  holo: '幻彩全息',
 };
 
 // 每套样式的参数默认值；inspector 按此渲染，处理函数按此消费。
@@ -40,6 +46,12 @@ export const STYLE_DEFAULTS = {
   pixel: { size: 6, levels: 6, dither: 'ordered', palette: 'auto', paletteN: 8 },
   woodcut: { lineWidth: 3, angle: 0, contrast: 65, roughness: 35 },
   film: { grain: 45, halation: 35, fade: 25, warmth: 40 },
+  ripple: { amplitude: 18, wavelength: 32, speed: 30, mix: 65 },
+  glass: { refraction: 50, blur: 12, tint: 15 },
+  mosaic: { tile: 14, gap: 2, jitter: 30, grout: 25 },
+  heatwave: { strength: 40, speed: 35, freq: 20 },
+  pastel: { softness: 65, grain: 50, bloom: 40, paper: 55 },
+  holo: { intensity: 65, spectrum: 45, scanline: 30, shimmer: 55 },
 };
 
 export const STYLE_ENUMS = {
@@ -74,6 +86,12 @@ const PARAM_RANGES = {
   pixel: { size: [2, 16], levels: [2, 16] },
   woodcut: { lineWidth: [1, 8], angle: [0, 180], contrast: [10, 100], roughness: [0, 100] },
   film: { grain: [0, 100], halation: [0, 100], fade: [0, 100], warmth: [0, 100] },
+  ripple: { amplitude: [2, 60], wavelength: [8, 100], speed: [0, 100], mix: [0, 100] },
+  glass: { refraction: [5, 100], blur: [0, 40], tint: [0, 60] },
+  mosaic: { tile: [4, 40], gap: [0, 8], jitter: [0, 100], grout: [0, 60] },
+  heatwave: { strength: [5, 100], speed: [0, 100], freq: [5, 50] },
+  pastel: { softness: [20, 100], grain: [0, 100], bloom: [0, 100], paper: [0, 100] },
+  holo: { intensity: [10, 100], spectrum: [10, 100], scanline: [0, 80], shimmer: [0, 100] },
 };
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
