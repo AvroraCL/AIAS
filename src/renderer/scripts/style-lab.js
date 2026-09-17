@@ -712,6 +712,51 @@ export function createStyleLab({ onImage = null, root, inspector, runArea, deskt
   const zoomInput = $('zoom');
   zoomInput.oninput = () => { zoom = Number(zoomInput.value); fit(); };
   $('fit').onclick = () => { zoom = 1; zoomInput.value = 1; fit(); };
+  // 滚轮缩放（与 ascii.js 同机制）：以指针下的图像点为锚点，缩放后调整
+  // 滚动位置让该点在屏幕上不动。
+  $('stage').addEventListener('wheel', event => {
+    const canvas = $('canvas');
+    if (canvas.hidden) return;
+    event.preventDefault();
+    const before = canvas.getBoundingClientRect();
+    const fx = before.width ? (event.clientX - before.left) / before.width : 0.5;
+    const fy = before.height ? (event.clientY - before.top) / before.height : 0.5;
+    const next = Math.max(0.25, Math.min(3, zoom * Math.exp(-event.deltaY * 0.0015)));
+    if (next === zoom) return;
+    zoom = next;
+    $('zoom').value = String(zoom);
+    fit();
+    const after = canvas.getBoundingClientRect();
+    $('stage').scrollLeft += after.left + fx * after.width - event.clientX;
+    $('stage').scrollTop += after.top + fy * after.height - event.clientY;
+  }, { passive: false });
+  // 拖拽平移：左键在预览上拖动即滚动容器；pointer capture 保证移出元素后
+  // 仍跟手。空状态（画布隐藏）时不接管，保证「选择图片」按钮可点。
+  let drag = null;
+  $('stage').addEventListener('pointerdown', event => {
+    const canvas = $('canvas');
+    if (canvas.hidden || event.button !== 0) return;
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: $('stage').scrollLeft, top: $('stage').scrollTop };
+    $('stage').classList.add('style-lab-dragging');
+    try { $('stage').setPointerCapture(event.pointerId); } catch { /* noop */ }
+    event.preventDefault();
+  });
+  $('stage').addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    $('stage').scrollLeft = drag.left - (event.clientX - drag.x);
+    $('stage').scrollTop = drag.top - (event.clientY - drag.y);
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    drag = null;
+    $('stage').classList.remove('style-lab-dragging');
+  };
+  $('stage').addEventListener('pointerup', endDrag);
+  $('stage').addEventListener('pointercancel', endDrag);
+  // Alt+Tab 等让窗口失去指针所有权时 pointerup 可能收不到：不收尾会导致
+  // 未按键状态下鼠标划过预览仍持续平移（拖拽"粘住"）。
+  $('stage').addEventListener('lostpointercapture', endDrag);
+  window.addEventListener('blur', endDrag);
   root.querySelectorAll('[data-stylize-view]').forEach(el => el.onclick = () => { view = el.dataset.stylizeView; draw(); });
   const resize = new ResizeObserver(fit);
   function refresh() {
