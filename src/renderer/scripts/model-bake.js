@@ -677,9 +677,11 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         if (checkboxDrag === null) return;
         setMaterialChecked(input, item.id, checkboxDrag);
       };
-      // 按下时已手动切换过状态；会话期间拦截原生 click 的默认翻转，避免二次取反。
+      // 按下时已手动切换过状态，pointer 起源的 click 一律拦截默认翻转：
+      // pointerup 先于 click 清掉会话标志，不能拿它判断是否拦截；键盘
+      // 空格合成的 click detail 为 0，保持原生切换与 change 行为不受影响。
       input.onclick = event => {
-        if (checkboxDrag !== null) event.preventDefault();
+        if (event.detail > 0) event.preventDefault();
       };
       const label = document.createElement('button');
       label.className = 'bake-item' + (failedMaterials.has(item.id) ? ' bake-failed' : '');
@@ -846,11 +848,14 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
           if (point) path.lineTo(x, y); else path.moveTo(x, y);
         }
         path.closePath();
-        if (bad.has(index)) { context.fillStyle = '#ff627833'; context.fill(path); }
         triangle++;
       }
       if (batchIndex < batches.length) requestAnimationFrame(drawChunk);
       else {
+        // bad 填充统一在收尾做一次：逐三角形对累计路径重复 fill 会让先画
+        // 的问题面 alpha 越叠越深，把缺陷严重度渲染成“越靠前越红”。
+        context.fillStyle = '#ff627833';
+        context.fill(buckets.bad.path);
         for (const bucket of Object.values(buckets)) {
           context.strokeStyle = bucket.style;
           context.lineWidth = bucket.width;

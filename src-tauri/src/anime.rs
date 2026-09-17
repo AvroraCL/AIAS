@@ -406,6 +406,8 @@ pub fn cutout_with_options(
                     // 模型优先处理「主体与背景同为动漫线稿」的误保留，通用 BiRefNet
                     // 仍保留为专精模型未安装或未通过客观清理门槛时的兜底。
                     release_birefnet_session("toonout");
+                    // 候选之间响应取消：回退链最多 4 次推理，CPU 单次可达数分钟。
+                    check_cancel()?;
                     let specialist_candidate = if is_model_ready(base, "anime-specialist") {
                         match run_birefnet(base, "anime-specialist", false, &rgb) {
                             Ok(candidate)
@@ -424,6 +426,7 @@ pub fn cutout_with_options(
                         // 专精候选没有接管时才能继续加载 General；否则两次 1024 推理
                         // 既无质量收益，也会在小显存显卡上制造不必要的峰值占用。
                         release_birefnet_session("anime-specialist");
+                        check_cancel()?;
                         let general_candidate = if is_model_ready(base, "birefnet-general") {
                             match run_birefnet(base, "birefnet-general", false, &rgb) {
                                 Ok(candidate)
@@ -442,6 +445,7 @@ pub fn cutout_with_options(
                             // General 复核未接管时不保留它的会话，避免和后续两阶段
                             // 动漫模型重叠占用显存。
                             release_birefnet_session("birefnet-general");
+                            check_cancel()?;
                             match run_advanced(base, &rgb) {
                                 Ok(candidate)
                                     if matte_is_substantially_cleaner(&candidate, &mask, w, h) =>
@@ -452,6 +456,7 @@ pub fn cutout_with_options(
                             }
                         } else if is_model_ready(base, "simple") {
                             release_birefnet_session("birefnet-general");
+                            check_cancel()?;
                             (run_simple(base, &rgb)?, "simple")
                         } else {
                             release_birefnet_session("birefnet-general");

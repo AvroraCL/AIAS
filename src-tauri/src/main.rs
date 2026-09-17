@@ -553,9 +553,14 @@ fn load_settings(path: &Path) -> Result<Settings, String> {
     }
     let content = fs::read_to_string(path).map_err(to_string_error)?;
     serde_json::from_str::<Settings>(&content).or_else(|_| {
+        // 兜底只覆盖“JSON 合法但字段类型漂移/结构截断”两类：逐键合并仍失败
+        // 时退回默认值——settings_get/set 都要先 load，不能让一个坏字段把
+        // 整个设置系统永久卡死；下次 set 会用默认结构重写文件自愈。
         let mut settings = Settings::default();
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-            merge_settings(&mut settings, value)?;
+            if merge_settings(&mut settings, value).is_err() {
+                return Ok(Settings::default());
+            }
         }
         Ok(settings)
     })
@@ -818,8 +823,17 @@ fn texture_split_pbr_inner(
             Ok(message) => {
                 if let Some(message) = message {
                     push_log(Some(app), &mut logs, "success", message);
+                    completed += 1;
+                } else {
+                    // 无 _c/_n 后缀时什么都没写：不计入完成数，明示跳过原因，
+                    // 避免 completed 虚高报“完成”却零输出。
+                    push_log(
+                        Some(app),
+                        &mut logs,
+                        "warn",
+                        format!("跳过 {stem}：无法识别 _c/_n 后缀，未拆分"),
+                    );
                 }
-                completed += 1;
                 emit_task_progress(app, completed, options.files.len(), format!("完成 {stem}"));
             }
             Err(error) => push_log(
@@ -1280,7 +1294,19 @@ fn anime_cutout_inner(
     let mut outputs = Vec::new();
     let mut completed = 0usize;
     let mut cancelled = false;
+    // 下载期间点停止要在下载结束后立即生效：take 会把标志消费掉，若不看
+    // 就清空，用户在下载中的停止请求会被当陈旧标志吞掉，整批照常运行。
+    let cancelled_during_prepare = safety::task_cancel_pending();
     let _ = safety::take_task_cancel();
+    if cancelled_during_prepare {
+        return Ok(TaskResult {
+            completed: 0,
+            total: options.files.len(),
+            logs,
+            outputs,
+            cancelled: true,
+        });
+    }
     // 输出目录=输入目录时，输出命名（stem_模型id.png）可能恰好命中另一张
     // 输入图：persist 覆盖会直接销毁那张原图，写前必须识别并换名。
     let input_paths: std::collections::HashSet<std::path::PathBuf> = options
@@ -1720,6 +1746,13 @@ fn superres_run_inner(
                 }
             }
             Err(error) => {
+                // 分块级取消返回的「任务已取消」不算失败：计入停止并终止
+                // 剩余文件，与 anime_cutout 的文件边界语义一致。
+                if error.contains("任务已取消") {
+                    cancelled = true;
+                    push_log(app, &mut logs, "warn", format!("已停止：{stem} 未完成"));
+                    break;
+                }
                 push_log(app, &mut logs, "error", format!("失败 {stem}：{error}"));
             }
         }
@@ -1870,8 +1903,12 @@ fn skin_import_inner(options: ImportSkinOptions) -> Result<ImportSkinResult, Str
                 Err(e) => errors.push(format!("{name:?}: {e}")),
             }
         } else if source.is_file() {
-            fs::copy(source, &target).map_err(to_string_error)?;
-            imported += 1;
+            // 单个文件失败收集进 errors 继续导入，与目录分支一致；
+            // 用 ? 会让排在后面的文件全部丢掉。
+            match fs::copy(source, &target) {
+                Ok(_) => imported += 1,
+                Err(e) => errors.push(format!("{name:?}: {}", to_string_error(e))),
+            }
         }
     }
     Ok(ImportSkinResult { imported, errors })

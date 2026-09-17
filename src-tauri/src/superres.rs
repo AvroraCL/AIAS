@@ -481,6 +481,11 @@ fn run_pass(
         let y1 = (y0 + tile_size).min(h);
         let mut x = 0;
         while x < w {
+            // 分块级取消：单张 4K CPU 推理可达数分钟，只在文件边界检查
+            // 会让停止按钮在整个文件期间无效。
+            if crate::safety::task_cancel_pending() {
+                return Err("任务已取消".into());
+            }
             let x0 = x;
             let x1 = (x0 + tile_size).min(w);
             let pad_x0 = x0.saturating_sub(OVERLAP);
