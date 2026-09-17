@@ -1,6 +1,6 @@
 [package]
 name = "aias"
-version = "5.5.18"
+version = "5.5.19"
 description = "AIAS texture processing toolbox"
 authors = ["AvroraCL"]
 edition = "2021"
