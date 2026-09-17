@@ -1,19 +1,22 @@
 // 风格实验室参数状态：10 套图片转风格化样式的参数白名单、默认值与恢复逻辑。
 // 纯函数模块（无 DOM 依赖），node --test 可直接覆盖。
 
-export const STYLE_IDS = ['glitch', 'camo', 'wear', 'oil', 'halftone', 'sketch', 'thermal', 'neon', 'cross', 'marble', 'duotone', 'watercolor', 'lowpoly', 'pixel', 'woodcut', 'film', 'ripple', 'glass', 'mosaic', 'heatwave', 'pastel', 'holo'];
+export const STYLE_IDS = ['glitch', 'pixelsort', 'datamosh', 'tear', 'decay', 'crt', 'echo', 'camo', 'oil', 'halftone', 'sketch', 'thermal', 'cross', 'duotone', 'watercolor', 'lowpoly', 'pixel', 'woodcut', 'film', 'ripple', 'glass', 'mosaic', 'heatwave', 'pastel', 'holo'];
 
 export const STYLE_LABELS = {
   glitch: '故障艺术',
+  pixelsort: '像素排序',
+  datamosh: '坏块流动',
+  tear: '信号撕裂',
+  decay: '数据腐蚀',
+  crt: 'CRT 显像管',
+  echo: '信号重影',
   camo: '迷彩生成',
-  wear: '磨损掉漆',
   oil: '油画厚涂',
   halftone: '半调印刷',
   sketch: '素描炭笔',
   thermal: '热感假彩',
-  neon: '赛博霓虹',
   cross: '十字绣',
-  marble: '大理石纹',
   duotone: '双色调',
   watercolor: '水彩晕染',
   lowpoly: '低多边形',
@@ -31,15 +34,18 @@ export const STYLE_LABELS = {
 // 每套样式的参数默认值；inspector 按此渲染，处理函数按此消费。
 export const STYLE_DEFAULTS = {
   glitch: { split: 18, scanline: 35, blocks: 45, wave: 20, noise: 25 },
+  pixelsort: { threshold: 30, span: 70, mode: 'light', shuffle: 15 },
+  datamosh: { density: 45, size: 24, smear: 60, tint: 25 },
+  tear: { bands: 9, shift: 45, split: 30, noise: 35 },
+  decay: { strength: 50, size: 12, levels: 6, scan: 35 },
+  crt: { curve: 45, mask: 55, glow: 40, vignette: 50, roll: 30 },
+  echo: { ghosts: 3, offset: 40, fade: 55, aberration: 30 },
   camo: { pattern: 'blotch', colors: 4, scale: 42, sharp: 55, rotation: 15, contrast: 60 },
-  wear: { strength: 55, edge: 65, scratches: 38, grain: 30, baseColor: 1 },
   oil: { radius: 4, levels: 7, smooth: 30 },
   halftone: { shape: 'circle', cell: 8, angle: 15, mode: 'gray', sharpen: 35 },
   sketch: { pencil: 65, edge: 55, grain: 40, invert: false },
   thermal: { lut: 'iron', mix: 85, contrast: 40 },
-  neon: { edge: 70, glow: 55, hue: 185, dark: 70 },
   cross: { levels: 10, stitch: 10, fabric: 35, grid: true },
-  marble: { octaves: 5, turbulence: 45, vein: 42, palette: 'auto', scale: 60 },
   duotone: { shadow: '#1a1a2e', highlight: '#e8c547', midpoint: 50, softness: 30 },
   watercolor: { bleed: 55, edge: 65, paper: 40, washes: 3, saturation: 70 },
   lowpoly: { cell: 24, jitter: 40, flat: 35, palette: 'auto', colors: 6 },
@@ -55,6 +61,7 @@ export const STYLE_DEFAULTS = {
 };
 
 export const STYLE_ENUMS = {
+  pixelsort: [['mode', [['light', '亮部排序'], ['dark', '暗部排序']]]],
   camo: [['pattern', [['blotch', '斑块'], ['digital', '数码'], ['leopard', '豹纹'], ['stripe', '条纹'], ['crack', '裂纹']]]],
   halftone: [
     ['shape', [['circle', '圆点'], ['square', '方块'], ['diamond', '菱形'], ['line', '平行线'], ['cross', '十字']]],
@@ -63,7 +70,6 @@ export const STYLE_ENUMS = {
   sketch: [['invert', null]],
   thermal: [['lut', [['iron', '铁红'], ['rainbow', '彩虹'], ['nightvision', '夜视'], ['gold', '鎏金'], ['ice', '冰蓝']]]],
   cross: [['levels', null]],
-  marble: [['palette', [['auto', '取色于原图'], ['blackwhite', '黑白'], ['jade', '青玉'], ['amber', '琥珀']]]],
   lowpoly: [['palette', [['auto', '取色于原图'], ['warm', '暖调'], ['cool', '冷调']]]],
   pixel: [['dither', [['none', '关闭'], ['ordered', '有序'], ['diffusion', '误差扩散']]]],
 };
@@ -71,15 +77,18 @@ export const STYLE_ENUMS = {
 // 参数恢复白名单：键 → [类型, 最小, 最大]（min/max 仅数值用）。
 const PARAM_RANGES = {
   glitch: { split: [10, 80], scanline: [0, 100], blocks: [0, 100], wave: [0, 100], noise: [0, 100] },
+  pixelsort: { threshold: [0, 100], span: [10, 100], shuffle: [0, 100] },
+  datamosh: { density: [0, 100], size: [8, 64], smear: [0, 100], tint: [0, 100] },
+  tear: { bands: [2, 24], shift: [0, 100], split: [0, 100], noise: [0, 100] },
+  decay: { strength: [0, 100], size: [4, 48], levels: [2, 16], scan: [0, 100] },
+  crt: { curve: [0, 100], mask: [0, 100], glow: [0, 100], vignette: [0, 100], roll: [0, 100] },
+  echo: { ghosts: [1, 8], offset: [0, 100], fade: [10, 90], aberration: [0, 100] },
   camo: { colors: [2, 8], scale: [8, 100], sharp: [0, 100], rotation: [0, 90], contrast: [10, 100] },
-  wear: { strength: [0, 100], edge: [0, 100], scratches: [0, 100], grain: [0, 100], baseColor: [0, 1] },
   oil: { radius: [1, 8], levels: [2, 16], smooth: [0, 100] },
   halftone: { cell: [3, 24], angle: [0, 90], sharpen: [0, 100] },
   sketch: { pencil: [10, 100], edge: [0, 100], grain: [0, 100] },
   thermal: { mix: [0, 100], contrast: [0, 100] },
-  neon: { edge: [10, 100], glow: [0, 100], hue: [0, 360], dark: [0, 100] },
   cross: { levels: [3, 24], stitch: [4, 24], fabric: [0, 100] },
-  marble: { octaves: [2, 7], turbulence: [5, 100], vein: [10, 90], scale: [10, 100] },
   duotone: { midpoint: [10, 90], softness: [0, 100] },
   watercolor: { bleed: [10, 100], edge: [10, 100], paper: [0, 100], washes: [1, 6], saturation: [0, 100] },
   lowpoly: { cell: [8, 64], jitter: [0, 100], flat: [0, 100], colors: [3, 12] },

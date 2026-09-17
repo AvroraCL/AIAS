@@ -14,6 +14,43 @@ const STYLE_SCHEMA = {
     { key: 'scanline', type: 'range', label: '扫描线', min: 0, max: 100, step: 1 },
     { key: 'noise', type: 'range', label: '噪点', min: 0, max: 100, step: 1 },
   ],
+  pixelsort: [
+    { key: 'threshold', type: 'range', label: '触发亮度', min: 0, max: 100, step: 1 },
+    { key: 'span', type: 'range', label: '排序段上限', min: 10, max: 100, step: 1 },
+    { key: 'mode', type: 'select', label: '排序对象', options: [['light', '亮部排序'], ['dark', '暗部排序']] },
+    { key: 'shuffle', type: 'range', label: '打散程度', min: 0, max: 100, step: 1 },
+  ],
+  datamosh: [
+    { key: 'density', type: 'range', label: '坏块密度', min: 0, max: 100, step: 1 },
+    { key: 'size', type: 'range', label: '块尺寸', min: 8, max: 64, step: 1 },
+    { key: 'smear', type: 'range', label: '拖影长度', min: 0, max: 100, step: 1 },
+    { key: 'tint', type: 'range', label: '色偏', min: 0, max: 100, step: 1 },
+  ],
+  tear: [
+    { key: 'bands', type: 'range', label: '撕裂带数', min: 2, max: 24, step: 1 },
+    { key: 'shift', type: 'range', label: '错位幅度', min: 0, max: 100, step: 1 },
+    { key: 'split', type: 'range', label: '通道色散', min: 0, max: 100, step: 1 },
+    { key: 'noise', type: 'range', label: '撕裂噪点', min: 0, max: 100, step: 1 },
+  ],
+  decay: [
+    { key: 'strength', type: 'range', label: '腐蚀强度', min: 0, max: 100, step: 1 },
+    { key: 'size', type: 'range', label: '损坏块尺寸', min: 4, max: 48, step: 1 },
+    { key: 'levels', type: 'range', label: '色阶数', min: 2, max: 16, step: 1 },
+    { key: 'scan', type: 'range', label: '错位扫描', min: 0, max: 100, step: 1 },
+  ],
+  crt: [
+    { key: 'curve', type: 'range', label: '弧面畸变', min: 0, max: 100, step: 1 },
+    { key: 'mask', type: 'range', label: '荫罩栅格', min: 0, max: 100, step: 1 },
+    { key: 'glow', type: 'range', label: '辉光', min: 0, max: 100, step: 1 },
+    { key: 'vignette', type: 'range', label: '暗角', min: 0, max: 100, step: 1 },
+    { key: 'roll', type: 'range', label: '滚动亮带', min: 0, max: 100, step: 1 },
+  ],
+  echo: [
+    { key: 'ghosts', type: 'range', label: '重影数量', min: 1, max: 8, step: 1 },
+    { key: 'offset', type: 'range', label: '错位距离', min: 0, max: 100, step: 1 },
+    { key: 'fade', type: 'range', label: '残影衰减', min: 10, max: 90, step: 1 },
+    { key: 'aberration', type: 'range', label: '色散偏移', min: 0, max: 100, step: 1 },
+  ],
   camo: [
     { key: 'pattern', type: 'select', label: '图案', options: [['blotch', '斑块'], ['digital', '数码'], ['leopard', '豹纹'], ['stripe', '条纹'], ['crack', '裂纹']] },
     { key: 'colors', type: 'range', label: '色彩数', min: 2, max: 8, step: 1 },
@@ -21,13 +58,6 @@ const STYLE_SCHEMA = {
     { key: 'sharp', type: 'range', label: '边缘锐度', min: 0, max: 100, step: 1 },
     { key: 'rotation', type: 'range', label: '旋转', min: 0, max: 90, step: 1 },
     { key: 'contrast', type: 'range', label: '明暗对比', min: 10, max: 100, step: 1 },
-  ],
-  wear: [
-    { key: 'strength', type: 'range', label: '磨损强度', min: 0, max: 100, step: 1 },
-    { key: 'edge', type: 'range', label: '边缘增强', min: 0, max: 100, step: 1 },
-    { key: 'scratches', type: 'range', label: '划痕数量', min: 0, max: 100, step: 1 },
-    { key: 'grain', type: 'range', label: '颗粒', min: 0, max: 100, step: 1 },
-    { key: 'baseColor', type: 'check', label: '露出底漆色' },
   ],
   oil: [
     { key: 'radius', type: 'range', label: '笔触半径', min: 1, max: 6, step: 1 },
@@ -52,24 +82,11 @@ const STYLE_SCHEMA = {
     { key: 'mix', type: 'range', label: '假彩强度', min: 0, max: 100, step: 1 },
     { key: 'contrast', type: 'range', label: '对比', min: 0, max: 100, step: 1 },
   ],
-  neon: [
-    { key: 'edge', type: 'range', label: '边缘阈值', min: 10, max: 100, step: 1 },
-    { key: 'glow', type: 'range', label: '辉光', min: 0, max: 100, step: 1 },
-    { key: 'hue', type: 'range', label: '色相', min: 0, max: 360, step: 5 },
-    { key: 'dark', type: 'range', label: '背景压暗', min: 0, max: 100, step: 1 },
-  ],
   cross: [
     { key: 'levels', type: 'range', label: '色彩级数', min: 3, max: 24, step: 1 },
     { key: 'stitch', type: 'range', label: '绣格尺寸', min: 4, max: 24, step: 1 },
     { key: 'fabric', type: 'range', label: '布纹', min: 0, max: 100, step: 1 },
     { key: 'grid', type: 'check', label: '显示格线' },
-  ],
-  marble: [
-    { key: 'palette', type: 'select', label: '调色板', options: [['auto', '取色于原图'], ['blackwhite', '黑白'], ['jade', '青玉'], ['amber', '琥珀']] },
-    { key: 'scale', type: 'range', label: '纹理尺度', min: 10, max: 100, step: 1 },
-    { key: 'octaves', type: 'range', label: '细节倍频', min: 2, max: 7, step: 1 },
-    { key: 'turbulence', type: 'range', label: '湍流强度', min: 5, max: 100, step: 1 },
-    { key: 'vein', type: 'range', label: '脉络对比', min: 10, max: 90, step: 1 },
   ],
   duotone: [
     { key: 'shadow', type: 'color', label: '暗部色', def: '#1a1a2e' },
@@ -149,15 +166,41 @@ const BUILTIN_PRESETS = {
     { name: '数据崩坏', settings: { split: 60, blocks: 85, wave: 15, scanline: 20, noise: 70 } },
     { name: '轻微色差', settings: { split: 12, blocks: 5, wave: 10, scanline: 10, noise: 8 } },
   ],
+  pixelsort: [
+    { name: '数据流', settings: { threshold: 22, span: 100, mode: 'light', shuffle: 5 } },
+    { name: '冰晶碎片', settings: { threshold: 55, span: 35, mode: 'light', shuffle: 30 } },
+    { name: '暗部侵蚀', settings: { threshold: 30, span: 80, mode: 'dark', shuffle: 10 } },
+  ],
+  datamosh: [
+    { name: '编码损坏', settings: { density: 70, size: 16, smear: 85, tint: 30 } },
+    { name: '轻微融化', settings: { density: 20, size: 40, smear: 30, tint: 10 } },
+    { name: '果冻流动', settings: { density: 55, size: 28, smear: 70, tint: 45 } },
+  ],
+  tear: [
+    { name: 'VHS 跳带', settings: { bands: 14, shift: 60, split: 45, noise: 55 } },
+    { name: '轻微失锁', settings: { bands: 5, shift: 20, split: 15, noise: 15 } },
+    { name: '信号风暴', settings: { bands: 24, shift: 90, split: 60, noise: 80 } },
+  ],
+  decay: [
+    { name: '低色深转码', settings: { strength: 45, size: 10, levels: 5, scan: 20 } },
+    { name: '文件损坏', settings: { strength: 85, size: 20, levels: 3, scan: 70 } },
+    { name: '轻微量化', settings: { strength: 20, size: 8, levels: 10, scan: 10 } },
+  ],
+  crt: [
+    { name: '老式电视机', settings: { curve: 55, mask: 65, glow: 45, vignette: 55, roll: 35 } },
+    { name: '街机屏', settings: { curve: 20, mask: 80, glow: 30, vignette: 30, roll: 15 } },
+    { name: '柔和监视器', settings: { curve: 30, mask: 35, glow: 55, vignette: 40, roll: 25 } },
+  ],
+  echo: [
+    { name: '天线不良', settings: { ghosts: 4, offset: 55, fade: 60, aberration: 40 } },
+    { name: '幽微残像', settings: { ghosts: 2, offset: 20, fade: 35, aberration: 15 } },
+    { name: '迷幻轨迹', settings: { ghosts: 7, offset: 75, fade: 75, aberration: 60 } },
+  ],
   camo: [
     { name: '林地迷彩', settings: { pattern: 'blotch', colors: 4, scale: 55, sharp: 35, contrast: 65 } },
     { name: '数码迷彩', settings: { pattern: 'digital', colors: 4, scale: 30, sharp: 90, contrast: 70 } },
     { name: '豹纹点', settings: { pattern: 'leopard', colors: 3, scale: 22, sharp: 70, contrast: 80 } },
     { name: '沙漠裂纹', settings: { pattern: 'crack', colors: 5, scale: 60, sharp: 45, contrast: 55 } },
-  ],
-  wear: [
-    { name: '战损掉漆', settings: { strength: 70, edge: 80, scratches: 55, grain: 35, baseColor: true } },
-    { name: '轻度旧化', settings: { strength: 30, edge: 50, scratches: 15, grain: 20, baseColor: false } },
   ],
   oil: [
     { name: '印象派厚涂', settings: { radius: 5, levels: 8, smooth: 15 } },
@@ -175,17 +218,9 @@ const BUILTIN_PRESETS = {
     { name: '铁红热感', settings: { lut: 'iron', mix: 90, contrast: 45 } },
     { name: '夜视仪', settings: { lut: 'nightvision', mix: 100, contrast: 55 } },
   ],
-  neon: [
-    { name: '赛博青蓝', settings: { edge: 65, glow: 60, hue: 185, dark: 75 } },
-    { name: '霓虹粉紫', settings: { edge: 55, glow: 70, hue: 305, dark: 70 } },
-  ],
   cross: [
     { name: '复古十字绣', settings: { levels: 8, stitch: 12, fabric: 45, grid: true } },
     { name: '精细绣格', settings: { levels: 16, stitch: 6, fabric: 25, grid: false } },
-  ],
-  marble: [
-    { name: '黑白大理石', settings: { palette: 'blackwhite', scale: 55, octaves: 5, turbulence: 55, vein: 55 } },
-    { name: '青玉纹理', settings: { palette: 'jade', scale: 40, octaves: 6, turbulence: 65, vein: 45 } },
   ],
   duotone: [
     { name: '午夜金', settings: { shadow: '#1a1a2e', highlight: '#e8c547', midpoint: 50, softness: 30 } },
@@ -637,11 +672,6 @@ function prepareStyle(style, src, w, h, p) {
     pre.fbm = makeFbm(101 + (p.rotation || 15) * 7, 5);
     pre.colors = extractPalette(src, p.colors);
   }
-  if (style === 'wear') {
-    pre.gray = prepareGray(src, w, h);
-    pre.edge = sobelMagnitude(pre.gray, w, h);
-    pre.fbm = makeFbm(4242, 5);
-  }
   if (style === 'glitch') {
     const rand = mulberry32(9124);
     pre.shifts = [];
@@ -652,14 +682,10 @@ function prepareStyle(style, src, w, h, p) {
       pre.shifts.push({ y0, y1: Math.min(h, y0 + len), dx: Math.round((rand() * 2 - 1) * (p.split / 100) * w * 0.06) });
     }
   }
-  if (style === 'sketch' || style === 'neon') {
+  if (style === 'sketch') {
     pre.gray = prepareGray(src, w, h);
     pre.blur = boxBlur(pre.gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 90)));
     pre.edge = sobelMagnitude(pre.gray, w, h);
-    if (style === 'neon') {
-      // 辉光整图一次：渲染函数按条带分帧，放在里面会重算约 14 次
-      pre.glow = boxBlur(pre.edge, w, h, Math.max(2, Math.round(Math.min(w, h) / 120)));
-    }
   }
   if (style === 'thermal' || style === 'halftone' || style === 'cross') {
     pre.gray = prepareGray(src, w, h);
@@ -668,9 +694,80 @@ function prepareStyle(style, src, w, h, p) {
     // 胶片的 halation 需要低频亮度和：同 Neon 辉光一样的理由整体预计算
     pre.blur = boxBlur(pre.gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 80)));
   }
-  if (style === 'marble') {
-    pre.fbm = makeFbm(3157, Math.round(p.octaves));
-    pre.palette = p.palette === 'auto' ? extractPalette(src, 4) : null;
+  if (style === 'datamosh') {
+    // 块列表在 prepare 阶段按全图生成：渲染按条带分帧，块不能依赖 y0/y1
+    const rand = mulberry32(555 + Math.round(p.density) * 7 + Math.round(p.size));
+    const cell = Math.max(8, Math.round(p.size));
+    const cols = Math.ceil(w / cell), rows = Math.ceil(h / cell);
+    const count = Math.round(cols * rows * (p.density / 100) * 0.5);
+    pre.blocks = [];
+    for (let i = 0; i < count; i++) {
+      pre.blocks.push({
+        x: Math.floor(rand() * cols) * cell,
+        y: Math.floor(rand() * rows) * cell,
+        w: cell, h: cell,
+        dx: Math.round((rand() * 2 - 1) * (1 + (p.smear / 100) * 8)),
+        dy: Math.round((rand() < 0.4 ? rand() * 2 - 1 : 0) * (1 + (p.smear / 100) * 4)),
+        repeat: Math.max(1, Math.round(rand() * (p.smear / 100) * 10)),
+        jr: Math.round((rand() * 2 - 1) * p.tint * 0.5),
+        jg: Math.round((rand() * 2 - 1) * p.tint * 0.35),
+        jb: Math.round((rand() * 2 - 1) * -p.tint * 0.45),
+      });
+    }
+  }
+  if (style === 'tear') {
+    const rand = mulberry32(777 + Math.round(p.bands) * 13 + Math.round(p.shift));
+    const n = Math.max(2, Math.round(p.bands));
+    pre.tears = [];
+    for (let i = 0; i < n; i++) {
+      pre.tears.push({
+        yEnd: Math.round(((i + 1) * h) / n),
+        dx: Math.round((rand() * 2 - 1) * (p.shift / 100) * w * 0.06),
+        noisy: rand() < 0.3 + p.noise / 100,
+      });
+    }
+  }
+  if (style === 'decay') {
+    const rand = mulberry32(888 + h + Math.round(p.strength));
+    pre.rowJitter = new Array(h);
+    for (let y = 0; y < h; y++) pre.rowJitter[y] = Math.round((rand() * 2 - 1) * Math.max(2, w * 0.012));
+    const rand2 = mulberry32(889 + Math.round(p.strength) * 3);
+    const cell = Math.max(4, Math.round(p.size));
+    const cols = Math.ceil(w / cell), rows = Math.ceil(h / cell);
+    const count = Math.round(cols * rows * (p.strength / 100) * 0.35);
+    pre.ops = [];
+    for (let i = 0; i < count; i++) {
+      const roll = rand2();
+      pre.ops.push({
+        x: Math.floor(rand2() * cols) * cell,
+        y: Math.floor(rand2() * rows) * cell,
+        w: cell, h: cell,
+        kind: roll < 0.4 ? 'invert' : roll < 0.75 ? 'swap' : 'boost',
+      });
+    }
+  }
+  if (style === 'crt') {
+    pre.gray = prepareGray(src, w, h);
+    pre.blur = boxBlur(pre.gray, w, h, 2);
+    const rand = mulberry32(4455 + Math.round(p.roll));
+    pre.rollY = Math.floor(rand() * h);
+  }
+  if (style === 'echo') {
+    const rand = mulberry32(999 + Math.round(p.ghosts) * 31 + Math.round(p.offset));
+    const n = Math.max(1, Math.round(p.ghosts));
+    const budget = 0.55 + (p.fade / 100) * 0.35;
+    const per = budget / n;
+    const dist = Math.max(2, (p.offset / 100) * Math.min(w, h) * 0.06);
+    pre.ghosts = [];
+    for (let i = 0; i < n; i++) {
+      pre.ghosts.push({
+        dx: Math.round((rand() * 2 - 1) * dist),
+        dy: Math.round((rand() * 2 - 1) * dist * 0.4),
+        weight: per,
+        dr: rand() * 0.5,
+        db: rand() * 0.5,
+      });
+    }
   }
   if (style === 'duotone' || style === 'watercolor' || style === 'film' || style === 'woodcut') {
     pre.gray = prepareGray(src, w, h);
@@ -713,14 +810,17 @@ function renderRows(style, dst, src, w, h, y0, y1, p, pre) {
   switch (style) {
     case 'glitch': return renderGlitch(dst, src, w, h, y0, y1, p, pre);
     case 'camo': return renderCamo(dst, src, w, h, y0, y1, p, pre);
-    case 'wear': return renderWear(dst, src, w, h, y0, y1, p, pre);
+    case 'pixelsort': return renderPixelsort(dst, src, w, h, y0, y1, p);
+    case 'datamosh': return renderDatamosh(dst, src, w, h, y0, y1, p, pre);
+    case 'tear': return renderTear(dst, src, w, h, y0, y1, p, pre);
+    case 'decay': return renderDecay(dst, src, w, h, y0, y1, p, pre);
+    case 'crt': return renderCrt(dst, src, w, h, y0, y1, p, pre);
+    case 'echo': return renderEcho(dst, src, w, h, y0, y1, p, pre);
     case 'oil': return renderOil(dst, src, w, h, y0, y1, p);
     case 'halftone': return renderHalftone(dst, src, w, h, y0, y1, p);
     case 'sketch': return renderSketch(dst, src, w, h, y0, y1, p, pre);
     case 'thermal': return renderThermal(dst, src, w, h, y0, y1, p, pre);
-    case 'neon': return renderNeon(dst, src, w, h, y0, y1, p, pre);
     case 'cross': return renderCross(dst, src, w, h, y0, y1, p);
-    case 'marble': return renderMarble(dst, w, h, y0, y1, p, pre);
     case 'duotone': return renderDuotone(dst, w, h, y0, y1, p, pre.gray);
     case 'watercolor': return renderWatercolor(dst, src, w, h, y0, y1, p, pre);
     case 'lowpoly': return renderLowpoly(dst, src, w, h, y0, y1, p, pre);
@@ -792,54 +892,6 @@ function renderCamo(dst, src, w, h, y0, y1, p, pre) {
       const c = palette[Math.min(palette.length - 1, t)];
       const i = (y * w + x) * 4;
       dst[i] = c[0]; dst[i + 1] = c[1]; dst[i + 2] = c[2]; dst[i + 3] = src ? src[i + 3] : 255;
-    }
-  }
-}
-
-// 磨损掉漆：噪声 + 边缘驱动掉漆露出底漆，划痕为随机短亮线。
-function renderWear(dst, src, w, h, y0, y1, p, pre) {
-  const rand = mulberry32(77);
-  const scratchCount = Math.round((p.scratches / 100) * (w * h) / 26000);
-  const scratches = [];
-  for (let s = 0; s < scratchCount; s++) {
-    scratches.push({
-      x: rand() * w, y: rand() * h,
-      angle: rand() * Math.PI * 2,
-      len: 8 + rand() * Math.min(w, h) * 0.08,
-      width: 0.6 + rand() * 1.6,
-    });
-  }
-  const primer = [196, 178, 140];
-  for (let y = y0; y < y1; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const wearNoise = pre.fbm(x * 0.012, y * 0.012);
-      const wearMask = Math.max(0, wearNoise - 0.42) / 0.58;
-      const edge = Math.min(1, pre.edge[i] / 120);
-      const wear = Math.min(1, wearMask * (p.strength / 100) * 1.6 + edge * (p.edge / 100) * 0.55);
-      let r = src[i * 4], g = src[i * 4 + 1], b = src[i * 4 + 2];
-      if (wear > 0.12) {
-        const base = p.baseColor ? primer : [r * 0.55 + 90, g * 0.55 + 80, b * 0.55 + 60];
-        const k = Math.min(1, (wear - 0.12) / 0.4);
-        r += (base[0] - r) * k; g += (base[1] - g) * k; b += (base[2] - b) * k;
-      }
-      const grain = p.grain > 0 ? (rand() - 0.5) * (p.grain / 100) * 46 : 0;
-      dst[i * 4] = Math.max(0, Math.min(255, r + grain));
-      dst[i * 4 + 1] = Math.max(0, Math.min(255, g + grain));
-      dst[i * 4 + 2] = Math.max(0, Math.min(255, b + grain));
-      dst[i * 4 + 3] = src[i * 4 + 3];
-    }
-  }
-  for (const s of scratches) {
-    const dx = Math.cos(s.angle), dy = Math.sin(s.angle);
-    for (let t = -s.len / 2; t <= s.len / 2; t += 0.7) {
-      const px = Math.round(s.x + dx * t), py = Math.round(s.y + dy * t);
-      if (px < 0 || py < 0 || px >= w || py >= h || py < y0 || py >= y1) continue;
-      const i = (py * w + px) * 4;
-      const k = (1 - Math.abs(t) / (s.len / 2)) * (p.scratches / 100);
-      dst[i] = Math.min(255, dst[i] + 90 * k);
-      dst[i + 1] = Math.min(255, dst[i + 1] + 90 * k);
-      dst[i + 2] = Math.min(255, dst[i + 2] + 82 * k);
     }
   }
 }
@@ -981,27 +1033,212 @@ function renderThermal(dst, src, w, h, y0, y1, p, pre) {
   }
 }
 
-// 赛博霓虹：Sobel 边缘按色相着色，辉光 = 边缘图盒模糊，背景压暗。
-function renderNeon(dst, src, w, h, y0, y1, p, pre) {
-  const edges = pre.edge;
-  // 辉光在 prepareStyle 一次性算好：这里按条带分帧调用，整图盒模糊
-  // 若放在渲染函数里会被重复计算约 14 次。
-  const glow = pre.glow;
-  const rad = p.hue * Math.PI / 180;
-  const core = [
-    127.5 + 127.5 * Math.cos(rad),
-    127.5 + 127.5 * Math.sin(rad - Math.PI / 3),
-    127.5 + 127.5 * Math.sin(rad + Math.PI / 3),
-  ];
-  const dark = 1 - p.dark / 100;
+// 像素排序：行内把超过（或低于）亮度阈值的连续段按亮度排序，段上限与
+// 打散程度控制“融化感”。纯确定性：无全局随机，行内局部可并行。
+function renderPixelsort(dst, src, w, h, y0, y1, p) {
+  const thr = (p.threshold / 100) * 255;
+  const span = Math.max(2, Math.round((p.span / 100) * w));
+  const shuffle = (p.shuffle / 100) * 0.35;
+  const light = p.mode !== 'dark';
+  const lumBuf = new Float64Array(w);
+  for (let y = y0; y < y1; y++) {
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = row + x * 4;
+      lumBuf[x] = 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2];
+    }
+    const rowRand = mulberry32(9127 + y * 131);
+    let x = 0;
+    while (x < w) {
+      const qualifies = light ? lumBuf[x] >= thr : lumBuf[x] <= thr;
+      if (!qualifies) { x++; continue; }
+      let end = x + 1;
+      while (end < w && end - x < span && (light ? lumBuf[end] >= thr : lumBuf[end] <= thr)) end++;
+      const len = end - x;
+      const idx = Array.from({ length: len }, (_, k) => k);
+      idx.sort((a, b) => lumBuf[x + a] - lumBuf[x + b]);
+      if (shuffle > 0) {
+        for (let k = 0; k + 1 < len; k++) {
+          if (rowRand() < shuffle) { const t = idx[k]; idx[k] = idx[k + 1]; idx[k + 1] = t; }
+        }
+      }
+      for (let k = 0; k < len; k++) {
+        const from = row + (x + idx[k]) * 4, to = row + (x + k) * 4;
+        dst[to] = src[from]; dst[to + 1] = src[from + 1]; dst[to + 2] = src[from + 2]; dst[to + 3] = src[from + 3];
+      }
+      x = end;
+    }
+  }
+}
+
+// 坏块流动：视频编码运动向量损坏的观感——块从原位沿方向逐帧拷贝拖影，
+// 叠加每块独立的通道色偏。块列表在 prepareStyle 生成，条带间稳定。
+function renderDatamosh(dst, src, w, h, y0, y1, p, pre) {
+  const blocks = pre.blocks || [];
+  for (const b of blocks) {
+    const by0 = Math.max(y0, b.y), by1 = Math.min(y1, b.y + b.h);
+    if (by1 <= by0) continue;
+    for (let k = 1; k <= b.repeat; k++) {
+      const decayK = 1 - (k / (b.repeat + 1)) * 0.25;
+      for (let yy = by0; yy < by1; yy++) {
+        const ty = yy + b.dy * k;
+        if (ty < y0 || ty >= y1) continue;
+        for (let xx = 0; xx < b.w; xx++) {
+          const sx = b.x + xx, tx = sx + b.dx * k;
+          if (tx < 0 || tx >= w) continue;
+          const s = (yy * w + sx) * 4, t = (ty * w + tx) * 4;
+          dst[t] = Math.max(0, Math.min(255, src[s] * decayK + b.jr));
+          dst[t + 1] = Math.max(0, Math.min(255, src[s + 1] * decayK + b.jg));
+          dst[t + 2] = Math.max(0, Math.min(255, src[s + 2] * decayK + b.jb));
+          dst[t + 3] = src[s + 3];
+        }
+      }
+    }
+  }
+}
+
+// 信号撕裂：水平撕裂带每段整体横向错位，r/b 通道附加反向色散；
+// 撕裂边界按行撒种子亮点模拟信号丢失。
+function renderTear(dst, src, w, h, y0, y1, p, pre) {
+  const tears = pre.tears || [];
+  const split = Math.round((p.split / 100) * 14);
+  const noiseK = (p.noise / 100) * 0.06;
+  for (let y = y0; y < y1; y++) {
+    const seg = tears.find(t => y < t.yEnd) || tears[tears.length - 1];
+    if (!seg) continue;
+    const row = y * w * 4;
+    const rowRand = mulberry32(6600 + y * 17);
+    const speckle = seg.noisy && noiseK > 0;
+    for (let x = 0; x < w; x++) {
+      const i = row + x * 4;
+      if (speckle && rowRand() < noiseK) {
+        const v = 110 + rowRand() * 145;
+        dst[i] = dst[i + 1] = dst[i + 2] = v;
+        continue;
+      }
+      const sx = Math.min(w - 1, Math.max(0, x + seg.dx));
+      const sxr = Math.min(w - 1, Math.max(0, x + seg.dx + split));
+      const sxb = Math.min(w - 1, Math.max(0, x + seg.dx - split));
+      dst[i] = src[row + sxr * 4];
+      dst[i + 1] = src[row + sx * 4 + 1];
+      dst[i + 2] = src[row + sxb * 4 + 2];
+      dst[i + 3] = src[i + 3];
+    }
+  }
+}
+
+// 数据腐蚀：低色深量化 + 随机行错扫 + 块级损坏（反转/通道交换/过饱和）。
+function renderDecay(dst, src, w, h, y0, y1, p, pre) {
+  const levels = Math.max(2, Math.round(p.levels));
+  const step = 255 / (levels - 1);
+  const scanK = (p.scan / 100) * 0.3;
+  const jitter = pre.rowJitter || [];
+  for (let y = y0; y < y1; y++) {
+    const rowRand = mulberry32(7700 + y * 29);
+    const scanRow = scanK > 0 && rowRand() < scanK;
+    const jx = scanRow ? jitter[y % jitter.length] || 0 : 0;
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const sx = scanRow ? Math.min(w - 1, Math.max(0, x + jx)) : x;
+      const i = row + x * 4, s = row + sx * 4;
+      dst[i] = Math.round(src[s] / step) * step;
+      dst[i + 1] = Math.round(src[s + 1] / step) * step;
+      dst[i + 2] = Math.round(src[s + 2] / step) * step;
+      dst[i + 3] = src[s + 3];
+    }
+  }
+  for (const op of pre.ops || []) {
+    const oy0 = Math.max(y0, op.y), oy1 = Math.min(y1, op.y + op.h);
+    if (oy1 <= oy0) continue;
+    for (let y = oy0; y < oy1; y++) {
+      const row = y * w * 4;
+      for (let x = op.x; x < Math.min(w, op.x + op.w); x++) {
+        const i = row + x * 4;
+        if (op.kind === 'invert') {
+          dst[i] = 255 - dst[i]; dst[i + 1] = 255 - dst[i + 1]; dst[i + 2] = 255 - dst[i + 2];
+        } else if (op.kind === 'swap') {
+          const t = dst[i]; dst[i] = dst[i + 2]; dst[i + 2] = t;
+        } else {
+          dst[i] = Math.min(255, dst[i] * 1.6 + 30);
+          dst[i + 1] = Math.min(255, dst[i + 1] * 0.7);
+        }
+      }
+    }
+  }
+}
+
+// CRT 显像管：桶形畸变采样 + 荫罩三色栅格 + 模糊辉光 + 扫描线 + 暗角
+// + 滚动亮带。全部逐像素确定性计算。
+function renderCrt(dst, src, w, h, y0, y1, p, pre) {
+  const curve = (p.curve / 100) * 0.12;
+  const mask = (p.mask / 100) * 0.5;
+  const glow = p.glow / 100;
+  const vig = (p.vignette / 100) * 0.55;
+  const roll = (p.roll / 100) * 0.5;
+  const cx = w / 2, cy = h / 2;
+  const rollY = pre.rollY || 0;
+  for (let y = y0; y < y1; y++) {
+    const ny = (y - cy) / cy;
+    for (let x = 0; x < w; x++) {
+      const nx = (x - cx) / cx;
+      const r2 = nx * nx + ny * ny;
+      const f = 1 + curve * r2;
+      const sx = Math.min(w - 1, Math.max(0, Math.round(cx + nx * f * cx)));
+      const sy = Math.min(h - 1, Math.max(0, Math.round(cy + ny * f * cy)));
+      const si = (sy * w + sx) * 4, i = (y * w + x) * 4;
+      let r = src[si], g = src[si + 1], b = src[si + 2];
+      if (glow > 0) {
+        const g2 = pre.blur[sy * w + sx] / 255;
+        const gb = g2 * 60 * glow;
+        r += gb; g += gb; b += gb;
+      }
+      const m = x % 3;
+      if (m === 0) { r *= 1 + mask; g *= 1 - mask * 0.35; b *= 1 - mask * 0.35; }
+      else if (m === 1) { r *= 1 - mask * 0.35; g *= 1 + mask; b *= 1 - mask * 0.35; }
+      else { r *= 1 - mask * 0.35; g *= 1 - mask * 0.35; b *= 1 + mask; }
+      if (y % 2 === 1) { r *= 0.85; g *= 0.85; b *= 0.85; }
+      const vk = 1 - vig * Math.min(1, r2);
+      r *= vk; g *= vk; b *= vk;
+      if (roll > 0) {
+        const d = Math.abs(((y - rollY) % h + h) % h);
+        if (d < 18) {
+          const boost = (1 - d / 18) * roll;
+          r *= 1 + boost; g *= 1 + boost; b *= 1 + boost;
+        }
+      }
+      dst[i] = Math.max(0, Math.min(255, r));
+      dst[i + 1] = Math.max(0, Math.min(255, g));
+      dst[i + 2] = Math.max(0, Math.min(255, b));
+      dst[i + 3] = src[i + 3];
+    }
+  }
+}
+
+// 信号重影：多份错位半透明叠加模拟天线重影，残影 r/b 通道附加色散。
+function renderEcho(dst, src, w, h, y0, y1, p, pre) {
+  const ghosts = pre.ghosts || [];
+  const ab = p.aberration / 100;
+  let total = 0;
+  for (const gh of ghosts) total += gh.weight;
+  const baseW = Math.max(0, 1 - total);
   for (let y = y0; y < y1; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      const e = Math.min(1, edges[i / 4] / 90);
-      const gl = Math.min(1, glow[i / 4] * (p.glow / 100) * 1.6);
-      dst[i] = src[i] * dark * (1 - e) + core[0] * (e + gl * 0.55) + src[i] * 0.06;
-      dst[i + 1] = src[i + 1] * dark * (1 - e) + core[1] * (e + gl * 0.55) + src[i + 1] * 0.06;
-      dst[i + 2] = src[i + 2] * dark * (1 - e) + core[2] * (e + gl * 0.55) + src[i + 2] * 0.06;
+      let r = 0, g = 0, b = 0;
+      for (const gh of ghosts) {
+        const sx = Math.min(w - 1, Math.max(0, x + gh.dx));
+        const sy = Math.min(h - 1, Math.max(0, y + gh.dy));
+        const si = (sy * w + sx) * 4;
+        r += src[si] * gh.weight * (1 + ab * gh.dr);
+        g += src[si + 1] * gh.weight;
+        b += src[si + 2] * gh.weight * (1 - ab * gh.db);
+      }
+      r += src[i] * baseW;
+      g += src[i + 1] * baseW;
+      b += src[i + 2] * baseW;
+      dst[i] = Math.max(0, Math.min(255, r));
+      dst[i + 1] = Math.max(0, Math.min(255, g));
+      dst[i + 2] = Math.max(0, Math.min(255, b));
       dst[i + 3] = src[i + 3];
     }
   }
@@ -1034,28 +1271,6 @@ function renderCross(dst, src, w, h, y0, y1, p) {
       dst[i + 1] = Math.max(0, Math.min(255, g));
       dst[i + 2] = Math.max(0, Math.min(255, b));
       dst[i + 3] = src[i + 3];
-    }
-  }
-}
-
-// 大理石：fBm 湍流域扭曲脉络，映射到调色板（自动取色或预设）。
-function renderMarble(dst, w, h, y0, y1, p, pre) {
-  const scale = p.scale / 100;
-  const turb = p.turbulence / 100;
-  const vein = p.vein / 100;
-  let palette = pre.palette;
-  if (p.palette === 'blackwhite' || !palette) palette = [[10, 10, 12], [235, 235, 238]];
-  if (p.palette === 'jade') palette = [[8, 60, 44], [30, 140, 100], [120, 210, 170], [220, 245, 230]];
-  if (p.palette === 'amber') palette = [[40, 20, 4], [140, 80, 20], [220, 160, 70], [250, 225, 170]];
-  for (let y = y0; y < y1; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      const base = pre.fbm(x * 0.0035 * scale, y * 0.0035 * scale);
-      const warp = pre.fbm(x * 0.011 * scale + 31.7, y * 0.011 * scale - 17.3) - 0.5;
-      const v = Math.abs(Math.sin((x * 0.5 + y * 0.9) * 0.02 + (base + warp * turb * 0.45) * Math.PI * 2 * (0.5 + vein)));
-      const f = Math.min(0.999, Math.max(0, (1 - v) / vein * 2));
-      const c = palette[Math.min(palette.length - 1, Math.floor(f * palette.length))];
-      dst[i] = c[0]; dst[i + 1] = c[1]; dst[i + 2] = c[2]; dst[i + 3] = 255;
     }
   }
 }
