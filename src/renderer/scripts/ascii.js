@@ -1,7 +1,7 @@
 import { DEFAULTS, restoreAsciiSettings, characterRamp, gridSize, detectTransparency } from './ascii-state.mjs';
 import './ascii.css';
 
-export function createAscii({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, syncSelect, busy, changed, notify, navigate }) {
+export function createAscii({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, syncSelect, busy, changed, notify, navigate, onImage = null }) {
   let config = restoreAsciiSettings(settings), source = null, sourceName = '', result = null;
   let active = false, exporting = false, importing = false, computing = false, revision = 0, importRevision = 0, alphaAutoSwitch = false;
   let worker, timer, saveTimer, disposed = false, view = 'ascii', zoom = 1, saveChain = Promise.resolve();
@@ -299,6 +299,8 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
         config.background = 'transparent'; $('background').value = 'transparent'; persist(); alphaAutoSwitch = true;
       }
       $('name').textContent = sourceName; $('import').textContent = '替换图片'; zoom = 1; $('zoom').value = 1;
+      // 发布到风格实验室：ASCII 系与风格化系共用同一张源图
+      onImage?.({ name: sourceName, canvas: source });
       request();
     } catch (e) {
       status(`读取失败：${e.message || e}`);
@@ -410,6 +412,25 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   renderPresets();
   return {
     blocker,
+    // 采用另一侧加载的图片：不回发 onImage，避免互相触发
+    setSharedImage(image) {
+      if (!image || !image.canvas || disposed || importing || exporting) return;
+      cancelCompute();
+      source = image.canvas;
+      sourceName = image.name;
+      result = null;
+      alphaAutoSwitch = false;
+      // 与 loadFile 同款透明底自动切换
+      if (detectTransparency(source.getContext('2d').getImageData(0, 0, source.width, source.height).data) && config.background !== 'transparent') {
+        config.background = 'transparent';
+        if ($('background')) $('background').value = 'transparent';
+        persist();
+        alphaAutoSwitch = true;
+      }
+      $('name').textContent = sourceName; $('import').textContent = '替换图片'; zoom = 1; $('zoom').value = 1;
+      if (active) request();
+      refresh(); draw();
+    },
     // 风格化四个入口（ascii/ascii-block/ascii-dot/ascii-hatch）共用本模块与素材，切换只改风格。
     activate(mode) {
       active = mode === 'ascii' || mode === 'ascii-block' || mode === 'ascii-dot' || mode === 'ascii-hatch';

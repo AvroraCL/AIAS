@@ -3341,6 +3341,7 @@ async function boot() {
     save: async ascii => { state.settings = await api.settings.set({ ascii }); },
     setBusy, syncSelect: syncCustomSelect, busy: () => state.taskProgressActive, changed: updateStatus,
     notify: (message, tone) => addActivity("图片转 ASCII", message, tone),
+    onImage: img => styleLabUI?.setSharedImage(img),
   });
   styleLabUI = createStyleLab({
     root: $("view-style-lab"), inspector: document.querySelector(".inspector-scroll"), runArea: document.querySelector(".run-area"),
@@ -3349,6 +3350,7 @@ async function boot() {
     save: async styleLab => { state.settings = await api.settings.set({ styleLab }); },
     setBusy, busy: () => state.taskProgressActive, changed: updateStatus,
     notify: (message, tone) => addActivity("风格实验室", message, tone),
+    onImage: img => asciiUI?.setSharedImage(img),
   });
   materialMapsUI = createMaterialMaps({
     root: $("view-material-maps"), desktop: isTauriRuntime, invoke, open, openPath,

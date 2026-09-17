@@ -248,7 +248,7 @@ const BUILTIN_PRESETS = {
   ],
 };
 
-export function createStyleLab({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, busy, changed, notify }) {
+export function createStyleLab({ onImage = null, root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, busy, changed, notify }) {
   let config = restoreStyleLabSettings(settings), source = null, sourceName = "", result = null, disposed = false;
   let active = false, exporting = false, importing = false, computing = false, revision = 0, importRevision = 0;
   let view = 'result', zoom = 1, saveTimer, controlsBuiltFor = null;
@@ -602,6 +602,8 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
       $('name').textContent = sourceName; $('import').textContent = '替换图片';
       zoom = 1; $('zoom').value = 1;
       view = 'result';
+      // 发布到 ASCII 系：风格实验室与 ASCII 系共用同一张源图
+      onImage?.({ name: sourceName, canvas: source });
       schedule();
     } catch (e) { status(`读取失败：${e.message || e}`); }
     finally { importing = false; refresh(); draw(); }
@@ -728,6 +730,18 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
   syncControls();
   return {
     blocker,
+    // 采用 ASCII 系加载的图片：不回发 onImage，避免互相触发
+    setSharedImage(image) {
+      if (!image || !image.canvas || disposed || importing || exporting) return;
+      source = image.canvas;
+      sourceName = image.name;
+      result = null;
+      $('name').textContent = sourceName; $('import').textContent = '替换图片';
+      zoom = 1; $('zoom').value = 1;
+      view = 'result';
+      schedule();
+      refresh();
+    },
     activate(mode) {
       active = STYLE_IDS.some(id => mode === `stylize-${id}`);
       controls.hidden = !active;
