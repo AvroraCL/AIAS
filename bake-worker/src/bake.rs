@@ -412,14 +412,17 @@ fn write_surface_map(
 }
 
 /// 16 位版表面编码：编码闭包直接输出 0–65535 通道值。
-fn encode_surface_map_16(
+pub(crate) fn encode_surface_map_16(
     surfaces: &[Surface],
     nearest: &[u32],
     mut encode: impl FnMut(&Surface) -> [u16; 4],
 ) -> Vec<u16> {
     let mut pixels = vec![0u16; nearest.len() * 4];
-    for (i, surface) in surfaces.iter().enumerate() {
-        pixels[i * 4..i * 4 + 4].copy_from_slice(&encode(surface));
+    // 与 8 位版同语义：按 surface.pixel（UV 像素索引）落位，而非遍历序号——
+    // surfaces 按三角形扫描顺序 push，两者几乎从不重合，错位会让整图乱序。
+    for surface in surfaces {
+        let offset = surface.pixel as usize * 4;
+        pixels[offset..offset + 4].copy_from_slice(&encode(surface));
     }
     // margin 像素取最近覆盖像素的编码值（与 8 位版同语义）
     for (pixel, source) in nearest.iter().copied().enumerate() {
@@ -720,6 +723,7 @@ pub fn run(
                 0.0,
                 None,
             );
+            let mut last_raster_beat = Instant::now();
             let (surfaces, covered, wire) = raster(
                 &model,
                 material,
@@ -727,6 +731,26 @@ pub fn run(
                 &options.objects,
                 options.resolution,
                 options.uv,
+                &options.cancel_path,
+                || {
+                    // 同一阶段文案重发只为喂看门狗与刷新取消状态，节流 ≥500ms。
+                    if last_raster_beat.elapsed().as_millis() >= 500 {
+                        last_raster_beat = Instant::now();
+                        emit_bake_progress(
+                            &mut progress,
+                            format!("{material_label} · 准备 UV 像素"),
+                            "raster",
+                            "",
+                            material,
+                            position,
+                            material_total,
+                            map_index,
+                            map_total,
+                            0.0,
+                            None,
+                        );
+                    }
+                },
             )?;
             if options.uv {
                 emit_bake_progress(
@@ -1424,8 +1448,9 @@ pub fn raster(
     objects: &[usize],
     size: u32,
     draw_wire: bool,
-) -> Result<(Vec<Surface>, Vec<bool>, Vec<u8>), String> {
-    let n = size as usize;
+    cancel: &Path,
+    mut heartbeat: impl FnMut(),
+) -> Result<(Vec<Surface>, Vec<bool>, Vec<u8>), String> {    let n = size as usize;
     let mut covered = vec![false; n * n];
     let mut surfaces = vec![];
     let mut wire = if draw_wire {
@@ -1433,11 +1458,21 @@ pub fn raster(
     } else {
         vec![]
     };
+    // UV 大面积重叠时单三角形 bbox 可扫满整图，光栅化可达分钟级：定期检查
+    // 取消并喂看门狗，否则取消被无视、120 秒无输出会被父进程误杀。
+    let mut visited = 0usize;
     for t in model
         .triangles
         .iter()
         .filter(|t| t.material == material && objects.contains(&t.object))
     {
+        visited += 1;
+        if visited % 1024 == 0 {
+            if cancel.exists() {
+                return Err("任务已取消".into());
+            }
+            heartbeat();
+        }
         let Some(uv) = t.uvs.get(&channel) else {
             continue;
         };
@@ -1484,6 +1519,12 @@ pub fn raster(
                 for k in 0..3 {
                     position += Vec3::from_array(t.positions[k]) * weights[k];
                     normal += Vec3::from_array(t.normals[k]) * weights[k];
+                }
+                // 反向法线在特定重心坐标下会精确抵消为零，normalize 产生 NaN
+                // 污染 AO 射线方向；回退为几何面法线。
+                if normal == Vec3::ZERO {
+                    let [a, b, c] = t.positions.map(Vec3::from_array);
+                    normal = (b - a).cross(c - a);
                 }
                 surfaces.push(Surface {
                     position: position.to_array(),

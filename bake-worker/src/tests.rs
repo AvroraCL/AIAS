@@ -6,6 +6,7 @@ use crate::{
 };
 use glam::Vec3;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 #[test]
 fn structured_bake_progress_is_monotonic_across_maps_and_materials() {
@@ -246,7 +247,7 @@ fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {
         triangle([[0., 0.], [1., 1.], [1., 0.]], 0, 0),
         triangle([[0., 0.], [0., 1.], [1., 1.]], 0, 0),
     ]);
-    let (s, c, w) = bake::raster(&m, 0, 0, &[0], 16, true).unwrap();
+    let (s, c, w) = bake::raster(&m, 0, 0, &[0], 16, true, Path::new(""), || {}).unwrap();
     assert_eq!(s.len(), 256);
     assert!(c.iter().all(|x| *x));
     assert_eq!(w.len(), 1024);
@@ -264,6 +265,48 @@ fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {
     assert_eq!(d[14], (size * size - 1) as u32, "(4,2) 到 (4,4) 距离 2，最近源是 (4,4)");
     assert_ne!(bake::color(0), bake::color(1));
     assert_eq!(bake::safe_name("中文:/材质"), "中文__材质");
+}
+
+#[test]
+fn encode_surface_map_16_places_values_at_uv_pixel() {
+    // surfaces 按扫描顺序 push，pixel 是 UV 像素索引，两者几乎不重合：
+    // 按序号落位会把整张 16 位图写乱（与 8 位版语义不一致）。
+    let surfaces = vec![
+        Surface { position: [0.; 3], object: 0, normal: [0.; 3], pixel: 5 },
+        Surface { position: [0.; 3], object: 1, normal: [0.; 3], pixel: 0 },
+        Surface { position: [0.; 3], object: 2, normal: [0.; 3], pixel: 3 },
+    ];
+    let nearest = vec![u32::MAX; 8];
+    let pixels = bake::encode_surface_map_16(&surfaces, &nearest, |s| {
+        [s.object as u16 * 100; 4]
+    });
+    assert_eq!(pixels.len(), 32);
+    assert_eq!(&pixels[0..4], &[100, 100, 100, 100]);
+    assert_eq!(&pixels[12..16], &[200, 200, 200, 200]);
+    assert_eq!(&pixels[20..24], &[0, 0, 0, 0]);
+    // 未覆盖像素保持 0
+    assert!(pixels[4..12].iter().all(|v| *v == 0));
+    assert!(pixels[24..].iter().all(|v| *v == 0));
+}
+
+#[test]
+fn raster_honours_cancellation() {
+    let m = model(
+        (0..1100)
+            .map(|_| triangle([[0., 0.], [1., 1.], [1., 0.]], 0, 0))
+            .collect(),
+    );
+    let cancel = std::env::temp_dir().join(format!("aias-raster-cancel-{}.flag", std::process::id()));
+    std::fs::write(&cancel, b"").unwrap();
+    let result = bake::raster(&m, 0, 0, &[0], 16, false, &cancel, || {});
+    std::fs::remove_file(&cancel).ok();
+    assert!(result.err().is_some_and(|e| e.contains("取消")));
+    // 心跳闭包也应被调用过（喂看门狗）：无取消文件时不提前返回
+    let mut beats = 0;
+    let nocancel = std::env::temp_dir().join(format!("aias-raster-nocancel-{}.flag", std::process::id()));
+    std::fs::remove_file(&nocancel).ok();
+    let _ = bake::raster(&m, 0, 0, &[0], 16, false, &nocancel, || beats += 1);
+    assert!(beats > 0);
 }
 
 #[test]
