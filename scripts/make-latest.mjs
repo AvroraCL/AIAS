@@ -11,6 +11,24 @@ if (!existsSync(sigPath)) {
 }
 const signature = readFileSync(sigPath, "utf8").trim();
 
+// 签名文件内嵌 minisign 注释行（trusted comment: ... file:<文件名>）。校验它与
+// 当前版本一致：stale 的 .sig（上次忘重签）会静默生成验签必败的清单——
+// 5.5.17 曾把 5.5.14 的签名发进 latest.json。
+const sigInfo = (() => {
+  try {
+    return Buffer.from(signature, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+})();
+const sigFileLine = sigInfo.split(/\r?\n/).find((line) => line.startsWith("file:"));
+if (sigFileLine !== `file:${exe}`) {
+  throw new Error(
+    `${sigPath} 的签名目标不是当前安装包（${sigFileLine || "无法解析"}，期望 file:${exe}）。` +
+      `请先用 tauri signer sign 重新签名 dist/${exe}`,
+  );
+}
+
 const previous = existsSync("dist/latest.json")
   ? JSON.parse(readFileSync("dist/latest.json", "utf8"))
   : null;
