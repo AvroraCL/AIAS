@@ -9,6 +9,9 @@
 .style-lab-toolbar > span { min-width: 0; }
 .style-lab-stage { flex: 1; min-height: 300px; overflow: auto; display: grid; place-items: safe center; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); position: relative; }
 .style-lab-stage canvas { display: block; max-width: none; flex-shrink: 0; cursor: grab; touch-action: none; }
+/* 关键防线（与 ascii.css 同款）：下方 canvas 的 display:block 会压过 UA 的
+   [hidden]，隐藏画布若占住网格第一行，空状态就被顶到偏上位置。 */
+.style-lab-stage [hidden], .style-lab-toolbar [hidden], .style-lab-controls [hidden], .style-lab-bottom [hidden], #view-style-lab [hidden] { display: none !important; }
 .style-lab-dragging, .style-lab-dragging canvas { cursor: grabbing; user-select: none; }
 .style-lab-bottom { display: flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--text-dim); }
 .style-lab-bottom:has(#stylize-size:empty) { display: none; }
