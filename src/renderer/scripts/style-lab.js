@@ -264,7 +264,7 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     for (const preset of presets) {
       const chip = document.createElement('button');
       chip.type = 'button'; chip.className = 'style-lab-preset-chip'; chip.textContent = preset.name;
-      chip.onclick = () => { config = restoreStyleLabSettings({ style: config.style, ...preset.settings, style: config.style }); syncControls(); schedule(); };
+      chip.onclick = () => { config = restoreStyleLabSettings({ ...preset.settings, style: config.style }); syncControls(); schedule(); };
       presetWrap.append(chip);
     }
     // 用户自定义预设
@@ -272,7 +272,7 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     for (const preset of saved) {
       const chip = document.createElement('button');
       chip.type = 'button'; chip.className = 'style-lab-preset-chip'; chip.textContent = preset.name;
-      chip.onclick = () => { config = restoreStyleLabSettings({ style: config.style, ...preset.settings, style: config.style }); syncControls(); schedule(); };
+      chip.onclick = () => { config = restoreStyleLabSettings({ ...preset.settings, style: config.style }); syncControls(); schedule(); };
       const cross = document.createElement('span'); cross.className = 'style-lab-preset-remove'; cross.textContent = '×';
       cross.onclick = event => {
         event.stopPropagation();
