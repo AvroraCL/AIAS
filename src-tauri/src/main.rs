@@ -767,7 +767,7 @@ fn texture_split_pbr_inner(
                     alpha.push(pixel[3]);
                 }
                 save_rgb_image(
-                    &rgb,
+                    rgb,
                     width,
                     height,
                     output_dir.join(format!("{prefix}_BaseColor.{export_format}")),
@@ -775,7 +775,7 @@ fn texture_split_pbr_inner(
                 )?;
                 if export_alpha {
                     save_luma_image(
-                        &alpha,
+                        alpha,
                         width,
                         height,
                         output_dir.join(format!("{prefix}_Alpha.{export_format}")),
@@ -796,14 +796,14 @@ fn texture_split_pbr_inner(
                     normal.put_pixel(x, y, Rgba([pixel[3], pixel[1], 255, 255]));
                 }
                 save_luma_image(
-                    &roughness,
+                    roughness,
                     width,
                     height,
                     output_dir.join(format!("{prefix}_Roughness.{export_format}")),
                     export_format,
                 )?;
                 save_luma_image(
-                    &metallic,
+                    metallic,
                     width,
                     height,
                     output_dir.join(format!("{prefix}_Metallic.{export_format}")),
@@ -929,7 +929,17 @@ fn texture_create_mipmap_inner(
             .map(|ext| Path::new(&options.input_path).join(format!("p{index}{ext}")))
             .find(|path| path.exists())
         {
-            files.push(path);
+            files.push((index, path));
+        }
+    }
+
+    // 编号必须连续（p0..pN）：缺号会让层级期望整体错位（p2 被当作 p1 校验），
+    // 提前给出指向缺失文件的明确错误。
+    for (expected, (actual, _)) in files.iter().enumerate() {
+        if *actual != expected as u32 {
+            return Err(format!(
+                "缺少 p{expected} mipmap 文件（找到的是 p{actual}，编号需从 p0 连续）。"
+            ));
         }
     }
 
@@ -938,17 +948,17 @@ fn texture_create_mipmap_inner(
     }
 
     let mut images = Vec::new();
-    for (index, file) in files.iter().enumerate() {
+    for (position, (level, file)) in files.iter().enumerate() {
         if safety::take_task_cancel() {
             cancelled = true;
             break;
         }
         let image = prepare_image(file, alpha, scale)?;
-        validate_mipmap_dimensions(&image, images.first(), index as u32)?;
+        validate_mipmap_dimensions(&image, images.first(), *level)?;
         images.push(image);
         emit_task_progress(
             app,
-            index + 1,
+            position + 1,
             files.len(),
             format!(
                 "处理 {}",
@@ -1957,7 +1967,9 @@ fn find_texture_groups(folder: &Path) -> Result<Vec<TextureGroup>, String> {
     if !folder.exists() {
         return Ok(Vec::new());
     }
-    let mut groups: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    // 分组键按小写归一：NTFS 大小写不敏感，brick 与 BRICK 的输出文件名
+    // 相同，按原样分两组会静默互相覆盖。显示名保留首次出现的大小写。
+    let mut groups: BTreeMap<String, (String, BTreeMap<String, String>)> = BTreeMap::new();
     for entry in fs::read_dir(folder).map_err(to_string_error)? {
         let entry = entry.map_err(to_string_error)?;
         if !entry.file_type().map_err(to_string_error)?.is_file() {
@@ -1984,8 +1996,9 @@ fn find_texture_groups(folder: &Path) -> Result<Vec<TextureGroup>, String> {
                     .trim_end_matches(['_', '-', ' '])
                     .to_string();
                 groups
-                    .entry(prefix)
-                    .or_default()
+                    .entry(prefix.to_lowercase())
+                    .or_insert_with(|| (prefix.clone(), BTreeMap::new()))
+                    .1
                     .insert(kind.into(), path_to_string(&path));
             }
         }
@@ -1993,7 +2006,7 @@ fn find_texture_groups(folder: &Path) -> Result<Vec<TextureGroup>, String> {
 
     Ok(groups
         .into_iter()
-        .filter_map(|(prefix, files)| {
+        .filter_map(|(_, (prefix, files))| {
             Some(TextureGroup {
                 prefix,
                 files: TextureGroupFiles {
@@ -2338,26 +2351,28 @@ fn dds_to_image(dds_path: &Path) -> Result<DynamicImage, String> {
 }
 
 fn save_rgb_image(
-    bytes: &[u8],
+    // 收 Vec 并 move 进 ImageBuffer：调用方传参后即弃用，&[u8]+to_vec 会对
+    // 大图（8K rgb ≈ 200MB）多整块拷贝一次。
+    bytes: Vec<u8>,
     width: u32,
     height: u32,
     output: PathBuf,
     format: &str,
 ) -> Result<(), String> {
-    let image = image::RgbImage::from_raw(width, height, bytes.to_vec())
+    let image = image::RgbImage::from_raw(width, height, bytes)
         .ok_or_else(|| "RGB 数据无效。".to_string())?;
     save_dynamic_image(&DynamicImage::ImageRgb8(image), output, format)
 }
 
 fn save_luma_image(
-    bytes: &[u8],
+    bytes: Vec<u8>,
     width: u32,
     height: u32,
     output: PathBuf,
     format: &str,
 ) -> Result<(), String> {
     let image: ImageBuffer<Luma<u8>, Vec<u8>> =
-        ImageBuffer::from_raw(width, height, bytes.to_vec())
+        ImageBuffer::from_raw(width, height, bytes)
             .ok_or_else(|| "灰度数据无效。".to_string())?;
     save_dynamic_image(&DynamicImage::ImageLuma8(image), output, format)
 }

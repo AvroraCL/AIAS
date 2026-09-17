@@ -215,8 +215,11 @@ pub fn upscale_with_progress(
     crate::anime::prune_sessions(crate::anime::SessionKeep::Superres(id));
     let (input_w, input_h) =
         image::image_dimensions(input).map_err(crate::anime::to_string_error)?;
-    // 4x 中间缓冲（每像素 4 字节）+ 终图 + PNG 编码并存，按 8 字节/像素预留。
-    crate::safety::memory_budget(input_w, input_h, 128 + u64::from(scale * scale) * 8)?;
+    // 实际峰值 ≈ 输入 RGBA8(4 B/px) + 4x 输出缓冲(64 B/px) + 重采样临时
+    // (≤64 B/px，仅非 4x 倍率) + PNG 流式编码少量开销；模型与运行库开销由
+    // 「预算=可用内存/2」的预留覆盖。旧公式 128+scale²×8 高估约 4 倍，把
+    // 16GB 机器上本可完成的 4K@4x 误拒。超估部分仍由 try_reserve_exact 兜底。
+    crate::safety::memory_budget(input_w, input_h, 96)?;
     on_progress(0, 1, "正在读取图片");
     let image = image::open(input)
         .map_err(crate::anime::to_string_error)?
@@ -515,8 +518,15 @@ fn run_pass(
                 .map_err(crate::anime::to_string_error)?;
             let out_w_tile = (*shape.get(3).ok_or("超分模型输出 shape 无效")?) as usize;
             let out_h_tile = (*shape.get(2).ok_or("超分模型输出 shape 无效")?) as usize;
-            if out_w_tile != tw * 4 {
-                return Err(format!("超分模型输出宽度异常：{out_w_tile} != {}", tw * 4));
+            // 高度同样必须校验：错配时后续 sink 按平面索引读 data 会越界
+            // panic，且 unwind 穿过会话守卫会让 Mutex 中毒（此后所有超分/抠图
+            // 会话操作永久报错直到重启）。
+            if out_w_tile != tw * 4 || out_h_tile != th * 4 {
+                return Err(format!(
+                    "超分模型输出尺寸异常：{out_w_tile}x{out_h_tile} != {}x{}",
+                    tw * 4,
+                    th * 4
+                ));
             }
 
             // 裁掉上下文对应的输出边缘（4x = 64px）。图片边界处 padding 被
