@@ -21,10 +21,11 @@ const sigInfo = (() => {
     return "";
   }
 })();
-const sigFileLine = sigInfo.split(/\r?\n/).find((line) => line.startsWith("file:"));
-if (sigFileLine !== `file:${exe}`) {
+// file:<文件名> 位于 "trusted comment: timestamp:...\tfile:..." 行尾
+const sigTargetLine = sigInfo.split(/\r?\n/).find((line) => line.includes("file:"));
+if (!sigTargetLine || !sigTargetLine.endsWith(`file:${exe}`)) {
   throw new Error(
-    `${sigPath} 的签名目标不是当前安装包（${sigFileLine || "无法解析"}，期望 file:${exe}）。` +
+    `${sigPath} 的签名目标不是当前安装包（${sigTargetLine?.trim() || "无法解析签名"}，期望 file:${exe}）。` +
       `请先用 tauri signer sign 重新签名 dist/${exe}`,
   );
 }
