@@ -39,3 +39,13 @@
 .style-lab-export-actions { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: stretch; }
 .style-lab-export-actions[hidden] { display: none !important; }
 .style-lab-export-actions > button { min-height: 46px; margin: 0; }
+/* 参数数值行：Figma/Blender 式「名称 + 可编辑数值 / 滑杆」结构 */
+.style-lab-param { display: grid; gap: 5px; margin-bottom: 12px; }
+.style-lab-param-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.style-lab-param-name { color: var(--text-muted); font-size: 12px; cursor: ew-resize; user-select: none; }
+.style-lab-param-value { width: 64px; min-height: 24px; margin: 0; padding: 2px 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--text); font: 12px/1.4 Consolas, monospace; font-variant-numeric: tabular-nums; text-align: right; }
+.style-lab-param-value:hover { border-color: var(--border); }
+.style-lab-param-value:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+.style-lab-param input[type=range] { width: 100%; min-height: 22px; padding: 0; border: 0; box-shadow: none; accent-color: var(--accent); }
+.style-lab-param-actions { display: flex; gap: 6px; margin-top: 4px; margin-bottom: 8px; }
+.style-lab-param-actions > button { flex: 1; min-height: 34px; margin: 0; }

@@ -337,9 +337,30 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     const grid = paramSection.querySelector('.style-lab-grid');
     for (const p of schema) {
       if (p.type === 'range') {
-        const label = document.createElement('label');
-        label.innerHTML = `${p.label} <output hidden>${p.default ?? ''}</output><input type="range" min="${p.min}" max="${p.max}" step="${p.step}" data-param="${p.key}">`;
-        grid.append(label);
+        // Figma/Blender 式数值行：右侧数值可直接键入，左侧标签可拖动微调，
+        // 双击行恢复该参数默认，滚轮在滑杆上步进（Shift 粗调 / Alt 细调）。
+        const row = document.createElement('div');
+        row.className = 'style-lab-param';
+        row.dataset.paramRow = p.key;
+        const head = document.createElement('div');
+        head.className = 'style-lab-param-head';
+        const name = document.createElement('span');
+        name.className = 'style-lab-param-name';
+        name.textContent = p.label;
+        name.title = '左右拖动微调（Shift 更精细）· 双击恢复默认';
+        const val = document.createElement('input');
+        val.type = 'text'; val.inputMode = 'decimal'; val.spellcheck = false;
+        val.className = 'style-lab-param-value';
+        val.dataset.paramValue = p.key;
+        val.setAttribute('aria-label', `${p.label} 数值`);
+        head.append(name, val);
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.min = String(p.min); slider.max = String(p.max); slider.step = String(p.step);
+        slider.dataset.param = p.key;
+        slider.setAttribute('aria-label', p.label);
+        row.append(head, slider);
+        grid.append(row);
       } else if (p.type === 'select') {
         const label = document.createElement('label');
         label.textContent = p.label;
@@ -365,7 +386,29 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
       }
     }
     controls.append(paramSection);
-    if (resetButton) controls.append(resetButton);
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'style-lab-param-actions';
+    const randomButton = document.createElement('button');
+    randomButton.type = 'button';
+    randomButton.className = 'secondary-action';
+    randomButton.textContent = '随机探索';
+    randomButton.title = '在全部参数范围内随机取值（Photomosh 式快速探索），效果可复现于当前种子';
+    randomButton.onclick = () => {
+      const rand = mulberry32((Math.random() * 0x7fffffff) | 0);
+      for (const prm of currentSchema()) {
+        if (prm.type === 'range') {
+          const raw = prm.min + rand() * (prm.max - prm.min);
+          config[prm.key] = clampParam(prm, String(raw));
+        } else if (prm.type === 'select') {
+          config[prm.key] = prm.options[Math.floor(rand() * prm.options.length)][0];
+        }
+      }
+      syncControls();
+      schedule();
+    };
+    actionsRow.append(randomButton);
+    if (resetButton) actionsRow.append(resetButton);
+    controls.append(actionsRow);
 
     // 导出设置
     const exportSection = document.createElement('section');
@@ -385,7 +428,40 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
       if (el.type === 'checkbox') el.checked = Boolean(config[key]);
       else el.value = String(config[key]);
     }
+    for (const el of controls.querySelectorAll('[data-param-value]')) {
+      const prm = paramMeta(el.dataset.paramValue);
+      el.value = prm ? formatParamValue(config[el.dataset.paramValue], prm) : '';
+    }
     controls.querySelectorAll('select').forEach(select => { if (select.dataset.selectSkip !== 'true') select.dispatchEvent(new Event('styled')); });
+  }
+
+  function paramMeta(key) {
+    return currentSchema().find(p => p.key === key) || null;
+  }
+
+  function formatParamValue(value, prm) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return String(value ?? '');
+    if ((prm.step || 1) < 1) return String(Math.round(value * 100) / 100);
+    return String(Math.round(value));
+  }
+
+  function clampParam(prm, raw) {
+    let v = Number.parseFloat(raw);
+    if (!Number.isFinite(v)) return null;
+    const step = prm.step || 1;
+    v = Math.round(v / step) * step;
+    return Math.min(prm.max, Math.max(prm.min, v));
+  }
+
+  function commitParamValue(key, text) {
+    const prm = paramMeta(key);
+    if (!prm || prm.type !== 'range') return false;
+    const v = clampParam(prm, text);
+    if (v === null) { syncControls(); return false; }
+    config[key] = v;
+    syncControls();
+    schedule();
+    return true;
   }
 
   // ---- 预览调度 ---------------------------------------------------------
@@ -559,6 +635,74 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     const el = event.target.closest('[data-param]');
     if (el && (el.type === 'checkbox' || el.tagName === 'SELECT')) applyParam(el);
   });
+  // 数值框：Enter/失焦提交（钳制+步进对齐），Esc 还原；聚焦全选便于整段覆盖
+  controls.addEventListener('focusin', event => {
+    const el = event.target.closest('[data-param-value]');
+    if (el) el.select();
+  });
+  controls.addEventListener('keydown', event => {
+    const el = event.target.closest('[data-param-value]');
+    if (!el) return;
+    if (event.key === 'Enter') { event.preventDefault(); el.blur(); }
+    else if (event.key === 'Escape') { event.preventDefault(); syncControls(); el.blur(); }
+  });
+  controls.addEventListener('focusout', event => {
+    const el = event.target.closest('[data-param-value]');
+    if (el) commitParamValue(el.dataset.paramValue, el.value);
+  });
+  // 标签拖动微调（scrub）：按住左右拖改变数值，Shift 减速 10 倍
+  controls.addEventListener('pointerdown', event => {
+    const name = event.target.closest('.style-lab-param-name');
+    if (!name || event.button !== 0) return;
+    const row = name.closest('.style-lab-param');
+    const key = row && row.dataset.paramRow;
+    const prm = key && paramMeta(key);
+    if (!prm || prm.type !== 'range') return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startV = Number(config[key]) || 0;
+    const range = prm.max - prm.min;
+    const onMove = ev => {
+      const speed = ev.shiftKey ? range / 2000 : range / 200;
+      let v = startV + (ev.clientX - startX) * speed;
+      v = Math.round(v / (prm.step || 1)) * (prm.step || 1);
+      config[key] = Math.min(prm.max, Math.max(prm.min, v));
+      syncControls();
+      schedule();
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+  // 双击参数行：仅恢复该参数默认值
+  controls.addEventListener('dblclick', event => {
+    const row = event.target.closest('.style-lab-param');
+    if (!row) return;
+    const key = row.dataset.paramRow;
+    const def = (STYLE_DEFAULTS[config.style] || {})[key];
+    if (def === undefined) return;
+    config[key] = def;
+    syncControls();
+    schedule();
+  });
+  // 滑杆上滚轮步进：Shift ×10，Alt ×0.2（需 passive:false 才能 preventDefault）
+  controls.addEventListener('wheel', event => {
+    const slider = event.target.closest('[data-param]');
+    if (!slider || slider.type !== 'range') return;
+    const prm = paramMeta(slider.dataset.param);
+    if (!prm || prm.type !== 'range') return;
+    event.preventDefault();
+    const step = (prm.step || 1) * (event.shiftKey ? 10 : event.altKey ? 0.2 : 1);
+    const dir = event.deltaY < 0 ? 1 : -1;
+    let v = (Number(config[slider.dataset.param]) || 0) + dir * step;
+    v = Math.round(v / (prm.step || 1)) * (prm.step || 1);
+    config[slider.dataset.param] = Math.min(prm.max, Math.max(prm.min, v));
+    syncControls();
+    schedule();
+  }, { passive: false });
   const resetButton = document.createElement('button');
   resetButton.className = 'secondary-action'; resetButton.type = 'button'; resetButton.textContent = '恢复默认';
   resetButton.onclick = () => { config = restoreStyleLabSettings({ style: config.style, ...STYLE_DEFAULTS[config.style] }); syncControls(); schedule(); };
