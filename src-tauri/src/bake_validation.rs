@@ -26,8 +26,12 @@ async fn run(app: AppHandle, path: &std::path::Path) -> Result<Value, String> {
     let config: Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     let capabilities = bake_capabilities(app.clone()).await?;
-    let imported =
-        bake_import(app.clone(), config["input"].as_str().ok_or("input")?.into()).await?;
+    let imported = bake_import(
+        app.clone(),
+        config["input"].as_str().ok_or("input")?.into(),
+        None,
+    )
+    .await?;
     let handle = imported["handle"].as_str().ok_or("handle")?.to_owned();
     let mesh_path = std::path::PathBuf::from(imported["meshPath"].as_str().ok_or("meshPath")?);
     let objects: Vec<usize> = imported["objects"]
