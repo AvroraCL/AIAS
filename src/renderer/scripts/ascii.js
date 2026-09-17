@@ -60,7 +60,10 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   ];
   const STYLE_MODE = { ascii: 'ascii', block: 'ascii-block', dot: 'ascii-dot', hatch: 'ascii-hatch' };
   function applyPreset(preset) {
+    const savedPresets = config.customPresets;
     config = restoreAsciiSettings({ ...config, ...preset.settings, version: 2 });
+    // 旧版本保存的预设可能内嵌了列表快照：无条件保留当前列表
+    config.customPresets = savedPresets;
     persist();
     sync();
     if (navigate && STYLE_MODE[config.style]) navigate(STYLE_MODE[config.style]);
@@ -70,25 +73,40 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   function renderPresets() {
     const wrap = $('presets'); if (!wrap) return;
     wrap.replaceChildren();
-    const chip = (label, onClick, removable) => {
+    // removable 芯片的 × 是独立回调：旧实现把删除事件喂给「应用预设」，
+    // 删除功能完全失效。
+    const chip = (label, onClick, onRemove) => {
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'ascii-preset-chip'; button.textContent = label;
       button.onclick = onClick;
-      if (removable) {
+      if (onRemove) {
         const cross = document.createElement('span'); cross.className = 'ascii-preset-remove'; cross.textContent = '×';
-        cross.onclick = event => { event.stopPropagation(); onClick({ name: label }); };
+        cross.onclick = event => { event.stopPropagation(); onRemove(); };
         button.append(cross);
       }
       return button;
     };
-    for (const preset of BUILTIN_PRESETS) wrap.append(chip(preset.name, () => applyPreset(preset), false));
+    for (const preset of BUILTIN_PRESETS) wrap.append(chip(preset.name, () => applyPreset(preset), null));
     (config.customPresets || []).forEach(preset =>
-      wrap.append(chip(preset.name, () => applyPreset(preset), true)));
+      wrap.append(
+        chip(
+          preset.name,
+          () => applyPreset(preset),
+          () => {
+            config.customPresets = (config.customPresets || []).filter(p => p.name !== preset.name);
+            persist(); renderPresets();
+            status(`预设「${preset.name}」已删除。`);
+          },
+        ),
+      ));
   }
   function savePreset() {
     const name = ($('preset-name').value || '').trim();
     if (!name) { status('请先输入预设名称。'); return; }
-    config.customPresets = [{ name: name.slice(0, 20), settings: { ...config } }, ...(config.customPresets || [])].slice(0, 10);
+    // 剔除 customPresets：把列表快照嵌进预设会让应用旧预设时回滚并永久
+    // 丢失较新预设，且嵌套快照使存储 JSON 随保存次数 O(n²) 膨胀。
+    const { customPresets: _omit, ...presetSnapshot } = config;
+    config.customPresets = [{ name: name.slice(0, 20), settings: presetSnapshot }, ...(config.customPresets || [])].slice(0, 10);
     $('preset-name').value = '';
     persist(); renderPresets(); status(`预设「${name}」已保存。`);
   }
@@ -250,6 +268,9 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
     try { if (config.style === 'ascii') characterRamp(config); } catch (e) { status(e.message); refresh(); return; }
     computing = true; status('正在生成字符画…'); refresh();
     const current = revision, snapshot = { ...config };
+    // 标志随请求快照：被取消的请求不再让后续结果谎报“自动切换”；
+    // 仅当背景确为透明底时提示（用户手动改回后不说谎）。
+    const autoSwitched = alphaAutoSwitch;
     timer = setTimeout(() => {
       try {
         const { columns, rows } = gridSize(source.width, source.height, snapshot.columns, cellWidth, lineHeight);
@@ -272,7 +293,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
           result = { ...data.result, settings: snapshot };
           result.charSource = snapshot.style === 'ascii' ? 'ascii' : 'graphic';
           $('size').textContent = `${columns} 列 × ${rows} 行 · PNG ${Math.ceil(columns * cellWidth)} × ${rows * lineHeight}${columns !== snapshot.columns ? ' · 已按长图比例限制行数' : ''}`;
-          status(alphaAutoSwitch ? '已检测到透明通道，背景自动切换为透明底。' : '预览已更新');
+          status(autoSwitched && snapshot.background === 'transparent' ? '已检测到透明通道，背景自动切换为透明底。' : '预览已更新');
           alphaAutoSwitch = false;
           draw(); refresh();
         };
@@ -319,7 +340,7 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
   $('file').onchange = () => { const file = $('file').files[0]; $('file').value = ''; if (file) loadFile(file); };
   root.ondragover = e => { e.preventDefault(); };
   root.ondrop = e => { e.preventDefault(); if (desktop) return; if (e.dataTransfer.files.length !== 1) status('请一次拖入一张图片。'); else loadFile(e.dataTransfer.files[0]); };
-  $('clear').onclick = () => { if (exporting || importing) return; cancelCompute(); source = result = null; sourceName = ''; $('name').textContent = 'PNG · JPG · WebP'; $('size').textContent = ''; $('import').textContent = '选择图片'; status(''); draw(); refresh(); };
+  $('clear').onclick = () => { if (exporting || importing) return; cancelCompute(); source = result = null; sourceName = ''; alphaAutoSwitch = false; $('name').textContent = 'PNG · JPG · WebP'; $('size').textContent = ''; $('import').textContent = '选择图片'; status(''); draw(); refresh(); };
   for (const key of Object.keys(config)) {
     const el = $(key);
     if (!el) continue; // style 由所在功能模式决定，不在检查器中
@@ -395,7 +416,22 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
       if (!path) { status('已取消导出。'); return; }
       let content, blob;
       if (format === 'txt') { content = snapshot.text; blob = new Blob([content], {type:'text/plain;charset=utf-8'}); }
-      else { const canvas = document.createElement('canvas'); paint(canvas, snapshot, Number(config.exportScale) || 1); blob = await new Promise((resolve,reject) => canvas.toBlob(value => value ? resolve(value) : reject(Error('PNG 编码失败。')), 'image/png')); }
+      else {
+        // Chromium/WebView2 画布单边上限 16384px：竖图 4× 可超限（软渲染下
+        // 约 1GB 分配还会失败）。超限时降级倍率并明示。
+        let scale = Number(config.exportScale) || 1;
+        const overflow = Math.max(
+          Math.ceil(snapshot.columns * cellWidth * scale) / 16384,
+          Math.ceil(snapshot.rows * lineHeight * scale) / 16384,
+          1,
+        );
+        if (overflow > 1) {
+          scale = Math.max(1, Math.floor(scale / overflow));
+          status(`导出尺寸超过画布上限，倍率已自动降为 ${scale}×。`);
+        }
+        const canvas = document.createElement('canvas'); paint(canvas, snapshot, scale);
+        blob = await new Promise((resolve,reject) => canvas.toBlob(value => value ? resolve(value) : reject(Error('PNG 编码失败。')), 'image/png'));
+      }
       if (desktop) {
         if (format === 'png') content = await new Promise((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = () => reject(Error('PNG 读取失败。')); reader.readAsDataURL(blob); });
         await invoke('ascii_export', { path, format, content });
@@ -450,6 +486,6 @@ export function createAscii({ root, inspector, runArea, desktop, open, saveDialo
       else { draw(); refresh(); }
     },
     addFiles(paths) { if (paths.length === 1) loadFile(paths[0]); else status('请一次拖入一张图片。'); },
-    dispose() { disposed = true; ++importRevision; cancelCompute(); clearTimeout(saveTimer); resize.disconnect(); controls.remove(); exportActions.remove(); },
+    dispose() { disposed = true; ++importRevision; cancelCompute(); clearTimeout(saveTimer); resize.disconnect(); window.removeEventListener('blur', endDrag); controls.remove(); exportActions.remove(); },
   };
 }
