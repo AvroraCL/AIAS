@@ -471,7 +471,13 @@ pub async fn bake_inspect(
         .map_err(|e| e.to_string())?;
         execute(
             &app,
-            &["inspect".as_ref(), temp.path().as_os_str()],
+            // 第 4 个 argv 是 jobId：worker 统一用 args.get(3) 作为消息回执，
+            // 缺省时回执为空串，execute 的过滤会把全部消息丢弃（检查 UV 100% 失败）。
+            &[
+                "inspect".as_ref(),
+                temp.path().as_os_str(),
+                "inspect".as_ref(),
+            ],
             "inspect",
             None,
             STALL_QUICK,
@@ -586,7 +592,29 @@ pub(crate) async fn oidn_status(app: AppHandle) -> Result<serde_json::Value, Str
 
 #[tauri::command]
 pub(crate) async fn oidn_install(app: AppHandle) -> Result<serde_json::Value, String> {
+    // 单飞防护：并发双装在 target.exists() 与 rename 之间存在 TOCTOU，
+    // 后到者白下 25MB 并报「安装失败」假错误。
+    if OIDN_INSTALLING
+        .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("降噪组件正在安装中，请稍候。".into());
+    }
+    let _oidn_guard = OidnInstallGuard;
+    oidn_install_inner(app).await
+}
+
+static OIDN_INSTALLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct OidnInstallGuard;
+impl Drop for OidnInstallGuard {
+    fn drop(&mut self) {
+        OIDN_INSTALLING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+async fn oidn_install_inner(app: AppHandle) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // 拿到单飞锁后重查：并发的另一个请求可能刚完成安装
         if let Some(path) = resolve_oidn_dir(&app)? {
             let downloaded = oidn_bin_dir(&app)?;
             let source = if path == downloaded {
@@ -710,15 +738,21 @@ pub fn bake_release(handle: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn bake_result_release(result_handle: String) -> Result<(), String> {
-    let path = RESULTS
-        .lock()
-        .map_err(|_| "结果状态锁损坏")?
-        .remove(&result_handle);
-    if let Some(path) = path {
-        let _ = std::fs::remove_dir_all(path);
-    }
-    Ok(())
+pub async fn bake_result_release(result_handle: String) -> Result<(), String> {
+    // bake_export 全程持有 RESULTS 锁（大结果复制可达数秒）：同步命令会在
+    // 主线程阻塞等锁冻结 UI，等待必须发生在工作线程。
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = RESULTS
+            .lock()
+            .map_err(|_| "结果状态锁损坏")?
+            .remove(&result_handle);
+        if let Some(path) = path {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -741,7 +775,11 @@ fn prune_bake_cache(root: &Path) {
         .unwrap_or(SystemTime::UNIX_EPOCH);
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let path = entry.path();
-        if retained.contains(&path) {
+        // RESULTS 存的是 bake_start 里 canonicalize 过的路径（\??\ 前缀），
+        // read_dir 给的是普通路径：不归一化则保护集合永不命中，24h 后
+        // 仍被前端持有的活动结果会被静默误删。
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if retained.contains(&canonical) || retained.contains(&path) {
             continue;
         }
         let stale = entry
