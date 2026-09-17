@@ -28,11 +28,11 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、AI 抠�
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.5.19
+### 下载 v5.6.0
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.5.19_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.5.19/AIAS_5.5.19_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+| [AIAS_5.6.0_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.6.0/AIAS_5.6.0_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
 
 v5.5.18 重点修复：
 
@@ -41,6 +41,12 @@ v5.5.18 重点修复：
 - 烘焙 16 位法线/位置图错乱修复；UV 重叠大模型烘焙不再被看门狗误杀
 - 材质列表勾选：按住左键滑动批量勾选，并修复单击翻转失效（5.5.18 遗留）
 - 超分与抠图回退链的停止响应更及时（分块级取消）
+
+v5.6.0 风格实验室大版本：
+
+- 侧栏「风格化」与「风格实验室」合并，共 25 套风格（4 图像转风格 + 21 图片风格化）
+- 新增故障家族 6 套：像素排序、坏块流动、信号撕裂、数据腐蚀、CRT 显像管、信号重影
+- 数值自定义升级：数值直接键入、标签拖动微调、双击单参复位、滚轮步进、随机探索
 
 历史版本与更新日志见 [Releases](https://github.com/AvroraCL/AIAS/releases)。
 
