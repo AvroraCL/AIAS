@@ -2128,9 +2128,10 @@ function addActivity(title, body, tone = "idle") {
   item.appendChild(dismissBtn);
   feed.prepend(item);
   item.dataset.dismissTimer = String(window.setTimeout(removeToast, TOAST_TIMEOUT_MS));
+  // 同步截断：删除放进 setTimeout 会让 children.length 在循环内永不减小，
+  // 一旦超限（2.5s 内 5 条互不重复通知）整个渲染进程死循环冻结。
   while (feed.children.length > TOAST_LIMIT) {
-    const last = feed.lastElementChild;
-    if (last) { last.classList.add("removing"); setTimeout(() => last.remove(), 250); }
+    feed.lastElementChild?.remove();
   }
 }
 
@@ -2167,11 +2168,11 @@ async function removeSelection(containerId, file) {
   } else if (containerId === "merge-chip-list") {
     $("pbr-input").value = "";
     renderChips(containerId, []);
-    await saveSettings();
+    try { await saveSettings(); } catch (e) { reportSaveError(e); }
   } else if (containerId === "mipmap-chip-list") {
     $("mipmap-input").value = "";
     renderChips(containerId, []);
-    await saveSettings();
+    try { await saveSettings(); } catch (e) { reportSaveError(e); }
   }
   updateStatus();
 }
@@ -2277,15 +2278,20 @@ function renderSkinList(items) {
     cb.checked = !entry.disabled;
     cb.setAttribute("aria-label", `${cb.checked ? "禁用" : "启用"} ${name.textContent}`);
     cb.addEventListener("change", async () => {
+      // 请求期间禁用：toggle 会按 .disabled 后缀改名，双击同一开关会打到
+      // 已改名的旧路径上，弹“切换失败”误报（实际第一次已成功）。
+      cb.disabled = true;
       try {
         await api.skin.toggle(entry.path);
       } catch (e) {
         cb.checked = !cb.checked;
         addActivity("切换失败", e.message || String(e), "error");
+        if (cb.isConnected) cb.disabled = false;
         return;
       }
       addActivity(cb.checked ? "已启用" : "已禁用", entry.name.replace(/\.disabled$/, ""), "success");
       await refreshSkins();
+      if (cb.isConnected) cb.disabled = false;
     });
     const track = document.createElement("span");
     track.className = "toggle-track";
@@ -2304,8 +2310,9 @@ function renderSkinList(items) {
       const confirmed = await openPreviewConfirm("删除涂装", `确定删除 ${entry.name.replace(/\.disabled$/, "")}？`);
       if (!confirmed) return;
       try {
-        await api.skin.delete(entry.path);
-        addActivity("已删除", entry.name.replace(/\.disabled$/, ""), "success");
+        // 后端路径不存在时返回 deleted:false 而非报错：如实提示，不虚报成功
+        const result = await api.skin.delete(entry.path);
+        addActivity(result?.deleted ? "已删除" : "未找到条目", entry.name.replace(/\.disabled$/, ""), result?.deleted ? "success" : "idle");
         await refreshSkins();
       } catch (e) {
         addActivity("删除失败", e.message || String(e), "error");
@@ -3259,22 +3266,30 @@ function bindSkinActions() {
   });
 }
 
+let skinsFetchSeq = 0;
 async function refreshSkins({ notify = false } = {}) {
   const directory = $("skin-path")?.value;
   if (!directory) {
+    ++skinsFetchSeq;
     state.skinsCache = [];
     renderSkinList([]);
     updateStatus();
     return;
   }
 
+  // 序号守卫：目录快速切换/连点刷新时，乱序返回的旧目录响应不得覆盖
+  // 当前列表；失败分支同步清缓存，避免搜索框把已删条目“复活”。
+  const seq = ++skinsFetchSeq;
   try {
     const entries = await api.skin.list(directory);
+    if (seq !== skinsFetchSeq) return;
     state.skinsCache = entries;
     renderSkinList(entries);
     if (notify) addActivity("已刷新", `${entries.length} 个涂装`, "success");
   } catch (error) {
-    $("skin-grid").innerHTML = "";
+    if (seq !== skinsFetchSeq) return;
+    state.skinsCache = [];
+    renderSkinList([]);
     addActivity("读取失败", error.message || String(error), "error");
   }
   updateStatus();
