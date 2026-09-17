@@ -1925,7 +1925,11 @@ fn skin_import_inner(options: ImportSkinOptions) -> Result<ImportSkinResult, Str
 }
 
 #[tauri::command]
-async fn skin_toggle(file_path: String) -> Result<PathResult, String> {
+async fn skin_toggle(
+    state: State<'_, AppState>,
+    file_path: String,
+) -> Result<PathResult, String> {
+    ensure_within_skins_dir(&state, Path::new(&file_path))?;
     tauri::async_runtime::spawn_blocking(move || {
         let source = Path::new(&file_path);
         if !source.exists() {
@@ -1945,8 +1949,31 @@ async fn skin_toggle(file_path: String) -> Result<PathResult, String> {
     .map_err(to_string_error)?
 }
 
+/// 涂装删除/改名是渲染层可触发的销毁性操作：目标必须落在用户配置的
+/// 涂装目录内（canonicalize 归一后前缀比对），否则拒绝——防止前端注入
+/// 或前端逻辑 bug 把任意路径送进来递归删除。
+fn ensure_within_skins_dir(state: &State<AppState>, target: &Path) -> Result<(), String> {
+    let settings = load_settings(&state.settings_path)?;
+    let configured = Path::new(settings.skin_manager_path.as_str());
+    if configured.as_os_str().is_empty() {
+        return Err("请先在设置中选择涂装目录。".into());
+    }
+    let allowed = std::fs::canonicalize(configured)
+        .map_err(|e| format!("涂装目录不可访问：{e}"))?;
+    let resolved = std::fs::canonicalize(target)
+        .map_err(|e| format!("目标路径不可访问：{e}"))?;
+    if !resolved.starts_with(&allowed) {
+        return Err("目标不在涂装目录内，已拒绝操作。".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-async fn skin_delete(file_path: String) -> Result<DeleteResult, String> {
+async fn skin_delete(
+    state: State<'_, AppState>,
+    file_path: String,
+) -> Result<DeleteResult, String> {
+    ensure_within_skins_dir(&state, Path::new(&file_path))?;
     tauri::async_runtime::spawn_blocking(move || {
         let source = Path::new(&file_path);
         if !source.exists() {

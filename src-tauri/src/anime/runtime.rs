@@ -89,30 +89,53 @@ pub(crate) fn acquire_ort_dll(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Re
     let tmp_dir = base.join("ort_tmp");
     fs::create_dir_all(&tmp_dir).map_err(to_string_error)?;
     let archive = tmp_dir.join(format!("ort-{VERSION}.zip"));
+    // 解压出的 onnxruntime.dll 会被 LoadLibrary 进本进程：这是全项目唯一
+    // 曾无任何校验的下载（ghfast 代理居首）。固化官方 zip 的尺寸与 SHA256
+    // （与 GPU wheel 同款），不匹配即删档换下一镜像。
+    const ORT_ZIP_SIZE: u64 = 72_368_545;
+    const ORT_ZIP_SHA256: &str =
+        "174c616efc0271194488642a72f1a514e01487da4dfe84c49296d66e40ebe0da";
     let mut last_error = String::from("无可用下载源");
     for url in archive_urls {
-        match curl_download(&url, &archive, None, on_progress) {
-            Ok(()) => {
-                let status = crate::safety::quiet_command("tar")
-                    .args(["-xf"])
-                    .arg(&archive)
-                    .arg("-C")
-                    .arg(&tmp_dir)
-                    .status();
-                let dll = find_file(&tmp_dir, "onnxruntime.dll")
-                    .ok_or_else(|| "压缩包中未找到 onnxruntime.dll".to_string())?;
-                if let Ok(status) = status {
-                    if status.success() {
-                        fs::copy(&dll, ort_dll_path(base)).map_err(to_string_error)?;
-                        let _ = fs::remove_dir_all(&tmp_dir);
-                        return Ok(());
-                    }
+        match curl_download(&url, &archive, Some(ORT_ZIP_SIZE), on_progress) {
+            Ok(()) => match crate::model_bake::sha256_of_file(&archive) {
+                Ok(actual) if actual == ORT_ZIP_SHA256 => break,
+                Ok(actual) => {
+                    let _ = fs::remove_file(&archive);
+                    last_error =
+                        format!("SHA256 不匹配（期望 {ORT_ZIP_SHA256}，实际 {actual}）");
                 }
-                last_error = "解压 onnxruntime 压缩包失败".into();
-            }
+                Err(error) => {
+                    let _ = fs::remove_file(&archive);
+                    last_error = format!("校验读取失败：{error}");
+                }
+            },
             Err(error) => last_error = error,
         }
     }
+    if !archive.exists()
+        || crate::model_bake::sha256_of_file(&archive)
+            .map(|actual| actual != ORT_ZIP_SHA256)
+            .unwrap_or(true)
+    {
+        return Err(format!("获取 onnxruntime 运行库失败：{last_error}"));
+    }
+    let extract_status = crate::safety::quiet_command("tar")
+        .args(["-xf"])
+        .arg(&archive)
+        .arg("-C")
+        .arg(&tmp_dir)
+        .status();
+    let dll = find_file(&tmp_dir, "onnxruntime.dll")
+        .ok_or_else(|| "压缩包中未找到 onnxruntime.dll".to_string())?;
+    if let Ok(status) = extract_status {
+        if status.success() {
+            fs::copy(&dll, ort_dll_path(base)).map_err(to_string_error)?;
+            let _ = fs::remove_dir_all(&tmp_dir);
+            return Ok(());
+        }
+    }
+    last_error = "解压 onnxruntime 压缩包失败".into();
     let _ = fs::remove_dir_all(&tmp_dir);
     Err(format!("获取 onnxruntime 运行库失败：{last_error}"))
 }
