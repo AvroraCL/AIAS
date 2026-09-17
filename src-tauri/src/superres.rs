@@ -236,11 +236,12 @@ pub fn upscale_with_progress(
     crate::anime::prune_sessions(crate::anime::SessionKeep::Superres(id));
     let (input_w, input_h) =
         image::image_dimensions(input).map_err(crate::anime::to_string_error)?;
-    // 实际峰值 ≈ 输入 RGBA8(4 B/px) + 4x 输出缓冲(64 B/px) + 重采样临时
-    // (≤64 B/px，仅非 4x 倍率) + PNG 流式编码少量开销；模型与运行库开销由
-    // 「预算=可用内存/2」的预留覆盖。旧公式 128+scale²×8 高估约 4 倍，把
-    // 16GB 机器上本可完成的 4K@4x 误拒。超估部分仍由 try_reserve_exact 兜底。
-    crate::safety::memory_budget(input_w, input_h, 96)?;
+    // 实际峰值：4x ≈ 输入(4) + 输出缓冲(64) + 编码 ≈ 68 B/px；scale≠4 时
+    // Lanczos 重采样还要叠 (w×scale·h) 中间缓冲与终图（3x 合计 ≈116）。
+    // 旧公式 128+scale²×8 高估约 4 倍把 4K@4x 误拒；按倍率区分，非 4x 保
+    // 留余量。重采样分配是普通 Vec（无 try_reserve 兜底），余量不能省。
+    let bytes_per_pixel = if scale == 4 { 96 } else { 128 };
+    crate::safety::memory_budget(input_w, input_h, bytes_per_pixel)?;
     on_progress(0, 1, "正在读取图片");
     let image = image::open(input)
         .map_err(crate::anime::to_string_error)?

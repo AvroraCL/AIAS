@@ -802,7 +802,7 @@ export function createStyleLab({ onImage = null, root, inspector, runArea, deskt
       refresh(); schedule();
     },
     addFiles(paths) { if (paths.length === 1) loadFile(paths[0]); else status('请一次拖入一张图片。'); },
-    dispose() { disposed = true; ++revision; clearTimeout(saveTimer); resizeObserver.disconnect(); controls.remove(); },
+    dispose() { disposed = true; ++revision; clearTimeout(saveTimer); resizeObserver.disconnect(); window.removeEventListener('blur', endDrag); controls.remove(); },
   };
   // 上面 return 之后不可达； disposed/refresh 引用在前文闭包内
 }

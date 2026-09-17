@@ -1960,8 +1960,22 @@ fn ensure_within_skins_dir(state: &State<AppState>, target: &Path) -> Result<(),
     }
     let allowed = std::fs::canonicalize(configured)
         .map_err(|e| format!("涂装目录不可访问：{e}"))?;
-    let resolved = std::fs::canonicalize(target)
-        .map_err(|e| format!("目标路径不可访问：{e}"))?;
+    // 目标不存在时 canonicalize 必然失败：退回字符串前缀检查，保住
+    // 「deleted:false → 未找到条目」分支的可达性
+    let resolved = match std::fs::canonicalize(target) {
+        Ok(resolved) => resolved,
+        Err(_) => {
+            let normalize = |value: String| {
+                value.trim_end_matches(['\\', '/']).to_lowercase()
+            };
+            if !normalize(target.to_string_lossy().into_owned())
+                .starts_with(&normalize(allowed.to_string_lossy().into_owned()))
+            {
+                return Err("目标不在涂装目录内，已拒绝操作。".into());
+            }
+            return Ok(());
+        }
+    };
     if !resolved.starts_with(&allowed) {
         return Err("目标不在涂装目录内，已拒绝操作。".into());
     }

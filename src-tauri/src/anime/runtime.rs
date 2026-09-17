@@ -118,6 +118,8 @@ pub(crate) fn acquire_ort_dll(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Re
             .map(|actual| actual != ORT_ZIP_SHA256)
             .unwrap_or(true)
     {
+        // 失败路径同样要清 tmp_dir：残留的部分 zip 最大 72MB
+        let _ = fs::remove_dir_all(&tmp_dir);
         return Err(format!("获取 onnxruntime 运行库失败：{last_error}"));
     }
     let extract_status = crate::safety::quiet_command("tar")
@@ -126,8 +128,10 @@ pub(crate) fn acquire_ort_dll(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Re
         .arg("-C")
         .arg(&tmp_dir)
         .status();
-    let dll = find_file(&tmp_dir, "onnxruntime.dll")
-        .ok_or_else(|| "压缩包中未找到 onnxruntime.dll".to_string())?;
+    let Some(dll) = find_file(&tmp_dir, "onnxruntime.dll") else {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err("压缩包中未找到 onnxruntime.dll".into());
+    };
     if let Ok(status) = extract_status {
         if status.success() {
             fs::copy(&dll, ort_dll_path(base)).map_err(to_string_error)?;
