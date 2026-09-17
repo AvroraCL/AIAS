@@ -216,7 +216,7 @@ const BUILTIN_PRESETS = {
 export function createStyleLab({ root, inspector, runArea, desktop, open, saveDialog, convertFileSrc, invoke, settings, save, setBusy, busy, changed, notify }) {
   let config = restoreStyleLabSettings(settings), source = null, sourceName = "", result = null, disposed = false;
   let active = false, exporting = false, importing = false, computing = false, revision = 0, importRevision = 0;
-  let view = 'result', zoom = 1, saveTimer;
+  let view = 'result', zoom = 1, saveTimer, controlsBuiltFor = null;
   let styleLabUI = null; void styleLabUI;
   const ZOOM_MIN = 0.25, ZOOM_MAX = 3, WHEEL_STEP = 0.0015;
 
@@ -341,6 +341,7 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     if (exportScaleEl) exportScaleEl.value = String(config.exportScale || 1);
     if (exportScaleEl) exportScaleEl.onchange = () => { config.exportScale = Number(exportScaleEl.value); persist(); };
     syncControls();
+    controlsBuiltFor = config.style;
   }
 
   function syncControls() {
@@ -371,7 +372,9 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
     status('正在生成效果…');
     // 两帧后启动，让「处理中」状态先上屏
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (current !== revision || disposed) return;
+      // 被新参数抢占时同样要复位状态：否则「处理中…」常驻，blocker()
+      // 一直返回“正在生成效果”锁住运行按钮。
+      if (current !== revision || disposed) { computing = false; progressEl.hidden = true; return; }
       try {
         const w = source.width, h = source.height;
         const src = source.getContext('2d').getImageData(0, 0, w, h);
@@ -380,7 +383,7 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
         const band = Math.max(1, Math.ceil(h / 14));
         let y0 = 0;
         const step = () => {
-          if (current !== revision || disposed) { computing = false; return; }
+          if (current !== revision || disposed) { computing = false; progressEl.hidden = true; return; }
           const y1 = Math.min(h, y0 + band);
           renderRows(config.style, out.data, src.data, w, h, y0, y1, config, pre);
           y0 = y1;
@@ -397,6 +400,8 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
         step();
       } catch (e) {
         computing = false;
+        progressEl.hidden = true;
+        refresh();
         status(`生成失败：${e.message || e}`);
       }
     }));
@@ -501,13 +506,24 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
   root.ondragover = e => e.preventDefault();
   root.ondrop = e => { e.preventDefault(); if (!desktop && e.dataTransfer.files.length === 1) loadFile(e.dataTransfer.files[0]); };
   $('clear').onclick = () => { if (exporting || importing) return; source = result = null; sourceName = ''; $('name').textContent = 'PNG · JPG · WebP'; status(''); draw(); refresh(); };
-  for (const el of controls.querySelectorAll('[data-param]')) {
-    el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', () => {
-      const key = el.dataset.param;
-      config[key] = el.type === 'checkbox' ? el.checked : el.type === 'range' ? Number(el.value) : el.value;
-      schedule();
-    });
-  }
+  // 控件由 renderControls 按样式动态重建：初始化时容器为空，逐元素绑定
+  // 会永远落空。用事件委托，滑杆/颜色走 input（拖动实时预览），下拉/复选
+  // 框走 change（提交即应用）。
+  const applyParam = el => {
+    const key = el.dataset.param;
+    config[key] = el.type === 'checkbox' ? el.checked
+      : el.type === 'range' ? Number(el.value)
+      : el.value;
+    schedule();
+  };
+  controls.addEventListener('input', event => {
+    const el = event.target.closest('[data-param]');
+    if (el && el.type !== 'checkbox' && el.tagName !== 'SELECT') applyParam(el);
+  });
+  controls.addEventListener('change', event => {
+    const el = event.target.closest('[data-param]');
+    if (el && (el.type === 'checkbox' || el.tagName === 'SELECT')) applyParam(el);
+  });
   const resetButton = document.createElement('button');
   resetButton.className = 'secondary-action'; resetButton.type = 'button'; resetButton.textContent = '恢复默认';
   resetButton.onclick = () => { config = restoreStyleLabSettings({ style: config.style, ...STYLE_DEFAULTS[config.style] }); syncControls(); schedule(); };
@@ -538,7 +554,9 @@ export function createStyleLab({ root, inspector, runArea, desktop, open, saveDi
       controls.hidden = !active;
       if (!active) { ++revision; return; }
       const style = mode.replace('stylize-', '');
-      if (config.style !== style) {
+      // 首次激活（控件从未渲染）或切换样式时都重建：只比较 config.style
+      // 会让首次打开停留在空白面板上。
+      if (controlsBuiltFor !== style) {
         config.style = style;
         config = restoreStyleLabSettings({ style, ...STYLE_DEFAULTS[style] });
         renderControls();
@@ -567,7 +585,9 @@ function toGray(src, w, h, y0, y1, out) {
 
 function prepareGray(src, w, h) {
   const gray = new Float32Array(w * h);
-  toGray(src, 0, h, 0, w, gray);
+  // 参数顺序是 (src, w, h, y0, y1)：先前 (0, h, 0, w) 把宽高当成了行界，
+  // 内层 x<0 永不执行，灰度图恒为全 0。
+  toGray(src, w, h, 0, h, gray);
   return gray;
 }
 
@@ -636,9 +656,17 @@ function prepareStyle(style, src, w, h, p) {
     pre.gray = prepareGray(src, w, h);
     pre.blur = boxBlur(pre.gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 90)));
     pre.edge = sobelMagnitude(pre.gray, w, h);
+    if (style === 'neon') {
+      // 辉光整图一次：渲染函数按条带分帧，放在里面会重算约 14 次
+      pre.glow = boxBlur(pre.edge, w, h, Math.max(2, Math.round(Math.min(w, h) / 120)));
+    }
   }
   if (style === 'thermal' || style === 'halftone' || style === 'cross') {
     pre.gray = prepareGray(src, w, h);
+  }
+  if (style === 'film') {
+    // 胶片的 halation 需要低频亮度和：同 Neon 辉光一样的理由整体预计算
+    pre.blur = boxBlur(pre.gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 80)));
   }
   if (style === 'marble') {
     pre.fbm = makeFbm(3157, Math.round(p.octaves));
@@ -653,12 +681,14 @@ function prepareStyle(style, src, w, h, p) {
   if (style === 'watercolor') {
     pre.fbm = makeFbm(7777, 4);
   }
-  if (style === 'ripple' || style === 'glass' || style === 'heatwave' || style === 'pastel' || style === 'holo') {
-    pre.gray3 = prepareGray(src, w, h);
-    if (style === 'glass' || style === 'pastel' || style === 'holo') {
-      pre.blur3 = boxBlur(pre.gray3, w, h, Math.max(2, Math.round(Math.min(w, h) / 80)));
-      pre.edge3 = sobelMagnitude(pre.gray3, w, h);
-    }
+  if (style === 'glass' || style === 'pastel' || style === 'holo') {
+    // 三个样式的渲染器都读单通道 pre.gray / pre.blur：整图预计算一次，
+    // 不放渲染函数里（分帧会重算 14 次）。玻璃的模糊半径由参数驱动。
+    pre.gray = prepareGray(src, w, h);
+    const radius = style === 'glass'
+      ? Math.max(1, Math.round((p.blur || 12) / 5))
+      : Math.max(2, Math.round(Math.min(w, h) / (style === 'holo' ? 60 : 80)));
+    pre.blur = boxBlur(pre.gray, w, h, radius);
   }
   return pre;
 }
@@ -686,9 +716,9 @@ function renderRows(style, dst, src, w, h, y0, y1, p, pre) {
     case 'wear': return renderWear(dst, src, w, h, y0, y1, p, pre);
     case 'oil': return renderOil(dst, src, w, h, y0, y1, p);
     case 'halftone': return renderHalftone(dst, src, w, h, y0, y1, p);
-    case 'sketch': return renderSketch(dst, w, h, y0, y1, p, pre);
-    case 'thermal': return renderThermal(dst, w, h, y0, y1, p, pre);
-    case 'neon': return renderNeon(dst, w, h, y0, y1, p, pre);
+    case 'sketch': return renderSketch(dst, src, w, h, y0, y1, p, pre);
+    case 'thermal': return renderThermal(dst, src, w, h, y0, y1, p, pre);
+    case 'neon': return renderNeon(dst, src, w, h, y0, y1, p, pre);
     case 'cross': return renderCross(dst, src, w, h, y0, y1, p);
     case 'marble': return renderMarble(dst, w, h, y0, y1, p, pre);
     case 'duotone': return renderDuotone(dst, w, h, y0, y1, p, pre.gray);
@@ -696,13 +726,7 @@ function renderRows(style, dst, src, w, h, y0, y1, p, pre) {
     case 'lowpoly': return renderLowpoly(dst, src, w, h, y0, y1, p, pre);
     case 'pixel': return renderPixelArt(dst, src, w, h, y0, y1, p);
     case 'woodcut': return renderWoodcut(dst, src, w, h, y0, y1, p, pre.gray);
-    case 'film': return renderFilm(dst, src, w, h, y0, y1, p, pre.gray, pre.blur || boxBlur(pre.gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 80))));
-    case 'ripple': return rippleImpl(dst, src, w, h, y0, y1, p, pre);
-    case 'glass': return glassDispatch(dst, src, w, h, y0, y1, p, pre);
-    case 'mosaic': return mosaicDispatch(dst, src, w, h, y0, y1, p);
-    case 'heatwave': return heatwaveDispatch(dst, src, w, h, y0, y1, p);
-    case 'pastel': return pastelDispatch(dst, src, w, h, y0, y1, p, pre);
-    case 'holo': return holoDispatch(dst, src, w, h, y0, y1, p, pre);
+    case 'film': return renderFilm(dst, src, w, h, y0, y1, p, pre.gray, pre.blur);
     case 'ripple': return renderRipple(dst, src, w, h, y0, y1, p, pre);
     case 'glass': return renderGlassR(dst, src, w, h, y0, y1, p, pre);
     case 'mosaic': return renderMosaic(dst, src, w, h, y0, y1, p);
@@ -767,7 +791,7 @@ function renderCamo(dst, src, w, h, y0, y1, p, pre) {
       const t = Math.min(p.colors - 1, Math.max(0, Math.floor(n * p.colors * (0.75 + p.sharp / 200))));
       const c = palette[Math.min(palette.length - 1, t)];
       const i = (y * w + x) * 4;
-      dst[i] = c[0]; dst[i + 1] = c[1]; dst[i + 2] = c[2]; dst[i + 3] = src ? src[i * 4 + 3] : 255;
+      dst[i] = c[0]; dst[i + 1] = c[1]; dst[i + 2] = c[2]; dst[i + 3] = src ? src[i + 3] : 255;
     }
   }
 }
@@ -918,7 +942,7 @@ function renderHalftone(dst, src, w, h, y0, y1, p) {
 }
 
 // 素描炭笔：反色减淡 + Sobel 轮廓 + 纸面颗粒。
-function renderSketch(dst, w, h, y0, y1, p, pre) {
+function renderSketch(dst, src, w, h, y0, y1, p, pre) {
   const pencil = p.pencil / 100;
   const rand = mulberry32(4321);
   for (let y = y0; y < y1; y++) {
@@ -939,14 +963,15 @@ function renderSketch(dst, w, h, y0, y1, p, pre) {
 }
 
 // 热感假彩：亮度 → 多段渐变 LUT，与原图按 mix 混合。
-function renderThermal(dst, w, h, y0, y1, p, pre) {
+function renderThermal(dst, src, w, h, y0, y1, p, pre) {
   const stops = HALFTONE_LUT[p.lut] || HALFTONE_LUT.iron;
   const mix = p.mix / 100;
   const contrast = 1 + p.contrast / 60;
   for (let y = y0; y < y1; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      const g = Math.max(0, Math.min(255, (pre.gray[i] - 128) * contrast + 128));
+      // gray 是每像素单通道（步长 1），i 是 RGBA 步长 4
+      const g = Math.max(0, Math.min(255, (pre.gray[i / 4] - 128) * contrast + 128));
       const c = lutColor(stops, g / 255);
       dst[i] = src[i] * (1 - mix) + c[0] * mix;
       dst[i + 1] = src[i + 1] * (1 - mix) + c[1] * mix;
@@ -959,7 +984,9 @@ function renderThermal(dst, w, h, y0, y1, p, pre) {
 // 赛博霓虹：Sobel 边缘按色相着色，辉光 = 边缘图盒模糊，背景压暗。
 function renderNeon(dst, src, w, h, y0, y1, p, pre) {
   const edges = pre.edge;
-  const glow = boxBlur(edges, w, h, Math.max(2, Math.round(Math.min(w, h) / 120)));
+  // 辉光在 prepareStyle 一次性算好：这里按条带分帧调用，整图盒模糊
+  // 若放在渲染函数里会被重复计算约 14 次。
+  const glow = pre.glow;
   const rad = p.hue * Math.PI / 180;
   const core = [
     127.5 + 127.5 * Math.cos(rad),

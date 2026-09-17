@@ -160,7 +160,8 @@ export function renderPastel(dst, src, w, h, y0, y1, p, pre) {
   for (let y = y0; y < y1; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      const softV = pre.blur[i] / 255;
+      // blur 是每像素单通道（步长 1），i 是 RGBA 步长 4
+      const softV = pre.blur[i / 4] / 255;
       const grainN = (rand() - 0.5) * grain * 30;
       const paperN = (rand() - 0.5) * paper * 16;
       for (let c = 0; c < 3; c++) {

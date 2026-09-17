@@ -1,5 +1,6 @@
 // 风格实验室第二批引擎：双色调/水彩/低多边形/像素画/版画木刻/胶片颗粒。
 // 均为纯函数，从 style-lab.js 的 renderRows 分发调用。
+import { mulberry32, makeFbm, extractPalette } from './style-lab-state.mjs';
 
 export function hexRGB(hex) {
   const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
@@ -15,7 +16,8 @@ export function renderDuotone(dst, w, h, y0, y1, p, gray) {
   for (let y = y0; y < y1; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      const g = Math.max(0, Math.min(1, (gray[i] / 255 - mid) * soft + 0.5));
+      // gray 是每像素单通道（步长 1），i 是 RGBA 步长 4
+      const g = Math.max(0, Math.min(1, (gray[i / 4] / 255 - mid) * soft + 0.5));
       dst[i] = shadow[0] + (highlight[0] - shadow[0]) * g;
       dst[i + 1] = shadow[1] + (highlight[1] - shadow[1]) * g;
       dst[i + 2] = shadow[2] + (highlight[2] - shadow[2]) * g;
@@ -195,7 +197,8 @@ export function renderFilm(dst, src, w, h, y0, y1, p, lum, blur) {
       const i = (y * w + x) * 4;
       const n = (rand() - 0.5) * grain * 70;
       const gl = blur[y * w + x] / 255 * halation;
-      let r = src[i * 4], g = src[i * 4 + 1], b = src[i * 4 + 2];
+      // i 已是 RGBA 步长 4，src/dst 直接以 i 索引（原先 i*4 越界 16 倍）
+      let r = src[i], g = src[i + 1], b = src[i + 2];
       r = Math.min(255, r + gl * 60);
       r = Math.min(255, r * (1 + warmth * 0.08));
       b *= 1 - warmth * 0.06;
@@ -203,10 +206,10 @@ export function renderFilm(dst, src, w, h, y0, y1, p, lum, blur) {
       g = g * (1 - fade * 0.12) + fade * 40;
       b = b * (1 - fade * 0.10) + fade * 38;
       const gn = (rand() - 0.5) * grain * 36;
-      dst[i * 4] = Math.max(0, Math.min(255, r + n + gn * 0.7));
-      dst[i * 4 + 1] = Math.max(0, Math.min(255, g + n * 0.7 + gn * 0.7));
-      dst[i * 4 + 2] = Math.max(0, Math.min(255, b + n * 0.4 + gn * 0.4));
-      dst[i * 4 + 3] = src[i * 4 + 3];
+      dst[i] = Math.max(0, Math.min(255, r + n + gn * 0.7));
+      dst[i + 1] = Math.max(0, Math.min(255, g + n * 0.7 + gn * 0.7));
+      dst[i + 2] = Math.max(0, Math.min(255, b + n * 0.4 + gn * 0.4));
+      dst[i + 3] = src[i + 3];
     }
   }
 }

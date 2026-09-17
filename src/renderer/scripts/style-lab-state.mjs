@@ -105,11 +105,12 @@ export function restoreStyleLabSettings(value = {}) {
   for (const [key, [min, max]] of Object.entries(ranges)) {
     if (Number.isFinite(source[key]) && source[key] >= min && source[key] <= max) out[key] = source[key];
   }
-  for (const [key, allowed] of Object.entries(STYLE_ENUMS)) {
-    const option = (allowed.find(([k]) => k === key) || [null, null])[1];
-    if (!option) continue;
-    const match = option.find(([, v]) => v === source[key]);
-    if (match) out[key] = match[1];
+  // 枚举参数按当前样式的枚举表恢复：STYLE_ENUMS 以样式名为键，内层才是
+  // [参数键, [值, 标签]]；写成 [值, 标签] 对，恢复时取 match[0]。
+  for (const [key, options] of STYLE_ENUMS[style] || []) {
+    if (!options) continue;
+    const match = options.find(([v]) => v === source[key]);
+    if (match) out[key] = match[0];
   }
   if (STYLE_ENUMS.sketch) {
     // 布尔参数单独处理（sketch.invert）
@@ -123,13 +124,13 @@ export function restoreStyleLabSettings(value = {}) {
       .slice(0, 8);
     if (colors.length >= 2) out.palette = colors;
   }
-  if (typeof source.exportScale === 'number' && [1, 2].includes(source.exportScale)) out.exportScale = source.exportScale;
+  if (typeof source.exportScale === 'number' && [1, 2, 4].includes(source.exportScale)) out.exportScale = source.exportScale;
   else out.exportScale = 1;
   if (Array.isArray(source.customPresets)) {
-    result.customPresets = source.customPresets
+    out.customPresets = source.customPresets
       .filter(p => p && typeof p.name === 'string' && p.name.trim() && p.settings && typeof p.settings === 'object')
       .slice(0, 10)
-      .map(p => ({ name: p.name.slice(0, 20), settings: { ...p.settings } }));
+      .map(p => ({ name: p.name.slice(0, 20), settings: { ...p.settings, style: undefined, customPresets: undefined } }));
   }
   return out;
 }
