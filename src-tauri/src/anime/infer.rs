@@ -107,6 +107,24 @@ pub(crate) fn advanced_min_component_area(width: u32, height: u32) -> usize {
 }
 
 // Simple model (ISNet / isnetis.onnx) — port of simple_anime_seg.py
+
+/// 模型输出的最终 alpha 概率必须逐点有限且接近 [0,1]：NaN/Inf 会穿过
+/// clamp/sigmoid 一路传播，最终按 Rust 饱和转换语义变 0，表现为“成功”的
+/// 全透明图而非可诊断报错（ONNX 文件损坏/导出异常的典型症状）。ViTMatte
+/// 路径早有同款校验，这里统一覆盖其余三条管线。
+fn validate_alpha_output(values: &[f32], model_label: &str) -> Result<(), String> {
+    if values
+        .iter()
+        .any(|value| !value.is_finite() || !(-0.01..=1.01).contains(value))
+    {
+        Err(format!(
+            "{model_label}模型输出不是有效的 alpha 概率，模型文件可能损坏，请重新下载模型"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn run_simple(base: &Path, rgb: &RgbImage) -> Result<Vec<f32>, String> {
     // 显存不足时释放会话回退 CPU 重跑一次，与 BiRefNet 路径同一套兜底。
     match run_simple_on_provider(base, rgb, true) {
@@ -203,10 +221,12 @@ fn run_simple_on_provider(base: &Path, rgb: &RgbImage, use_gpu: bool) -> Result<
         image::imageops::resize(&source, w, h, FilterType::Triangle).into_raw()
     };
 
-    Ok(resized
+    let mask: Vec<f32> = resized
         .into_iter()
         .map(|value| value.clamp(0.0, 1.0))
-        .collect())
+        .collect();
+    validate_alpha_output(&mask, "标准")?;
+    Ok(mask)
 }
 
 pub(crate) const STRIDES: [u32; 3] = [8, 16, 32];
@@ -424,8 +444,11 @@ fn run_advanced_on_provider(
             let by1 = y_anchor - bboxes[bbox_plane + index];
             let bx2 = x_anchor + bboxes[2 * bbox_plane + index];
             let by2 = y_anchor + bboxes[3 * bbox_plane + index];
-            let eff_w = (seg_w - 2 * pad_w) as f32;
-            let eff_h = (seg_h - 2 * pad_h) as f32;
+            // 内容窗口就是缩放后的 sw×sh（奇数残余 pad 偏在右侧/下侧）：
+            // 反投影分母用内容实际尺寸，而非 seg-2*pad（奇数时会差 1px，4K
+            // 图上检测框中心可有 ~4px 系统性偏差）。
+            let eff_w = sw as f32;
+            let eff_h = sh as f32;
             let x1 = ((bx1 - pad_w as f32) * w as f32 / eff_w).clamp(0.0, w as f32);
             let x2 = ((bx2 - pad_w as f32) * w as f32 / eff_w).clamp(0.0, w as f32);
             let y1 = ((by1 - pad_h as f32) * h as f32 / eff_h).clamp(0.0, h as f32);
@@ -694,6 +717,7 @@ fn run_advanced_on_provider(
     let component_area = advanced_min_component_area(w, h);
     fill_small_background_holes(&mut mask, w, h, component_area);
     remove_small_foreground_components(&mut mask, w, h, component_area);
+    validate_alpha_output(&mask, "高级")?;
     Ok(mask)
 }
 
@@ -873,23 +897,12 @@ pub(crate) fn recover_anime_specialist_detail_alpha(
     if !roi_contains(outer, inner) {
         return Err("高分辨率细节补全：局部上下文范围无效".into());
     }
-    apply_recovery_band(
-        base,
-        rgb,
-        inner,
-        outer,
-        base_alpha,
-        &distance,
-        &mut recovered,
-        &mut changed,
-    )?;
-
-    // 下半部：同门控纵向分带补齐。GT 上 56% 的漏检位于上半部窗口之外，
-    // 带内保持约 2 倍于整图推理的采样密度；多带可能重叠，取 max 只补不擦。
+    // 上半部与下半部各带同价（内含两次全量推理，CPU 可达数十秒）：
+    // 同样先报进度并响应取消，不再作为“第 0 带”之外的隐形前置。
+    let upper = [(inner, outer)];
     let bands: Vec<_> = recovery_lower_bands(base_alpha, width, height);
-    let band_total = bands.len();
-    for (band_index, (inner, outer)) in bands.into_iter().enumerate() {
-        // 带间透传进度并响应取消：每带一次完整推理，CPU 上可达数十秒。
+    let band_total = upper.len() + bands.len();
+    for (band_index, (inner, outer)) in upper.into_iter().chain(bands).enumerate() {
         on_band(band_index, band_total);
         if crate::safety::task_cancel_pending() {
             return Err("任务已取消".into());
@@ -1704,6 +1717,7 @@ pub(crate) fn try_run_birefnet_native_path(
 
     // 与预处理相反，直接把模型的方形输出缩回原图大小；不裁切任何有效区域。
     // 上采样与后续柔化在 finish_birefnet_mask 中统一完成。
+    validate_alpha_output(&native, "BiRefNet")?;
     Ok((native, mask_w, mask_h))
 }
 

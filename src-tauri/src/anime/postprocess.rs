@@ -862,6 +862,14 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
             let padded_bottom = (bottom + TILE_PAD).min(h);
             let padded_left = left.saturating_sub(TILE_PAD);
             let padded_right = (right + TILE_PAD).min(w);
+            let cancelled = || crate::safety::task_cancel_pending();
+            if cancelled() {
+                return (
+                    (left, top, right, bottom),
+                    CfTileOutcome::Cancelled,
+                    Vec::new(),
+                );
+            }
             let (outcome, patch) = cf_solve_tile(
                 rgb,
                 &foreground_known,
@@ -878,6 +886,7 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
                 padded_top,
                 padded_right,
                 padded_bottom,
+                &cancelled,
             );
             ((left, top, right, bottom), outcome, patch)
         })
@@ -892,6 +901,7 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
                 diagnostics.solved_tiles += 1;
                 diagnostics.anchored_unknown_rows += anchored_rows;
             }
+            CfTileOutcome::Cancelled => {}
             CfTileOutcome::OneSidedTrimap => diagnostics.skipped_one_sided_tiles += 1,
             CfTileOutcome::InvalidMatrix => diagnostics.invalid_matrix_tiles += 1,
             CfTileOutcome::UnstableSolver => diagnostics.unstable_solver_tiles += 1,
@@ -906,6 +916,7 @@ enum CfTileOutcome {
     OneSidedTrimap,
     InvalidMatrix,
     UnstableSolver,
+    Cancelled,
 }
 
 fn cf_largest_component(mask: &[f32], w: usize, h: usize) -> Option<Vec<bool>> {
@@ -1016,6 +1027,7 @@ fn cf_solve_tile(
     top: usize,
     right: usize,
     bottom: usize,
+    cancelled: &dyn Fn() -> bool,
 ) -> (CfTileOutcome, Vec<(usize, f32)>) {
     const UNMAPPED: usize = usize::MAX;
     const EPSILON: f64 = 1e-7;
@@ -1241,7 +1253,11 @@ fn cf_solve_tile(
     if !rz.is_finite() {
         return (CfTileOutcome::UnstableSolver, Vec::new());
     }
-    for _ in 0..MAX_ITERATIONS {
+    for iteration in 0..MAX_ITERATIONS {
+        // CG 单次迭代可达数千维：每 128 次轮询取消，停止按钮不必等满一轮求解
+        if iteration % 128 == 0 && cancelled() {
+            return (CfTileOutcome::Cancelled, Vec::new());
+        }
         let applied = multiply(&direction);
         let denominator = direction
             .iter()

@@ -122,7 +122,9 @@ pub(crate) fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() {
-            if path.file_name()?.to_str()? == name {
+            // 用 OsStr 相等比较：遇到任一非 UTF-8 文件名不能让整棵搜索短路
+            // 放弃（旧写法 to_str()? 会把整次查找误报为“未找到”）。
+            if path.file_name() == Some(std::ffi::OsStr::new(name)) {
                 return Some(path);
             }
         } else if let Some(found) = find_file(&path, name) {
@@ -713,7 +715,12 @@ pub fn install_gpu_ort(app: Option<&AppHandle>, base: &Path) -> Result<(), Strin
     if !last_error.is_empty() {
         return Err(last_error);
     }
-    extract_gpu_ort_dlls(&archive, &gpu_root)?;
+    // 解压失败也要清掉已校验完好的 wheel：留档不仅占 244MB，还会让重试的
+    // 续传基准（.whl.part）对不上而全量重下——本地档其实可以直接复用。
+    if let Err(error) = extract_gpu_ort_dlls(&archive, &gpu_root) {
+        let _ = fs::remove_file(&archive);
+        return Err(error);
+    }
     let _ = fs::remove_file(&archive);
     if !gpu_ort_ready(base) {
         return Err("GPU 运行库解压后不完整，请重新下载。".into());

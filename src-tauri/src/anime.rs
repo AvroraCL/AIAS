@@ -1,6 +1,8 @@
 //! Anime matting models: catalog, download/uninstall into the app data folder,
 //! and built-in ONNX inference (no ComfyUI required at runtime).
 
+// ImageBuffer/Luma 只被 cfg(test) 的 AB 调试导出用到
+#[cfg(test)]
 use image::{ImageBuffer, Luma};
 use serde::Serialize;
 use std::fs;
@@ -468,6 +470,8 @@ pub fn cutout_with_options(
     on_phase(0.70, "推理完成");
 
     // AB 回归可视化：引导滤波前的原始模型掩码，供滤波参数对比。
+    // 全仓 AB 开关一致只进测试构建，避免环境变量改变用户产物。
+    #[cfg(test)]
     if std::env::var_os("AIAS_AB_DEBUG").is_some() {
         let stem = output
             .file_stem()
@@ -556,6 +560,7 @@ pub fn cutout_with_options(
     on_phase(1.0, "完成");
 
     // AB 回归可视化：设 AIAS_AB_DEBUG=1 时对单张图导出 matte 灰度图。
+    #[cfg(test)]
     if std::env::var_os("AIAS_AB_DEBUG").is_some() {
         let stem = output
             .file_stem()
