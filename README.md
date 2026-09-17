@@ -31,11 +31,13 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、风格�
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.6.0
+### 下载 v5.6.1
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.6.0_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.6.0/AIAS_5.6.0_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+| [AIAS_5.6.1_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.6.1/AIAS_5.6.1_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+
+v5.6.1：修复「检查 UV」按钮失败、通知区界面冻结、涂装管理竞态等 20 项审计确认问题（详见 Release 说明）。
 
 v5.5.18 重点修复：
 
