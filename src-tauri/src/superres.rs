@@ -34,7 +34,8 @@ pub const SUPERRES_MODELS: &[SuperResSpec] = &[
             size: ANIME_6B_SIZE,
             mirror_url: "https://hf-mirror.com/RekluzLabs/realesrgan_anime6b.onnx/resolve/main/realesrgan_anime6b.onnx",
             origin_url: "https://huggingface.co/RekluzLabs/realesrgan_anime6b.onnx/resolve/main/realesrgan_anime6b.onnx",
-            sha256: "",
+            // LFS 官方哈希（HF API tree 元数据）
+            sha256: "45bd54934aeabe8df744c8fdacb9e8846c9b55cb4e60c499db77405d1625a667",
         },
     },
     SuperResSpec {
@@ -45,7 +46,7 @@ pub const SUPERRES_MODELS: &[SuperResSpec] = &[
             size: GENERAL_X4_SIZE,
             mirror_url: "https://hf-mirror.com/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx",
             origin_url: "https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx",
-            sha256: "",
+            sha256: "5c586662929cbc686c1a5c38d9c060dbdb4ea5863a1f7672b8c0761e6b89c033",
         },
     },
 ];
@@ -122,7 +123,27 @@ pub fn download_model(app: Option<&AppHandle>, base: &Path, id: &str) -> Result<
     let mut last_error = String::from("无可用下载源");
     for url in [file.mirror_url, file.origin_url] {
         match curl_download(url, &dest, Some(file.size), &progress) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                // 固化了 SHA256 的文件在下载后校验完整性（与抠图模型同语义）：
+                // 仅靠字节数挡不住同尺寸的损坏或被替换文件。失败即删档换镜像。
+                if !file.sha256.is_empty() {
+                    match crate::model_bake::sha256_of_file(&dest) {
+                        Ok(actual) if actual == file.sha256 => return Ok(()),
+                        Ok(actual) => {
+                            last_error = format!(
+                                "SHA256 不匹配（实际 {actual}，期望 {}）",
+                                file.sha256
+                            );
+                        }
+                        Err(error) => last_error = format!("校验读取失败：{error}"),
+                    }
+                    if dest.exists() {
+                        let _ = fs::remove_file(&dest);
+                    }
+                    continue;
+                }
+                return Ok(());
+            }
             Err(error) => {
                 last_error = error;
                 if dest.exists() {

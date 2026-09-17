@@ -77,7 +77,8 @@ pub(crate) const HAIR_REFINER_FILES: &[ModelFileSpec] = &[ModelFileSpec {
     size: HAIR_REFINER_SIZE,
     mirror_url: "https://hf-mirror.com/Xenova/vitmatte-small-distinctions-646/resolve/da379332422700028fcade44e2cb915b6eed3548/onnx/model.onnx",
     origin_url: "https://huggingface.co/Xenova/vitmatte-small-distinctions-646/resolve/da379332422700028fcade44e2cb915b6eed3548/onnx/model.onnx",
-            sha256: "",
+    // LFS 官方哈希（HF API tree 元数据，rev da379332…）
+    sha256: "a1cf48234c369faa3ea1711981d961fe1ec71f51e593f9d6553aa5a0e7d557e3",
 }];
 
 pub const MODELS: &[ModelSpec] = &[
@@ -116,7 +117,8 @@ pub const MODELS: &[ModelSpec] = &[
             size: BIREFNET_GENERAL_1024_FP16_SIZE,
             mirror_url: "https://hf-mirror.com/onnx-community/BiRefNet-ONNX/resolve/534d3c82d3bb8b2f0867db6dfbc3a525b8e42f67/onnx/model_fp16.onnx",
             origin_url: "https://huggingface.co/onnx-community/BiRefNet-ONNX/resolve/534d3c82d3bb8b2f0867db6dfbc3a525b8e42f67/onnx/model_fp16.onnx",
-            sha256: "",
+            // LFS 官方哈希（HF API tree 元数据，rev 534d3c82…）
+            sha256: "3654c741eb80bd926ada8fed1713b506ccf8d30eb1f6487e87eb9f234f33df09",
         }],
     },
     ModelSpec {
