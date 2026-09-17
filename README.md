@@ -28,17 +28,19 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、AI 抠�
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.5.18
+### 下载 v5.5.19
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.5.18_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.5.18/AIAS_5.5.18_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+| [AIAS_5.5.19_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.5.19/AIAS_5.5.19_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
 
 v5.5.18 重点修复：
 
 - **修复模型导入崩溃（0xc0000409）的根因**：烘焙工作进程不再依赖系统 PATH 上的 libstdc++ 运行库 DLL——装有 Git 等工具的机器上曾被抢载不匹配版本，导致 xatlas 展开线程随机崩溃
 - AI 抠图：「边界精修」「细节补全」阶段现在可以随时停止，NaN 输出直接报模型损坏而不是输出全透明图
 - 烘焙 16 位法线/位置图错乱修复；UV 重叠大模型烘焙不再被看门狗误杀
+- 材质列表勾选：按住左键滑动批量勾选，并修复单击翻转失效（5.5.18 遗留）
+- 超分与抠图回退链的停止响应更及时（分块级取消）
 
 历史版本与更新日志见 [Releases](https://github.com/AvroraCL/AIAS/releases)。
 
