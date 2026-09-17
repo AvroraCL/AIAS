@@ -906,6 +906,17 @@ fn export_glb(
         binary.push(0);
     }
     let total = 12 + 8 + json_bytes.len() + 8 + binary.len();
+    // GLB 长度字段是 u32：超限时 as 截断会静默产出损坏模型，导入端报
+    // 不可读错误。提前闸掉并给可行动提示。
+    if total > u32::MAX as usize
+        || json_bytes.len() > u32::MAX as usize
+        || binary.len() > u32::MAX as usize
+    {
+        return Err("烘焙模型超过 GLB 4GiB 上限，请拆分模型或降低分辨率后重试".into());
+    }
+    let total = total as u32;
+    let json_len = json_bytes.len() as u32;
+    let binary_len = binary.len() as u32;
     let mut glb_temp = tempfile::NamedTempFile::new_in(output).map_err(|e| e.to_string())?;
     let mut writer = std::io::BufWriter::new(glb_temp.as_file_mut());
     writer
@@ -915,17 +926,17 @@ fn export_glb(
         .write_all(&2_u32.to_le_bytes())
         .map_err(|e| e.to_string())?;
     writer
-        .write_all(&(total as u32).to_le_bytes())
+        .write_all(&total.to_le_bytes())
         .map_err(|e| e.to_string())?;
     writer
-        .write_all(&(json_bytes.len() as u32).to_le_bytes())
+        .write_all(&json_len.to_le_bytes())
         .map_err(|e| e.to_string())?;
     writer
         .write_all(&0x4E4F534A_u32.to_le_bytes())
         .map_err(|e| e.to_string())?;
     writer.write_all(&json_bytes).map_err(|e| e.to_string())?;
     writer
-        .write_all(&(binary.len() as u32).to_le_bytes())
+        .write_all(&binary_len.to_le_bytes())
         .map_err(|e| e.to_string())?;
     writer
         .write_all(&0x004E4942_u32.to_le_bytes())
@@ -979,8 +990,9 @@ fn gltf(path: &Path, out: &mut Model) -> Result<(), String> {
         .default_scene()
         .or_else(|| document.scenes().next())
         .ok_or("glTF 没有场景")?;
+    let mut seen = std::collections::HashSet::<usize>::new();
     for node in scene.nodes() {
-        visit(node, Mat4::IDENTITY, &buffers, default, out)?;
+        visit(node, Mat4::IDENTITY, &buffers, default, 0, &mut seen, out)?;
     }
     Ok(())
 }
@@ -989,8 +1001,18 @@ fn visit(
     parent: Mat4,
     buffers: &[gltf::buffer::Data],
     default: usize,
+    depth: usize,
+    seen: &mut std::collections::HashSet<usize>,
     out: &mut Model,
 ) -> Result<(), String> {
+    // glTF 解析器不校验节点图：环状引用或数万层嵌套会让递归栈溢出硬崩
+    // （EXCEPTION_STACK_OVERFLOW 无法安全落 dump）。显式拒绝，给出可读错误。
+    if depth > 256 {
+        return Err(format!("节点 {} 嵌套层级过深（>256），请简化层级后导出", node.index()));
+    }
+    if !seen.insert(node.index()) {
+        return Err(format!("节点 {} 被循环引用，请修复模型节点层级", node.index()));
+    }
     if node.skin().is_some() {
         return Err(format!("节点 {} 含蒙皮，请导出静态网格", node.index()));
     }
@@ -1081,7 +1103,7 @@ fn visit(
         }
     }
     for child in node.children() {
-        visit(child, transform, buffers, default, out)?;
+        visit(child, transform, buffers, default, depth + 1, seen, out)?;
     }
     Ok(())
 }
