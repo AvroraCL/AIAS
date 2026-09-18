@@ -65,33 +65,52 @@ fn command(app: &AppHandle) -> Result<Command, String> {
 
 /// 把工作进程挂入 KILL_ON_JOB_CLOSE 的 Job Object。宿主进程退出（含 panic
 /// 闪退）时内核关闭 job 句柄并随之终止工作进程，烘焙中关窗不再产生继续
-/// 占用 GPU/内存、往缓存写盘的孤儿进程。HANDLE 包装类型不持有句柄所有权。
+/// 占用 GPU/内存、往缓存写盘的孤儿进程。
 #[cfg(windows)]
-fn attach_kill_on_close(child: &std::process::Child) {
+struct WorkerJob(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for WorkerJob {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn attach_kill_on_close(child: &std::process::Child) -> Option<WorkerJob> {
     use std::os::windows::io::AsRawHandle;
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows::core::PCWSTR;
     // let-else 的 scrutinee 不能直接是 unsafe 块（`} else` 解析歧义）。
     let created = unsafe { CreateJobObjectW(None, PCWSTR::null()) };
     let Ok(job) = created else {
-        return;
+        return None;
     };
     let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    unsafe {
-        let _ = SetInformationJobObject(
+    let configured = unsafe {
+        SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
             &info as *const _ as *const std::ffi::c_void,
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
-        let _ = AssignProcessToJobObject(job, HANDLE(child.as_raw_handle() as _));
+        )
+    };
+    let assigned = unsafe { AssignProcessToJobObject(job, HANDLE(child.as_raw_handle() as _)) };
+    if configured.is_err() || assigned.is_err() {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(job);
+        }
+        return None;
     }
+    Some(WorkerJob(job))
 }
 /// 工作进程无输出的兜底上限：正常任务会持续产出 progress/result 行，
 /// 超时即视为挂死。挂死的任务会一直持有全局任务锁，必须由这里终止。
@@ -113,8 +132,10 @@ fn execute(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("启动烘焙工作进程失败：{e}"))?;
+    // RAII 持有到 worker 完全退出；提前返回时 Drop 也会关闭 Job Object 并
+    // 终止仍存活的子进程，不再每次任务泄漏一个内核句柄。
     #[cfg(windows)]
-    attach_kill_on_close(&child);
+    let _worker_job = attach_kill_on_close(&child);
     #[cfg(feature = "bake-validation")]
     WORKER_IDS.lock().unwrap().insert(job.into(), child.id());
     let stdout = child.stdout.take().ok_or("工作进程缺失输出")?;
@@ -823,9 +844,9 @@ fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result
         .map_err(|error| format!("烘焙缓存目录不可用：{error}"))?;
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
     let destination = std::fs::canonicalize(directory).map_err(|e| e.to_string())?;
-    if root.starts_with(&destination) {
+    if root.starts_with(&destination) || destination.starts_with(&root) {
         return Err(
-            "导出目录不能是烘焙缓存目录或其上级：不同任务的贴图会互相覆盖，请另选文件夹。"
+            "导出目录不能位于烘焙缓存目录内，也不能是缓存目录的上级：不同任务的贴图会互相覆盖，请另选文件夹。"
                 .into(),
         );
     }
@@ -979,6 +1000,11 @@ mod tests {
             output.path(),
         );
         assert!(rejected.unwrap_err().contains("缓存目录之外"));
+        let cache_child = cache.path().join("manual-export");
+        let rejected_destination = export_files(cache.path(), &[a.display().to_string()], &cache_child);
+        assert!(rejected_destination
+            .unwrap_err()
+            .contains("不能位于烘焙缓存目录内"));
         let _ = std::fs::remove_file(&outside);
     }
 

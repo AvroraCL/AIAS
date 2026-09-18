@@ -108,6 +108,11 @@ test('model bake export locks duplicate clicks while allowing an old result duri
   assert.match(script, /if \(!desktop \|\| !results\.length \|\| exporting\) return/);
   assert.match(script, /setActionBusy\(button, true\)/);
   assert.match(script, /上次结果 ·/);
+  assert.match(script, /element\.dataset\.bakeResultAction !== undefined/);
+  assert.match(script, /\$\('map-preview'\)\.disabled = exporting \|\| !results\.length/);
+  const runHandler = script.slice(script.indexOf("$('run').onclick"), script.indexOf("$('cancel').onclick"));
+  assert.doesNotMatch(runHandler, /failedMaterials = new Set/);
+  assert.match(runHandler, /if \(disposed && model\)[\s\S]*?invoke\('bake_release', \{ handle: released\.handle \}\)/);
 });
 
 test('model bake produces smart-material mesh maps and applies results to the model preview', () => {
@@ -117,7 +122,19 @@ test('model bake produces smart-material mesh maps and applies results to the mo
     assert.match(state, new RegExp(`${kind}: true`));
   }
   assert.match(script, /async function applyMapPreview/);
-  assert.match(script, /if \(view === 'model'\) await applyMapPreview\(defaultPreview, false, false\)/);
+  assert.match(script, /function retainResultTextures\(keep\)/);
+  assert.match(script, /retainResultTextures\(new Set\(textures\.values\(\)\)\)/);
+  assert.match(script, /const mismatched = new Set\(/);
+  assert.match(script, /resetPreviewMaterials\(mesh => mismatched\.has\(mesh\.userData\.material\)\)/);
+  assert.match(script, /resultChannels = \{ \.\.\.\(data\.selectedChannels \|\| channels\) \}/);
+  assert.match(script, /\(data\.unfinished \|\| \[\]\)\.map\(item => Number\(item\.material\)\)/);
+  assert.match(script, /results\.some\(file => file\.kind === 'ao'\) \? 'material'/);
+  assert.match(script, /kind === 'material' \? '本次结果没有 AO，无法显示着色 \+ AO。'/);
+  assert.match(script, /applyMapPreview\(stored\.workspace\.mapPreview, false, false\)/);
+  assert.match(script, /pendingResultPreview = defaultPreview/);
+  assert.match(script, /next === 'model' && pendingResultPreview/);
+  assert.match(script, /async function applyMapPreview[\s\S]*?pendingResultPreview = '';/);
+  assert.match(script, /await applyMapPreview\(defaultPreview, false, false\)/);
   assert.match(script, /apply\.textContent = '在模型上预览'/);
   assert.match(script, /new THREE\.MeshBasicMaterial\(\{ map: texture/);
   assert.match(script, /imageOrientation: 'flipY'/);
@@ -133,5 +150,8 @@ test('model bake keeps the current view and exposes live structured stages', () 
   assert.match(script, /data\.mapPosition/);
   assert.match(script, /if \(switchView\) setView\('model'\)/);
   assert.doesNotMatch(script, /setView\('results'\)/);
+  assert.match(script, /addEventListener\('lostpointercapture', endUvPan\)/);
+  assert.match(script, /removeEventListener\('blur', endUvPan\)/);
+  assert.match(script, /\$\('viewport-note'\)\.hidden = !model \|\| view !== 'model' \|\| running \|\| loading/);
   assert.match(css, /\.bake-live-stages span\.active/);
 });

@@ -12,11 +12,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   let failedMaterials = new Set();
   let narrowPanel = 'settings';
   const resultTextures = new Map();
-  let previewMaterialRevision = 0, resultTextureEpoch = 0, lastBakeProgress = 0;
+  let previewMaterialRevision = 0, resultTextureEpoch = 0, lastBakeProgress = 0, pendingResultPreview = '';
   let resultChannels = {};
   let capabilitiesRequested = false;
   let saveTimer, renderFrame, unlisten, outputDirectory = '', resultHandle = '', reportRevision = 0, orthographicHeight = 2, renderWidth = 0, renderHeight = 0;
   let importRevision = 0, previewRequest = 0, uvDrawRevision = 0;
+  let endUvPan = () => {};
   // UV 视图变换：zoom=1 时 pan 恒为基准偏移；issue 定位自动居中放大
   let uvZoom = 1, uvPanX = 0, uvPanY = 0;
   const previewPending = new Map();
@@ -354,6 +355,15 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     return material;
   }
 
+  function resetPreviewMaterials(predicate = () => true) {
+    for (const mesh of group?.children || []) {
+      if (!predicate(mesh)) continue;
+      const previous = mesh.material;
+      mesh.material = createBaseMaterial();
+      previous.dispose();
+    }
+  }
+
   function clearResultTextures() {
     ++resultTextureEpoch;
     ++previewMaterialRevision;
@@ -362,6 +372,15 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       texture.dispose();
     });
     resultTextures.clear();
+  }
+
+  function retainResultTextures(keep) {
+    for (const [key, texture] of resultTextures) {
+      if (keep.has(texture)) continue;
+      texture.image?.close?.();
+      texture.dispose();
+      resultTextures.delete(key);
+    }
   }
 
   function loadResultTexture(file, usage) {
@@ -396,17 +415,22 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   }
 
   async function applyMapPreview(kind = stored.workspace.mapPreview, announce = true, switchView = true) {
+    // 显式应用结果时消费掉“切回模型后应用默认结果”的待办，避免 setView('model')
+    // 再启动一次默认预览并覆盖用户刚选择的贴图。
+    pendingResultPreview = '';
     if (!group || !model || !results.length) return;
-    const mismatched = [...materials].some(id => (resultChannels[id] ?? 0) !== (channels[id] ?? 0));
-    if (mismatched) {
+    const mismatched = new Set([...materials].filter(id => (resultChannels[id] ?? 0) !== (channels[id] ?? 0)));
+    if (mismatched.size) {
+      resetPreviewMaterials(mesh => mismatched.has(mesh.userData.material));
       status('烘焙结果使用了不同的 UV 通道，请切回烘焙通道后预览。');
       return;
     }
     const revision = ++previewMaterialRevision;
     const sourceKind = kind === 'material' ? 'ao' : kind;
     const files = results.filter(file => file.kind === sourceKind);
-    if (kind !== 'material' && !files.length) {
-      status('本次结果没有生成该贴图。');
+    if (!files.length) {
+      $('map-preview').value = stored.workspace.mapPreview;
+      status(kind === 'material' ? '本次结果没有 AO，无法显示着色 + AO。' : '本次结果没有生成该贴图。');
       return;
     }
     $('map-preview').value = kind;
@@ -430,6 +454,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         : new THREE.MeshBasicMaterial({ map: texture, color: texture ? 0xffffff : 0x2c2d30, side: THREE.DoubleSide, wireframe: stored.workspace.wireframe });
       previous.dispose();
     }
+    // 一种 1024 预览 × 25 材质约占 100 MB；若把浏览过的全部 Mesh Map
+    // 永久缓存，完整切换一轮可超过 700 MB。材质已解除旧引用后只保留当前组。
+    retainResultTextures(new Set(textures.values()));
     stored.workspace.mapPreview = kind;
     if (switchView) setView('model');
     syncDisplayControls();
@@ -548,7 +575,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       const next = offset == null ? new Float32Array(batch.vertexCount * 2) : new Float32Array(geometry.buffer, offset, batch.vertexCount * 2);
       mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(next, 2));
     }
-    if (results.length) applyMapPreview(stored.workspace.mapPreview, false);
+    if (results.length) applyMapPreview(stored.workspace.mapPreview, false, false).catch(error => notify(`贴图预览加载失败：${error}`));
   }
 
   // 取景与网格辅助覆盖整个模型（对象不再参与筛选）。
@@ -904,7 +931,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     root.querySelector('.bake-workspace').dataset.view = next;
     if (next === 'uv' && model) { stored.workspace.outlinerOpen = true; narrowPanel = 'outliner'; persist(); }
     updatePanelState('outliner'); updatePanelState('settings');
-    $('viewport-note').hidden = !model || next !== 'model';
+    $('viewport-note').hidden = !model || next !== 'model' || running || loading;
     root.querySelector('.bake-display-tools').hidden = !model || next !== 'model';
     root.querySelectorAll('[data-bake-view]').forEach(button => {
       const selected = button.dataset.bakeView === next;
@@ -913,13 +940,18 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     });
     if (next === 'uv') drawUv();
     refresh();
+    if (next === 'model' && pendingResultPreview) {
+      const kind = pendingResultPreview;
+      pendingResultPreview = '';
+      applyMapPreview(kind, false, false).catch(error => notify(`贴图预览加载失败：${error}`));
+    }
   }
 
   function refresh() {
     const locked = running || loading || exporting || busy();
     root.querySelector('.bake-workspace').classList.toggle('has-model', Boolean(model));
     root.querySelectorAll('input, select, button').forEach(element => {
-      const staysInteractive = element.dataset.bakeView || element.dataset.bakeDisplay || element.dataset.bakePanelToggle || element.id === 'bake-cancel';
+      const staysInteractive = element.dataset.bakeView || element.dataset.bakeDisplay || element.dataset.bakePanelToggle || element.dataset.bakeResultAction !== undefined || element.id === 'bake-cancel';
       element.disabled = locked && !staysInteractive;
     });
     $('import').disabled = locked || !desktop;
@@ -933,6 +965,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('cancel').disabled = cancelling;
     $('progress').hidden = !(running || loading);
     $('live-progress').hidden = !running;
+    $('viewport-note').hidden = !model || view !== 'model' || running || loading;
     const count = materials.size * meshMapKeys.filter(key => stored[key]).length;
     $('output-summary').textContent = `${materials.size} 个材质 · 预计 ${count} 张贴图`;
     const rayMaps = stored.ao || stored.thickness;
@@ -962,7 +995,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : exporting ? '正在导出结果…' : reason || `已就绪 · ${count} 张贴图`;
     $('open-output').disabled = exporting || !desktop || !outputDirectory;
     root.querySelectorAll('[data-bake-export]').forEach(button => button.disabled = exporting || !desktop || !results.length);
-    $('map-preview').disabled = locked || !results.length;
+    // 新任务运行时，旧结果仍应能切换并应用到模型；这里只在导出切换句柄的
+    // 短窗口内锁定，避免用户误以为旧结果已消失。
+    $('map-preview').disabled = exporting || !results.length;
     const resultHint = root.querySelector('.bake-results-toolbar small');
     if (resultHint?.dataset.baseText) resultHint.textContent = running ? `上次结果 · ${resultHint.dataset.baseText}` : resultHint.dataset.baseText;
     $('cancel').hidden = !running || !active;
@@ -1039,6 +1074,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       channels = nextChannels;
       results = [];
       resultHandle = '';
+      pendingResultPreview = '';
       $('results').replaceChildren();
       installMeshes(prepared); prepared = null;
       pendingModel = null;
@@ -1095,7 +1131,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (data.resultHandle) invoke('bake_result_release', { resultHandle: data.resultHandle }).catch(() => {});
       return;
     }
-    failedMaterials = new Set(data.failedMaterials || []);
+    // worker 正常返回 failedMaterials；进程崩溃/强制取消的恢复路径返回
+    // unfinished 明细。两者都要映射到材质徽标，否则部分结果看起来像全量成功。
+    failedMaterials = new Set([
+      ...(data.failedMaterials || []),
+      ...(data.unfinished || []).map(item => Number(item.material)),
+    ].filter(Number.isFinite));
     const previousHandle = resultHandle;
     clearResultTextures();
     // 贴图已 dispose 并 close() 位图，但网格材质可能仍引用它们（本函数只在
@@ -1103,14 +1144,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     // 视图时渲染已释放的位图。模型视图下随后的 applyMapPreview 会重新应用。
     stored.workspace.mapPreview = 'material';
     $('map-preview').value = 'material';
-    for (const mesh of group?.children || []) {
-      const previous = mesh.material;
-      mesh.material = createBaseMaterial();
-      previous.dispose();
-    }
+    resetPreviewMaterials();
     results = data.files || [];
     resultHandle = data.resultHandle || '';
-    resultChannels = { ...channels };
+    // 以 worker 返回的实际通道为准。任务运行期间 UI 仍可切换视图，后续版本也
+    // 可能允许调整通道；用当前 UI 状态会让不匹配的贴图被错误套到模型上。
+    resultChannels = { ...(data.selectedChannels || channels) };
     outputDirectory = data.directory;
     $('results').replaceChildren();
     const toolbar = document.createElement('div');
@@ -1122,6 +1161,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     exportButton.onclick = () => exportResults(exportButton);
     const openCache = document.createElement('button');
     openCache.className = 'secondary-action'; openCache.type = 'button';
+    openCache.dataset.bakeResultAction = '';
     openCache.textContent = '打开缓存目录';
     openCache.onclick = () => openPath(data.directory).catch(notify);
     const hint = document.createElement('small');
@@ -1147,11 +1187,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       image.alt = title.textContent;
       const preview = document.createElement('button');
       preview.className = 'bake-result-preview';
+      preview.dataset.bakeResultAction = '';
       preview.type = 'button'; preview.title = '放大查看贴图';
       preview.setAttribute('aria-label', `放大 ${title.textContent}`);
       preview.onclick = () => {
         const dialog = document.createElement('dialog'); dialog.className = 'bake-image-dialog';
-        const close = document.createElement('button'); close.textContent = '关闭'; close.onclick = () => dialog.close();
+        const close = document.createElement('button'); close.textContent = '关闭'; close.dataset.bakeResultAction = ''; close.onclick = () => dialog.close();
         const full = image.cloneNode();
         dialog.append(close, full); root.append(dialog);
         dialog.addEventListener('close', () => dialog.remove(), {once:true}); dialog.showModal();
@@ -1159,26 +1200,34 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       preview.append(image);
       card.append(preview, title);
       const reveal = document.createElement('button'); reveal.className = 'secondary-action'; reveal.textContent = '打开文件';
+      reveal.dataset.bakeResultAction = '';
       reveal.onclick = () => openPath(file.path).catch(notify); card.append(reveal);
       const apply = document.createElement('button');
       apply.className = 'secondary-action'; apply.type = 'button';
+      apply.dataset.bakeResultAction = '';
       apply.textContent = '在模型上预览';
-      apply.onclick = () => applyMapPreview(file.kind);
+      apply.onclick = () => applyMapPreview(file.kind).catch(error => notify(`贴图预览加载失败：${error}`));
       card.append(apply);
       $('results').append(card);
     }
     if (previousHandle && previousHandle !== resultHandle) invoke('bake_result_release', { resultHandle: previousHandle }).catch(() => {});
     lists(); // 失败材质在左侧列表同步打 ⚠ 标记
-    const defaultPreview = results.some(file => file.kind === 'ao') ? 'ao' : (results.find(file => file.kind !== 'uv')?.kind || 'uv');
-    if (view === 'model') await applyMapPreview(defaultPreview, false, false);
-    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${view === 'model' ? ' · 已更新模型预览' : ' · 当前视图保持不变'}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
+    const defaultPreview = results.some(file => file.kind === 'ao') ? 'material' : (results.find(file => file.kind !== 'uv')?.kind || 'uv');
+    if (view === 'model') {
+      pendingResultPreview = '';
+      await applyMapPreview(defaultPreview, false, false);
+    } else {
+      // 不改变用户所在的 UV/结果页；切回模型时再解码贴图，避免隐藏视口一次性
+      // 占用大量内存，也确保模型不会继续显示上一次烘焙或无贴图材质。
+      pendingResultPreview = defaultPreview;
+    }
+    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${view === 'model' ? ' · 已更新模型预览' : ' · 当前视图保持不变，切回模型后显示新结果'}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
   }
 
   $('run').onclick = async () => {
     if (blocker()) return;
     job = crypto.randomUUID();
     running = true; cancelling = false; lastBakeProgress = 0; $('progress').value = 0;
-    failedMaterials = new Set();
     refresh();
     updateBakeProgress({ phase: '准备烘焙任务', stage: 'prepare', progress: 0, materialTotal: materials.size, mapTotal: meshMapKeys.filter(key => stored[key]).length });
     try {
@@ -1205,6 +1254,13 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     } finally {
       running = false; cancelling = false;
       job = '';
+      // dispose 发生在烘焙中时不能立即删除 worker 正在读取的模型缓存；任务
+      // 收尾后补释放，避免切换功能/HMR 后模型 TempDir 一直留到进程退出。
+      if (disposed && model) {
+        const released = model;
+        model = null;
+        invoke('bake_release', { handle: released.handle }).catch(() => {});
+      }
       refresh();
     }
   };
@@ -1231,7 +1287,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   $('focus').onclick = () => frameSelection(false);
   $('projection').onclick = () => setProjection(stored.workspace.projection === 'perspective' ? 'orthographic' : 'perspective');
   $('map-preview').value = stored.workspace.mapPreview;
-  $('map-preview').onchange = () => applyMapPreview($('map-preview').value);
+  $('map-preview').onchange = () => applyMapPreview($('map-preview').value).catch(error => notify(`贴图预览加载失败：${error}`));
   $('wireframe').onclick = () => {
     stored.workspace.wireframe = !stored.workspace.wireframe;
     syncDisplayControls();
@@ -1284,6 +1340,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       drawUv();
     }, { passive: false });
     let panning = null;
+    endUvPan = () => { panning = null; };
     canvas.addEventListener('pointerdown', event => {
       if (view !== 'uv' || event.button !== 0) return;
       panning = { x: event.clientX, y: event.clientY, panX: uvPanX, panY: uvPanY };
@@ -1296,7 +1353,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       clampPan();
       drawUv();
     });
-    canvas.addEventListener('pointerup', () => { panning = null; });
+    canvas.addEventListener('pointerup', endUvPan);
+    canvas.addEventListener('pointercancel', endUvPan);
+    canvas.addEventListener('lostpointercapture', endUvPan);
     canvas.addEventListener('dblclick', () => {
       uvZoom = 1; uvPanX = 0; uvPanY = 0;
       drawUv();
@@ -1372,6 +1431,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   document.addEventListener('keydown', keyboard);
   document.addEventListener('keyup', keyboard);
   window.addEventListener('blur', resetAltRotate);
+  window.addEventListener('blur', endUvPan);
   const endCheckboxDrag = () => { checkboxDrag = null; };
   window.addEventListener('pointerup', endCheckboxDrag);
   window.addEventListener('pointercancel', endCheckboxDrag);
@@ -1454,6 +1514,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       document.removeEventListener('keydown', keyboard);
       document.removeEventListener('keyup', keyboard);
       window.removeEventListener('blur', resetAltRotate);
+      window.removeEventListener('blur', endUvPan);
       window.removeEventListener('pointerup', endCheckboxDrag);
       window.removeEventListener('pointercancel', endCheckboxDrag);
       clearResultTextures();

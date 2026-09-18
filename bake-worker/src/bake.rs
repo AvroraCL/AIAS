@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Options {
     pub job_id: String,
@@ -75,6 +75,22 @@ pub struct Output {
     pub material: usize,
     pub kind: String,
     pub path: PathBuf,
+}
+
+pub(crate) fn estimated_output_bytes(options: &Options, pixels: u64) -> u64 {
+    let rgba8_maps =
+        usize::from(options.uv) + usize::from(options.id) + usize::from(options.normal);
+    let precision_rgba_maps = usize::from(options.world_normal)
+        + usize::from(options.curvature)
+        + usize::from(options.position);
+    let gray_maps = usize::from(options.ao) + usize::from(options.thickness);
+    let precision_bytes = if options.bits == 16 { 8 } else { 4 };
+    (pixels * 4 * rgba8_maps as u64
+        + pixels * precision_bytes * precision_rgba_maps as u64
+        + pixels * u64::from(options.bits / 8) * gray_maps as u64)
+        * 3
+        / 5
+        * options.materials.len() as u64
 }
 /// 清洗非法字符、按字节预算截断并去掉首尾空格/点。截断按 UTF-8 字节数而非
 /// 字符数：80 个汉字 = 240 字节，叠加缓存根路径会超 Windows 默认 260 路径
@@ -613,17 +629,7 @@ pub fn run(
     // 分钟 GPU。按未压缩体积 6 折预估 PNG 总量（噪声内容压缩率差；ID 这类
     // 平色图远小于此），不足时提前报错而不是逐材质失败。
     let pixels = u64::from(options.resolution).pow(2);
-    let rgba_maps = usize::from(options.id)
-        + usize::from(options.normal)
-        + usize::from(options.world_normal)
-        + usize::from(options.curvature)
-        + usize::from(options.position);
-    let gray_maps = usize::from(options.ao) + usize::from(options.thickness);
-    let estimate = (pixels * 4 * rgba_maps as u64
-        + pixels * u64::from(options.bits / 8) * gray_maps as u64)
-        * 3
-        / 5
-        * options.materials.len() as u64;
+    let estimate = estimated_output_bytes(options, pixels);
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let output = options.output.canonicalize().unwrap_or_else(|_| options.output.clone());
     let disk = disks

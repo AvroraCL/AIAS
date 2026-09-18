@@ -9,6 +9,26 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 #[test]
+fn output_estimate_counts_uv_and_doubles_precision_maps_at_16_bit() {
+    let mut options = bake::Options {
+        bits: 8,
+        materials: vec![0, 1],
+        uv: true,
+        ..Default::default()
+    };
+    let pixels = 1000;
+    let uv_only = bake::estimated_output_bytes(&options, pixels);
+    assert!(uv_only > 0, "UV-only output must reserve disk space");
+
+    options.uv = false;
+    options.world_normal = true;
+    let precision_8 = bake::estimated_output_bytes(&options, pixels);
+    options.bits = 16;
+    let precision_16 = bake::estimated_output_bytes(&options, pixels);
+    assert_eq!(precision_16, precision_8 * 2);
+}
+
+#[test]
 fn structured_bake_progress_is_monotonic_across_maps_and_materials() {
     let mut events = Vec::new();
     let mut capture = |event| events.push(event);
