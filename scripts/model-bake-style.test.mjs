@@ -95,6 +95,13 @@ test('model bake decodes a compact transferable preview instead of parsing model
   assert.match(worker, /postMessage\(\{ id, buffer \}, \[buffer\]\)/);
 });
 
+test('model bake preview preserves authored normals and hard edges', () => {
+  const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
+  assert.match(script, /setAttribute\('normal', new THREE\.BufferAttribute\(new Float32Array\(nextGeometry\.buffer, batch\.normalOffset/);
+  assert.doesNotMatch(script, /smoothNormals|computeVertexNormals/);
+  assert.match(script, /前端不再按位置二次焊合/);
+});
+
 test('model replacement commits only after the new preview is ready', () => {
   const script = readFileSync(new URL('../src/renderer/scripts/model-bake.js', import.meta.url), 'utf8');
   const prepared = script.indexOf('prepared = await buildMeshes(revision, data, nextGeometry, nextChannels)');

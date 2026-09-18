@@ -464,54 +464,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (announce) status(kind === 'material' ? '已在模型上显示着色 + AO 预览。' : `正在模型上预览${$('map-preview').selectedOptions[0]?.textContent || '贴图'}。`);
   }
 
-  // 平滑法线：按量化 position 分组，同位置顶点的法线取平均后归一化。
-  // 解决模型只有面法线（每个三角形内三个顶点法线相同）导致的硬边外观。
-  // 键必须尺度不变：大坐标模型里 float32 的绝对抖动会超过任何固定容差，
-  // 因此按包围盒最大边长量化。量化级取 1e5：组合键 < 1.00004e15 < 2^53，
-  // float64 精确；1e6 级的 ~2^62 键会超出 float64 精确整数域，不同位置
-  // 折叠到同一键导致不相邻顶点被错误平均。
-  function smoothNormals(geometry) {
-    const pos = geometry.getAttribute('position');
-    const nor = geometry.getAttribute('normal');
-    if (!pos || !nor || pos.count !== nor.count) return;
-    const count = pos.count;
-    let minX = Infinity, minY = Infinity, minZ = Infinity, span = 0;
-    for (let i = 0; i < count; i++) {
-      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (z < minZ) minZ = z;
-    }
-    for (let i = 0; i < count; i++) {
-      span = Math.max(span, pos.getX(i) - minX, pos.getY(i) - minY, pos.getZ(i) - minZ);
-    }
-    const scale = 1e5 / (span || 1);
-    const sums = new Map();
-    for (let i = 0; i < count; i++) {
-      const qx = Math.round((pos.getX(i) - minX) * scale);
-      const qy = Math.round((pos.getY(i) - minY) * scale);
-      const qz = Math.round((pos.getZ(i) - minZ) * scale);
-      const key = (qx * 100001 + qy) * 100001 + qz;
-      let sum = sums.get(key);
-      if (!sum) sums.set(key, sum = { nx: 0, ny: 0, nz: 0, count: 0 });
-      sum.nx += nor.getX(i); sum.ny += nor.getY(i); sum.nz += nor.getZ(i);
-      sum.count++;
-    }
-    let modified = false;
-    for (let i = 0; i < count; i++) {
-      const qx = Math.round((pos.getX(i) - minX) * scale);
-      const qy = Math.round((pos.getY(i) - minY) * scale);
-      const qz = Math.round((pos.getZ(i) - minZ) * scale);
-      const sum = sums.get((qx * 100001 + qy) * 100001 + qz);
-      if (!sum || sum.count <= 1) continue;
-      const len = Math.sqrt(sum.nx * sum.nx + sum.ny * sum.ny + sum.nz * sum.nz);
-      if (!len) continue;
-      nor.setXYZ(i, sum.nx / len, sum.ny / len, sum.nz / len);
-      modified = true;
-    }
-    if (modified) nor.needsUpdate = true;
-  }
-
   // 一次性为全部 (对象,材质) 组合建立网格，并按对象预计算包围盒：之后选择变化只切
   // mesh.visible，不再重扫三角形重建几何体（该函数只允许在导入/几何体变化时调用）。
   async function buildMeshes(revision, nextModel, nextGeometry, nextChannels) {
@@ -529,10 +481,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       }
       const meshGeometry = new THREE.BufferGeometry();
       meshGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nextGeometry.buffer, batch.positionOffset, batch.vertexCount * 3), 3));
+      // 预览必须保留导入模型的逐角法线和硬边，才能与法线/曲率烘焙结果一致。
+      // 缺失或无效法线已由工作进程回退为几何面法线，前端不再按位置二次焊合。
       meshGeometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nextGeometry.buffer, batch.normalOffset, batch.vertexCount * 3), 3));
-      // 平滑法线：模型导出常只有面法线，直接使用会导致所有三角面呈现硬边。
-      // 按 position 合并同位置顶点的法线，让相邻面共享平滑法线。
-      smoothNormals(meshGeometry);
       const uvOffset = batch.uvOffsets[String(nextChannels[batch.material] ?? 0)];
       const uv = uvOffset == null ? new Float32Array(batch.vertexCount * 2) : new Float32Array(nextGeometry.buffer, uvOffset, batch.vertexCount * 2);
       meshGeometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
