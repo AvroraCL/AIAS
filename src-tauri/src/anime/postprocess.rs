@@ -523,13 +523,13 @@ pub(crate) fn box_mean_f32_into(
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let y0 = y.saturating_sub(radius);
         let y1 = (y + radius + 1).min(h);
-        for x in 0..w {
+        for (x, cell) in row.iter_mut().enumerate() {
             let x0 = x.saturating_sub(radius);
             let x1 = (x + radius + 1).min(w);
             let area = ((y1 - y0) * (x1 - x0)) as f64;
             let sum = sat[y1 * stride + x1] - sat[y0 * stride + x1] - sat[y1 * stride + x0]
                 + sat[y0 * stride + x0];
-            row[x] = (sum / area) as f32;
+            *cell = (sum / area) as f32;
         }
     });
     out
@@ -836,7 +836,7 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
     // 结果与调度顺序无关，多线程与单线程产物逐字节一致；同时避免并行时
     // 对共享掩码的读写竞争。
     let snapshot = refined.clone();
-    let mut jobs = Vec::new();
+    let mut jobs: Vec<CfTileBounds> = Vec::new();
     for top in (0..h).step_by(TILE_CORE) {
         let bottom = (top + TILE_CORE).min(h);
         for left in (0..w).step_by(TILE_CORE) {
@@ -851,11 +851,7 @@ fn refine_closed_form_boundary_alpha_with_diagnostics(
             jobs.push((left, top, right, bottom));
         }
     }
-    let solutions: Vec<(
-        (usize, usize, usize, usize),
-        CfTileOutcome,
-        Vec<(usize, f32)>,
-    )> = jobs
+    let solutions: Vec<CfTileSolution> = jobs
         .par_iter()
         .map(|&(left, top, right, bottom)| {
             let padded_top = top.saturating_sub(TILE_PAD);
@@ -918,6 +914,11 @@ enum CfTileOutcome {
     UnstableSolver,
     Cancelled,
 }
+
+/// (left, top, right, bottom) tile bounds in pixel coordinates.
+type CfTileBounds = (usize, usize, usize, usize);
+/// One processed tile: its bounds, outcome, and the (pixel index, alpha) patch to apply.
+type CfTileSolution = (CfTileBounds, CfTileOutcome, Vec<(usize, f32)>);
 
 fn cf_largest_component(mask: &[f32], w: usize, h: usize) -> Option<Vec<bool>> {
     if mask.len() != w.saturating_mul(h) || w == 0 || h == 0 {
@@ -1115,10 +1116,10 @@ fn cf_solve_tile(
                     }
                 }
             }
-            for axis in 0..3 {
-                covariance[axis][axis] += EPSILON;
-                for other in 0..3 {
-                    covariance[axis][other] /= 9.0;
+            for (axis, covariance_row) in covariance.iter_mut().enumerate() {
+                covariance_row[axis] += EPSILON;
+                for value in covariance_row.iter_mut() {
+                    *value /= 9.0;
                 }
             }
             let Some(inverse) = cf_inverse_3x3(covariance) else {
@@ -1459,10 +1460,8 @@ mod color_regression_tests {
         let mut alpha = vec![0.0; 1600];
         alpha[820] = 0.1;
         let colors = decontaminate_colors(&rgb, &alpha);
-        for channel in 0..3 {
-            assert!(
-                (colors[820][channel] as i16 - rgb.get_pixel(20, 20)[channel] as i16).abs() <= 24
-            );
+        for (channel, color) in colors[820].iter().enumerate() {
+            assert!((*color as i16 - rgb.get_pixel(20, 20)[channel] as i16).abs() <= 24);
         }
         alpha[820] = 242.0 / 255.0;
         assert_eq!(decontaminate_colors(&rgb, &alpha)[820], [80, 120, 160]);

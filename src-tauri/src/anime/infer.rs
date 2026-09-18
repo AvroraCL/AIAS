@@ -76,11 +76,11 @@ pub(crate) fn probability_luma(probabilities: &[f32], threshold: f32) -> Vec<u8>
 pub(crate) fn refine_threshold() -> f32 {
     #[cfg(test)]
     {
-        return std::env::var("AIAS_AB_REFINE_THRESHOLD")
+        std::env::var("AIAS_AB_REFINE_THRESHOLD")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| (0.0..1.0).contains(value))
-            .unwrap_or(REFINE_THRESHOLD);
+            .unwrap_or(REFINE_THRESHOLD)
     }
 
     #[cfg(not(test))]
@@ -93,11 +93,11 @@ pub(crate) fn advanced_min_component_area(width: u32, height: u32) -> usize {
     let default = ((width as usize * height as usize) / 1_500).clamp(128, 2_048);
     #[cfg(test)]
     {
-        return std::env::var("AIAS_AB_MIN_COMPONENT_AREA")
+        std::env::var("AIAS_AB_MIN_COMPONENT_AREA")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|value| *value >= 2)
-            .unwrap_or(default);
+            .unwrap_or(default)
     }
 
     #[cfg(not(test))]
@@ -389,7 +389,7 @@ fn run_advanced_on_provider(
     let thumb_raw = thumb.as_raw();
     for y in 0..sh {
         let src_row = y as usize * sw as usize * 3;
-        let dst_row = (y as usize + pad_h) * seg_w + pad_w as usize;
+        let dst_row = (y as usize + pad_h) * seg_w + pad_w;
         for x in 0..sw as usize {
             let s = src_row + x * 3;
             let d = dst_row + x;
@@ -700,12 +700,9 @@ fn run_advanced_on_provider(
     let upscaled_mask = if crop_w == w as usize && crop_h == h as usize {
         cropped
     } else {
-        let source = ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(
-            crop_w as u32,
-            crop_h as u32,
-            cropped,
-        )
-        .ok_or("精修概率缓冲无效")?;
+        let source =
+            ImageBuffer::<Luma<f32>, Vec<f32>>::from_raw(crop_w as u32, crop_h as u32, cropped)
+                .ok_or("精修概率缓冲无效")?;
         image::imageops::resize(&source, w, h, FilterType::Lanczos3).into_raw()
     };
     const REFINE_BAND: f32 = 0.20;
@@ -732,8 +729,8 @@ pub(crate) fn resize_birefnet_input(rgb: &RgbImage, target_w: u32, target_h: u32
     if rgb.dimensions() == (target_w, target_h) {
         return rgb.clone();
     }
-    let downscale = (rgb.width() as f64 / target_w as f64)
-        .max(rgb.height() as f64 / target_h as f64);
+    let downscale =
+        (rgb.width() as f64 / target_w as f64).max(rgb.height() as f64 / target_h as f64);
     image::imageops::resize(rgb, target_w, target_h, birefnet_resize_filter(downscale))
 }
 
@@ -822,7 +819,15 @@ pub(crate) fn refine_vitmatte_boundary_rgba(
         Ok(result) => Ok(result),
         Err(error) if is_gpu_oom_error(&error) => {
             release_vitmatte_session();
-            try_refine_vitmatte_boundary_rgba(base, &path, rgb, current, BOUNDARY_RADIUS, false, on_tile)
+            try_refine_vitmatte_boundary_rgba(
+                base,
+                &path,
+                rgb,
+                current,
+                BOUNDARY_RADIUS,
+                false,
+                on_tile,
+            )
         }
         Err(error) => Err(error),
     }
@@ -868,6 +873,11 @@ const RECOVERY_OUTER_CONTEXT: u32 = 75;
 const RECOVERY_BAND_HEIGHT: u32 = 2048;
 const RECOVERY_BAND_OUTER_CAP: u32 = 2560;
 const RECOVERY_MAX_BANDS: usize = 3;
+
+/// (x, y, width, height) crop region in image pixel coordinates.
+type Roi = (u32, u32, u32, u32);
+/// Inner/outer crop pair driving one two-scale agreement pass.
+type RoiPair = (Roi, Roi);
 
 pub(crate) fn recover_anime_specialist_detail_alpha(
     base: &Path,
@@ -927,11 +937,12 @@ pub(crate) fn recover_anime_specialist_detail_alpha(
 /// Runs the two-scale agreement crops for one ROI pair and folds the gated
 /// add-only result into `recovered`. Shared by the upper pass and lower bands
 /// so both keep identical thresholds and weighting.
+#[allow(clippy::too_many_arguments)]
 fn apply_recovery_band(
     base: &Path,
     rgb: &RgbImage,
-    inner: (u32, u32, u32, u32),
-    outer: (u32, u32, u32, u32),
+    inner: Roi,
+    outer: Roi,
     base_alpha: &[f32],
     distance: &[u8],
     recovered: &mut [f32],
@@ -976,11 +987,7 @@ fn apply_recovery_band(
 /// density of the full-image pass. Each band yields an (inner, outer) ROI
 /// pair with the same two-scale relationship as the upper pass: the outer
 /// crop widens the band by about 3/8 of its height on every side.
-pub(crate) fn recovery_lower_bands(
-    alpha: &[f32],
-    width: u32,
-    height: u32,
-) -> Vec<((u32, u32, u32, u32), (u32, u32, u32, u32))> {
+pub(crate) fn recovery_lower_bands(alpha: &[f32], width: u32, height: u32) -> Vec<RoiPair> {
     let mut bounds = (width, height, 0u32, 0u32);
     for y in 0..height {
         for x in 0..width {
@@ -1001,10 +1008,9 @@ pub(crate) fn recovery_lower_bands(
     if remaining < 256 {
         return Vec::new();
     }
-    let band_count = (((remaining + RECOVERY_BAND_HEIGHT - 1) / RECOVERY_BAND_HEIGHT) as usize)
-        .min(RECOVERY_MAX_BANDS)
-        .max(1);
-    let band_height = (remaining + band_count as u32 - 1) / band_count as u32;
+    let band_count =
+        (remaining.div_ceil(RECOVERY_BAND_HEIGHT) as usize).clamp(1, RECOVERY_MAX_BANDS);
+    let band_height = remaining.div_ceil(band_count as u32);
     let mut bands = Vec::with_capacity(band_count);
     for index in 0..band_count {
         let top = top_end + index as u32 * band_height;

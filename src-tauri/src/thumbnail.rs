@@ -200,7 +200,7 @@ mod tests {
             // 用文件时间戳拉开 mtime：编号越大越新。
             let time = std::time::SystemTime::UNIX_EPOCH
                 + std::time::Duration::from_secs(1_700_000_000 + index);
-            let _ = filetime_set(&path, time);
+            filetime_set(&path, time);
         }
         // 总量 10240，上限 4096 → 裁剪到 90%（3686）以下。
         prune_cache(cache.path(), 4096);

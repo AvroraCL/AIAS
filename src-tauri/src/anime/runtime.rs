@@ -93,8 +93,7 @@ pub(crate) fn acquire_ort_dll(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Re
     // 曾无任何校验的下载（ghfast 代理居首）。固化官方 zip 的尺寸与 SHA256
     // （与 GPU wheel 同款），不匹配即删档换下一镜像。
     const ORT_ZIP_SIZE: u64 = 72_368_545;
-    const ORT_ZIP_SHA256: &str =
-        "174c616efc0271194488642a72f1a514e01487da4dfe84c49296d66e40ebe0da";
+    const ORT_ZIP_SHA256: &str = "174c616efc0271194488642a72f1a514e01487da4dfe84c49296d66e40ebe0da";
     let mut last_error = String::from("无可用下载源");
     for url in archive_urls {
         match curl_download(&url, &archive, Some(ORT_ZIP_SIZE), on_progress) {
@@ -102,8 +101,7 @@ pub(crate) fn acquire_ort_dll(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Re
                 Ok(actual) if actual == ORT_ZIP_SHA256 => break,
                 Ok(actual) => {
                     let _ = fs::remove_file(&archive);
-                    last_error =
-                        format!("SHA256 不匹配（期望 {ORT_ZIP_SHA256}，实际 {actual}）");
+                    last_error = format!("SHA256 不匹配（期望 {ORT_ZIP_SHA256}，实际 {actual}）");
                 }
                 Err(error) => {
                     let _ = fs::remove_file(&archive);
@@ -370,10 +368,8 @@ fn download_model_files(
                             Ok(actual) if actual == file.sha256 => break,
                             Ok(actual) => {
                                 let _ = fs::remove_file(&dest);
-                                last_error = format!(
-                                    "SHA256 不匹配（实际 {actual}，期望 {}）",
-                                    file.sha256
-                                );
+                                last_error =
+                                    format!("SHA256 不匹配（实际 {actual}，期望 {}）", file.sha256);
                                 continue;
                             }
                             Err(error) => {
@@ -567,16 +563,14 @@ pub(crate) fn prune_sessions(keep: SessionKeep<'_>) {
 /// CUDA 注册失败但已回退 CPU 的真实原因（None = 未回退或未尝试）。
 /// ORT 默认静默回退会让 UI 误报「GPU 加速已生效」，用户在 CPU 上跑大图
 /// 却以为在用显卡；error_on_failure 拿到真实错误后在这里透出。
-pub(crate) static CUDA_FALLBACK_REASON: std::sync::LazyLock<
-    std::sync::RwLock<Option<String>>,
-> = std::sync::LazyLock::new(|| std::sync::RwLock::new(None));
+pub(crate) static CUDA_FALLBACK_REASON: std::sync::LazyLock<std::sync::RwLock<Option<String>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(None));
 
 pub(crate) fn cuda_fallback_reason() -> Option<String> {
     CUDA_FALLBACK_REASON
         .read()
         .ok()
-        .map(|guard| guard.clone())
-        .flatten()
+        .and_then(|guard| guard.clone())
 }
 
 pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, String> {
@@ -726,9 +720,8 @@ pub fn install_gpu_ort(app: Option<&AppHandle>, base: &Path) -> Result<(), Strin
                     }
                     Ok(actual) => {
                         let _ = fs::remove_file(&archive);
-                        last_error = format!(
-                            "SHA256 不匹配（期望 {GPU_ORT_WHEEL_SHA256}，实际 {actual}）"
-                        );
+                        last_error =
+                            format!("SHA256 不匹配（期望 {GPU_ORT_WHEEL_SHA256}，实际 {actual}）");
                     }
                     Err(error) => {
                         let _ = fs::remove_file(&archive);

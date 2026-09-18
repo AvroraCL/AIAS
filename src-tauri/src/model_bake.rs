@@ -152,11 +152,10 @@ fn execute(
     let errors = std::thread::spawn(move || {
         let mut text = String::new();
         for line in BufReader::new(stderr).lines() {
-            if let Ok(line) = line {
-                if text.len() < 16384 {
-                    text.push_str(&line);
-                    text.push('\n');
-                }
+            let Ok(line) = line else { continue };
+            if text.len() < 16384 {
+                text.push_str(&line);
+                text.push('\n');
             }
         }
         text
@@ -616,7 +615,12 @@ pub(crate) async fn oidn_install(app: AppHandle) -> Result<serde_json::Value, St
     // 单飞防护：并发双装在 target.exists() 与 rename 之间存在 TOCTOU，
     // 后到者白下 25MB 并报「安装失败」假错误。
     if OIDN_INSTALLING
-        .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
         .is_err()
     {
         return Err("降噪组件正在安装中，请稍候。".into());
@@ -1001,7 +1005,8 @@ mod tests {
         );
         assert!(rejected.unwrap_err().contains("缓存目录之外"));
         let cache_child = cache.path().join("manual-export");
-        let rejected_destination = export_files(cache.path(), &[a.display().to_string()], &cache_child);
+        let rejected_destination =
+            export_files(cache.path(), &[a.display().to_string()], &cache_child);
         assert!(rejected_destination
             .unwrap_err()
             .contains("不能位于烘焙缓存目录内"));

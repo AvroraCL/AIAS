@@ -481,10 +481,9 @@ fn generate(app: Option<&AppHandle>, options: RunOptions) -> Result<crate::TaskR
             };
             progress(0.85, "保存 PNG");
             for (i, target) in targets.iter().enumerate() {
-                let image = if i == 0 && normal.is_some() {
-                    normal.as_ref().unwrap()
-                } else {
-                    height.as_ref().unwrap()
+                let image = match normal.as_ref() {
+                    Some(normal_image) if i == 0 => normal_image,
+                    _ => height.as_ref().unwrap(),
                 };
                 save(image, target)?;
                 outputs.push(target.display().to_string());

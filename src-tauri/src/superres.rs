@@ -130,10 +130,8 @@ pub fn download_model(app: Option<&AppHandle>, base: &Path, id: &str) -> Result<
                     match crate::model_bake::sha256_of_file(&dest) {
                         Ok(actual) if actual == file.sha256 => return Ok(()),
                         Ok(actual) => {
-                            last_error = format!(
-                                "SHA256 不匹配（实际 {actual}，期望 {}）",
-                                file.sha256
-                            );
+                            last_error =
+                                format!("SHA256 不匹配（实际 {actual}，期望 {}）", file.sha256);
                         }
                         Err(error) => last_error = format!("校验读取失败：{error}"),
                     }
@@ -298,6 +296,7 @@ fn retry_tiles(mut attempt: impl FnMut(bool, u32) -> Result<(), String>) -> Resu
     Err("内存不足，无法完成超分：请关闭部分程序释放内存后重试，或改用更小的图片。".into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_upscale_with(
     base: &Path,
     id: &str,

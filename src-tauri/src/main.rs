@@ -1322,9 +1322,7 @@ fn anime_cutout_inner(
     let input_paths: std::collections::HashSet<std::path::PathBuf> = options
         .files
         .iter()
-        .map(|file| {
-            fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file.as_str()))
-        })
+        .map(|file| fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file.as_str())))
         .collect();
 
     for file in &options.files {
@@ -1925,10 +1923,7 @@ fn skin_import_inner(options: ImportSkinOptions) -> Result<ImportSkinResult, Str
 }
 
 #[tauri::command]
-async fn skin_toggle(
-    state: State<'_, AppState>,
-    file_path: String,
-) -> Result<PathResult, String> {
+async fn skin_toggle(state: State<'_, AppState>, file_path: String) -> Result<PathResult, String> {
     ensure_within_skins_dir(&state, Path::new(&file_path))?;
     tauri::async_runtime::spawn_blocking(move || {
         let source = Path::new(&file_path);
@@ -1958,16 +1953,14 @@ fn ensure_within_skins_dir(state: &State<AppState>, target: &Path) -> Result<(),
     if configured.as_os_str().is_empty() {
         return Err("请先在设置中选择涂装目录。".into());
     }
-    let allowed = std::fs::canonicalize(configured)
-        .map_err(|e| format!("涂装目录不可访问：{e}"))?;
+    let allowed =
+        std::fs::canonicalize(configured).map_err(|e| format!("涂装目录不可访问：{e}"))?;
     // 目标不存在时 canonicalize 必然失败：退回字符串前缀检查，保住
     // 「deleted:false → 未找到条目」分支的可达性
     let resolved = match std::fs::canonicalize(target) {
         Ok(resolved) => resolved,
         Err(_) => {
-            let normalize = |value: String| {
-                value.trim_end_matches(['\\', '/']).to_lowercase()
-            };
+            let normalize = |value: String| value.trim_end_matches(['\\', '/']).to_lowercase();
             if !normalize(target.to_string_lossy().into_owned())
                 .starts_with(&normalize(allowed.to_string_lossy().into_owned()))
             {
@@ -2413,8 +2406,7 @@ fn save_luma_image(
     format: &str,
 ) -> Result<(), String> {
     let image: ImageBuffer<Luma<u8>, Vec<u8>> =
-        ImageBuffer::from_raw(width, height, bytes)
-            .ok_or_else(|| "灰度数据无效。".to_string())?;
+        ImageBuffer::from_raw(width, height, bytes).ok_or_else(|| "灰度数据无效。".to_string())?;
     save_dynamic_image(&DynamicImage::ImageLuma8(image), output, format)
 }
 
@@ -2613,16 +2605,16 @@ mod tests {
             let file = out.join(format!("EXPERIMENT_INVALID_CHAIN-{format}.dds"));
             write_dds_with_mipmaps(&images, &file, format).unwrap();
             let dds = Dds::read(&mut BufReader::new(fs::File::open(file).unwrap())).unwrap();
-            for level in 0..images.len() {
+            for (level, source) in images.iter().enumerate() {
                 match image_from_dds(&dds, level as u32) {
                     Ok(decoded) => {
                         report.push_str(&format!(
                             "{format} level {level}: supplied {:?}, decoded {:?}\n",
-                            images[level].dimensions(),
+                            source.dimensions(),
                             decoded.dimensions()
                         ));
                         if level == 1 {
-                            assert_ne!(decoded.dimensions(), images[level].dimensions());
+                            assert_ne!(decoded.dimensions(), source.dimensions());
                             decoded
                                 .save(out.join(format!("misread-level1-{format}.png")))
                                 .unwrap();

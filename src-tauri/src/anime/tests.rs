@@ -11,8 +11,8 @@ pub(super) mod toonout_tests {
     fn vitmatte_gate_limits_changes_to_a_narrow_boundary() {
         let alpha: Vec<f32> = (0..30).map(|x| if x < 15 { 0.0 } else { 1.0 }).collect();
         let gate = vitmatte_boundary_gate(&alpha, 30, 1, 3);
-        for x in 0..30 {
-            assert_eq!(gate[x], (12..18).contains(&x));
+        for (x, value) in gate.iter().enumerate() {
+            assert_eq!(*value, (12..18).contains(&x));
         }
         assert!(!vitmatte_boundary_gate(&[0.0; 30], 30, 1, 8)
             .iter()
@@ -121,7 +121,7 @@ pub(super) mod toonout_tests {
         let gate = dilated_instance_gate(&matte, 7, 7, 2);
 
         assert!(gate[3 * 7 + 3], "实例中心必须保留");
-        assert!(gate[1 * 7 + 1], "Chebyshev 距离 2 的像素必须保留");
+        assert!(gate[7 + 1], "Chebyshev 距离 2 的像素必须保留");
         assert!(!gate[0], "Chebyshev 距离 3 的像素必须排除");
     }
 
@@ -261,6 +261,7 @@ pub(super) mod toonout_tests {
 
     /// 手动执行：advanced 管线真实模型推理（RTMDet+精修软边缘路径）。
     /// `AIAS_AB_INPUT=<测试图> cargo test advanced_real_model_smoke -- --ignored --nocapture`
+    #[test]
     #[ignore = "手动执行：advanced 管线真实模型推理（RTMDet+精修软边缘路径）"]
     fn advanced_real_model_smoke() {
         let base = dirs::data_dir()
@@ -287,8 +288,12 @@ pub(super) mod toonout_tests {
             strong as f64 / total as f64 * 100.0
         );
         assert!(strong > 0, "无任何高置信前景像素：软精修路径可能异常");
-        assert!(matte.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-            "掩码出现非有限或越界值");
+        assert!(
+            matte
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+            "掩码出现非有限或越界值"
+        );
     }
 
     /// 端到端验证 ToonOut：下载 470MB 模型 + 真实推理，仅在手动运行：
@@ -2019,7 +2024,7 @@ pub(super) mod toonout_tests {
             &[1, 1, crop_h as i64, crop_w as i64],
             "ViTMatte alpha 尺寸异常"
         );
-        let mut alpha: Vec<f32> = output.iter().copied().collect();
+        let mut alpha: Vec<f32> = output.to_vec();
         if alpha.iter().any(|value| *value < -0.01 || *value > 1.01) {
             alpha
                 .iter_mut()
@@ -2251,9 +2256,16 @@ pub(super) mod toonout_tests {
             assert_eq!(rgb.dimensions(), baseline.dimensions());
             println!("P104 start {file} {}x{}", rgb.width(), rgb.height());
             let started = std::time::Instant::now();
-            let candidate =
-                try_refine_vitmatte_boundary_rgba(&base, &model, &rgb, baseline.clone(), 8, true, &|_, _| {})
-                    .unwrap();
+            let candidate = try_refine_vitmatte_boundary_rgba(
+                &base,
+                &model,
+                &rgb,
+                baseline.clone(),
+                8,
+                true,
+                &|_, _| {},
+            )
+            .unwrap();
             let elapsed = started.elapsed();
             let (w, h) = rgb.dimensions();
             let alpha: Vec<f32> = baseline.pixels().map(|p| p[3] as f32 / 255.0).collect();
@@ -2566,7 +2578,7 @@ pub(super) mod toonout_tests {
                 value
                     .split(',')
                     .filter_map(|part| part.trim().parse::<usize>().ok())
-                    .filter(|radius| *radius <= u16::MAX as usize - 1)
+                    .filter(|radius| *radius < u16::MAX as usize)
                     .map(|radius| (format!("r{radius}"), radius))
                     .collect()
             })
@@ -2588,7 +2600,7 @@ pub(super) mod toonout_tests {
                         let outer = values.next()?.parse::<usize>().ok()?;
                         let confidence = values.next()?.parse::<f32>().ok()?;
                         (inner <= outer
-                            && outer <= u16::MAX as usize - 1
+                            && outer < u16::MAX as usize
                             && (0.0..=1.0).contains(&confidence))
                         .then_some((inner, outer, confidence))
                     })
@@ -2705,7 +2717,7 @@ pub(super) mod toonout_tests {
         std::env::var(name)
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0 && *value <= u16::MAX as usize - 1)
+            .filter(|value| *value > 0 && *value < u16::MAX as usize)
             .unwrap_or(default)
     }
 
@@ -2972,6 +2984,7 @@ pub(super) mod toonout_tests {
     /// 分块推理已经完成而合成时内存不足时，复用已落盘的 raw Alpha 完成正式
     /// 后处理。这样既不会重复耗时的模型推理，也能保证最终 PNG 仍走产品同一
     /// 个 `finalize_cutout_image` 路径。
+    #[allow(clippy::too_many_arguments)]
     fn finalize_saved_alpha_variants(
         input: &Path,
         gt_path: &Path,
