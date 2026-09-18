@@ -55,8 +55,8 @@ pub struct UvReport {
     pub valid: bool,
     pub issues: Vec<Issue>,
     pub issue_count: usize,
-    /// 缺失/越界/退化三类硬缺陷数。重叠（游戏涂装的镜像/分层堆叠属设计）
-    /// 记入 issue_count 供视口标红，但不构成缺陷、不影响 valid。
+    /// 缺失/越界两类硬缺陷数。重叠（镜像/分层堆叠）与零面积退化面在烘焙中
+    /// 覆盖不到像素、无害，记入 issue_count 供视口标红，但不影响 valid。
     #[serde(default)]
     pub defect_count: usize,
 }
@@ -924,8 +924,10 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
             continue;
         }
         let v = uv.map(Vec2::from_array);
+        // 零面积退化面覆盖不到任何像素（实测真实模型中的退化面全部恒为 0
+        // 面积或 <1e-15 的微刺），与 SP 一致不算缺陷。
         if cross(v[1] - v[0], v[2] - v[0]).abs() < 1e-12 {
-            add("退化 UV", index, None, true);
+            add("退化 UV", index, None, false);
             continue;
         }
         let min = v.iter().fold(Vec2::splat(f32::INFINITY), |a, b| a.min(*b));

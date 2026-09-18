@@ -234,20 +234,19 @@ fn uv_shared_edge_allowed_and_overlap_located() {
 #[test]
 fn uv_missing_degenerate_and_outside_are_explicit() {
     let mut t = triangle([[0., 0.], [0., 0.], [0., 0.]], 0, 0);
-    assert_eq!(
-        model::inspect(&model(vec![t.clone()]), 0, 0, &[0]).issues[0].kind,
-        "退化 UV"
-    );
+    let degenerate = model::inspect(&model(vec![t.clone()]), 0, 0, &[0]);
+    assert_eq!(degenerate.issues[0].kind, "退化 UV");
+    // 零面积退化面覆盖不到像素，无害：记入明细但不判缺陷。
+    assert!(degenerate.valid);
+    assert_eq!(degenerate.defect_count, 0);
     t.uvs.clear();
-    assert_eq!(
-        model::inspect(&model(vec![t.clone()]), 0, 0, &[0]).issues[0].kind,
-        "缺失 UV"
-    );
+    let missing = model::inspect(&model(vec![t.clone()]), 0, 0, &[0]);
+    assert_eq!(missing.issues[0].kind, "缺失 UV");
+    assert!(!missing.valid);
     t.uvs.insert(0, [[0., 0.], [1.01, 0.], [0., 1.]]);
-    assert_eq!(
-        model::inspect(&model(vec![t]), 0, 0, &[0]).issues[0].kind,
-        "UV 超出 0–1"
-    );
+    let outside = model::inspect(&model(vec![t]), 0, 0, &[0]);
+    assert_eq!(outside.issues[0].kind, "UV 超出 0–1");
+    assert!(!outside.valid);
 }
 #[test]
 fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {

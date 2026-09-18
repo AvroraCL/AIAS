@@ -800,10 +800,11 @@ pub fn run(
                 || options.position
                 || options.thickness;
             if !report.valid && data_maps {
-                // 与 SP 一致：不拦截，按源 UV 原样烘焙。重叠多为镜像/分层设计
-                // 不告警；缺失/越界/退化区域的数据图会出洞或污染，由警告提示。
+                // 与 SP 一致：不拦截，按源 UV 原样烘焙。重叠与零面积退化多为
+                // 设计且覆盖不到像素，不告警；缺失/越界区域的数据图会出洞或
+                // 污染，由警告提示。
                 result.warnings.push(format!(
-                    "{material_label}：源 UV 有 {} 处缺陷（缺失/越界/退化），已按原样烘焙，问题区域可能出现瑕疵",
+                    "{material_label}：源 UV 有 {} 处缺陷（缺失/越界），已按原样烘焙，问题区域可能出现瑕疵",
                     report.defect_count
                 ));
             }
@@ -1306,8 +1307,8 @@ pub fn run(
         })();
         if let Err(e) = attempt {
             // 用户主动取消不是失败：GPU trace 的"任务已取消"错误不进失败名单
-            //（未完成清单由下方 cancelled 分支统一列出），避免与 UV 校验失败、
-            // 显存不足这类真实错误混在一起。
+            //（未完成清单由下方 cancelled 分支统一列出），避免与显存不足、
+            // OIDN 缺失这类真实错误混在一起。
             if options.cancel_path.exists() {
                 result.cancelled = true;
                 result.failed_materials.push(material);

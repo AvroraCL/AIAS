@@ -108,7 +108,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
           ${section('02 / 烘焙质量', `<div class="bake-presets" aria-label="质量预设"><button data-bake-preset="draft" type="button">快速</button><button data-bake-preset="standard" type="button">标准</button><button data-bake-preset="high" type="button">精细</button></div>${select('resolution', '贴图尺寸', [512, 1024, 2048, 4096].map(value => [value, `${value} × ${value}`]))}<small id="bake-quality-note"></small>`)}
           ${section('03 / 导出', `<button id="bake-export" class="secondary-action output-action" data-bake-export type="button"><i data-lucide="download" aria-hidden="true"></i>导出全部贴图</button><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开缓存目录</button><small>结果先缓存在应用数据目录，导出时选择目标文件夹</small>`)}
           <details class="bake-advanced"><summary>高级设置</summary>
-          ${section('UV 工作流', `${select('uvMode', '导入时 UV 处理', [['preserveValid', '智能保留'], ['regenerateAll', '全部重新展开'], ['strictSource', '严格使用源 UV']])}<small>智能保留会优先使用合格源 UV，仅修复缺失、越界或退化的材质；UV 重叠（镜像/分层堆叠）视为设计，保留原样。烘焙贴图供智能材质制作使用。</small>`)}
+          ${section('UV 工作流', `${select('uvMode', '导入时 UV 处理', [['preserveValid', '智能保留'], ['regenerateAll', '全部重新展开'], ['strictSource', '严格使用源 UV']])}<small>智能保留会优先使用合格源 UV，仅修复缺失或越界的材质；UV 重叠（镜像/分层堆叠）与零面积退化面视为无害设计，保留原样。烘焙贴图供智能材质制作使用。</small>`)}
           ${section('计算设备', `${select('device', 'GPU', [[0, '检测设备中…']])}<small id="bake-device-note"></small>`)}
           ${section('光线追踪与边缘', `${select('samples', 'AO / 厚度采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', '输出位深', [[8, '8 位'], [16, '16 位（AO/厚度/曲率/位置/世界法线）']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>射线距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${check('denoise', 'AI 降噪（仅用于 AO）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相影响'], ['true', '仅同一对象']])}<small>AO 与厚度使用 GPU；其余 Mesh Map 由模型几何直接生成。</small>`)}
           </details>
@@ -842,7 +842,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (report?.issues?.length) {
       const note = document.createElement('p');
       const overlap = Math.max((report.issueCount ?? 0) - (report.defectCount ?? 0), 0);
-      note.textContent = `缺陷 ${report.defectCount ?? 0} 处（缺失/越界/退化），重叠 ${overlap} 处（镜像/分层堆叠属设计）。烘焙按源 UV 原样进行。`;
+      note.textContent = `缺陷 ${report.defectCount ?? 0} 处（缺失/越界），无害记录 ${overlap} 处（重叠/零面积退化，镜像分层设计常见）。烘焙按源 UV 原样进行。`;
       issues.append(note);
       for (const issue of report.issues.slice(0, 30)) {
         const button = document.createElement('button');
