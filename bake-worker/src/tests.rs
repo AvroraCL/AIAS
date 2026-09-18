@@ -183,21 +183,6 @@ fn compact_preview_round_trips_offsets() {
 }
 
 #[test]
-fn generated_glb_reimports_with_the_selected_uv() {
-    let mut value = model(vec![triangle([[0., 0.], [0., 1.], [1., 0.]], 0, 0)]);
-    value.source_format = "glb".into();
-    let directory = tempfile::tempdir().unwrap();
-    let files =
-        model::export_bake_model(&value, &BTreeMap::from([(0, 0)]), directory.path()).unwrap();
-    let glb = files
-        .iter()
-        .find(|path| path.extension().is_some_and(|extension| extension == "glb"))
-        .unwrap();
-    let imported = model::load(glb).unwrap();
-    let objects: Vec<_> = imported.objects.iter().map(|object| object.id).collect();
-    assert!(model::inspect(&imported, 0, 0, &objects).valid);
-}
-#[test]
 fn uv_shared_edges_at_fractional_offsets_do_not_overlap() {
     for i in 1..2000 {
         let x = (i * 37 % 997) as f32 / 1103.;

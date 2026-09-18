@@ -559,7 +559,7 @@ pub(crate) fn emit_bake_progress(
 ) {
     let completed = material_position * map_total + map_index;
     let total = (material_total * map_total).max(1);
-    // Reserve the final 4% for legends, remapped model artifacts and the manifest.
+    // Reserve the final 4% for legends, material-colors and the manifest.
     // This keeps the UI below 100% while files are still being finalized.
     let overall = (completed as f64 + within_map.clamp(0.0, 1.0)) / total as f64 * 0.96;
     progress(serde_json::json!({
@@ -1362,26 +1362,6 @@ pub fn run(
     }
     result.elapsed_ms = start.elapsed().as_millis();
     result.selected_channels = options.channels.clone();
-    // 取消后跳过模型重导出（数十 MB 逐面写出会让「取消」多等数十秒）；
-    // 导出失败降级为警告 + artifact 缺失，不再让整个 run 在清单落盘前中止
-    //（否则贴图全在却报「部分完成」且缺 bake-manifest.json）。
-    if !result.cancelled && !model.generated_channels.is_empty() {
-        match crate::model::export_bake_model(&model, &options.channels, &options.output) {
-            Ok(paths) => {
-                for path in paths {
-                    result.artifacts.push(Artifact {
-                        kind: "model".into(),
-                        path,
-                    });
-                }
-            }
-            Err(error) => {
-                result
-                    .failures
-                    .push(format!("重导出带自动 UV 的模型失败：{error}"));
-            }
-        }
-    }
     let manifest_path = options.output.join("bake-manifest.json");
     let texture_manifest: Vec<_> = result.files.iter().map(|file| serde_json::json!({
         "material":file.material,"kind":file.kind,"file":file.path.file_name().unwrap_or_default().to_string_lossy()
