@@ -55,6 +55,10 @@ pub struct UvReport {
     pub valid: bool,
     pub issues: Vec<Issue>,
     pub issue_count: usize,
+    /// 缺失/越界/退化三类硬缺陷数。重叠（游戏涂装的镜像/分层堆叠属设计）
+    /// 记入 issue_count 供视口标红，但不构成缺陷、不影响 valid。
+    #[serde(default)]
+    pub defect_count: usize,
 }
 pub fn load(path: &Path) -> Result<Model, String> {
     let bytes = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
@@ -881,9 +885,13 @@ pub fn overlap(a: [[f32; 2]; 3], b: [[f32; 2]; 3]) -> bool {
 pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) -> UvReport {
     let mut issues = vec![];
     let mut count = 0;
+    let mut defect_count = 0usize;
     let mut valid = vec![];
-    let mut add = |kind: &str, index: usize, other: Option<usize>| {
+    let mut add = |kind: &str, index: usize, other: Option<usize>, defect: bool| {
         count += 1;
+        if defect {
+            defect_count += 1;
+        }
         // 明细只保留前 256 条：前端每材质只渲染 30 条，其余用于视口标红；
         // 总数单独保留，避免无效源 UV 把紧凑预览 manifest 膨胀到数 MiB。
         if issues.len() < 256 {
@@ -904,7 +912,7 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
         .filter(|(_, t)| t.material == material && objects.contains(&t.object))
     {
         let Some(uv) = t.uvs.get(&channel) else {
-            add("缺失 UV", index, None);
+            add("缺失 UV", index, None, true);
             continue;
         };
         if uv
@@ -912,12 +920,12 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
             .flatten()
             .any(|v| !v.is_finite() || *v < 0. || *v > 1.)
         {
-            add("UV 超出 0–1", index, None);
+            add("UV 超出 0–1", index, None, true);
             continue;
         }
         let v = uv.map(Vec2::from_array);
         if cross(v[1] - v[0], v[2] - v[0]).abs() < 1e-12 {
-            add("退化 UV", index, None);
+            add("退化 UV", index, None, true);
             continue;
         }
         let min = v.iter().fold(Vec2::splat(f32::INFINITY), |a, b| a.min(*b));
@@ -927,6 +935,8 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
         valid.push((index, *uv, min, max));
     }
     valid.sort_by(|a, b| a.2.x.total_cmp(&b.2.x));
+    // 重叠单独扫描但只记数不判缺陷：游戏涂装的镜像/分层堆叠是设计而非错误，
+    // 与 SP 一致照常烘焙；视口仍标红供用户自行核对。
     for i in 0..valid.len() {
         let a = &valid[i];
         for b in &valid[i + 1..] {
@@ -937,15 +947,16 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
                 continue;
             }
             if overlap(a.1, b.1) {
-                add("UV 重叠", a.0, Some(b.0));
+                add("UV 重叠", a.0, Some(b.0), false);
             }
         }
     }
     UvReport {
         material,
         channel,
-        valid: count == 0,
+        valid: defect_count == 0,
         issues,
         issue_count: count,
+        defect_count,
     }
 }

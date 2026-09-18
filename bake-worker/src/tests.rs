@@ -222,7 +222,10 @@ fn uv_shared_edge_allowed_and_overlap_located() {
     assert!(model::inspect(&m, 0, 0, &[0, 1]).valid);
     let m = model(vec![triangle(a, 0, 0), triangle(a, 1, 0)]);
     let r = model::inspect(&m, 0, 0, &[0, 1]);
-    assert!(!r.valid);
+    // 完全堆叠计入明细但不算缺陷：镜像/分层 UV 是设计，不再判不合格。
+    assert!(r.valid);
+    assert_eq!(r.defect_count, 0);
+    assert_eq!(r.issue_count, 1);
     assert_eq!(r.issues[0].other_triangle, Some(1));
     assert!(model::inspect(&m, 0, 0, &[0]).valid);
     let m = model(vec![triangle(a, 0, 0), triangle(a, 1, 1)]);

@@ -55,6 +55,10 @@ pub struct ResultSet {
     pub directory: PathBuf,
     pub files: Vec<Output>,
     pub failures: Vec<String>,
+    /// 非致命警告（如严格模式下源 UV 不合格仍按原样烘焙），与 failures 分开：
+    /// 材质是成功的，不能因此报「部分完成」。
+    #[serde(default)]
+    pub warnings: Vec<String>,
     /// 失败/未完成材质的结构化列表，供前端在材质列表上打徽标。
     #[serde(default)]
     pub failed_materials: Vec<usize>,
@@ -796,16 +800,11 @@ pub fn run(
                 || options.position
                 || options.thickness;
             if !report.valid && data_maps {
-                return Err(format!(
-                    "UV 校验失败（{} 处）：{}",
-                    report.issue_count,
-                    report
-                        .issues
-                        .iter()
-                        .take(3)
-                        .map(|i| format!("对象 {} 面 {} {}", i.object, i.face, i.kind))
-                        .collect::<Vec<_>>()
-                        .join("；")
+                // 与 SP 一致：不拦截，按源 UV 原样烘焙。重叠多为镜像/分层设计
+                // 不告警；缺失/越界/退化区域的数据图会出洞或污染，由警告提示。
+                result.warnings.push(format!(
+                    "{material_label}：源 UV 有 {} 处缺陷（缺失/越界/退化），已按原样烘焙，问题区域可能出现瑕疵",
+                    report.defect_count
                 ));
             }
             if surfaces.is_empty() && data_maps {
