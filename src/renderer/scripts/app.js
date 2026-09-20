@@ -987,7 +987,8 @@ function createTauriApi() {
       modelUninstall: (modelId) => invoke("anime_model_uninstall", { modelId }),
       cutout: (options) => invoke("anime_cutout", { options }),
       gpuRuntimeState: () => invoke("gpu_runtime_state"),
-      installGpuRuntime: () => invoke("install_gpu_runtime")
+      installGpuRuntime: () => invoke("install_gpu_runtime"),
+      installDmlRuntime: () => invoke("install_dml_runtime")
     },
     superres: {
       modelsStatus: () => invoke("superres_models_status"),
@@ -1177,17 +1178,20 @@ async function refreshAnimeModelStatus() {
 
 function describeGpuRuntime() {
   const runtime = state.gpuRuntime;
-  if (!runtime?.nvidiaGpu) return { relevant: false };
+  if (!runtime) return { relevant: false };
   if (runtime.cudaActive) {
     return { relevant: true, text: "GPU 加速已生效（CUDA），抠图推理运行在显卡上。" };
+  }
+  if (runtime.dmlActive) {
+    return { relevant: true, text: "GPU 加速已生效（DirectML），抠图推理运行在显卡上。" };
   }
   if (runtime.cudaFallbackReason) {
     return {
       relevant: true,
-      text: `CUDA 初始化失败，已回退 CPU：${runtime.cudaFallbackReason}`
+      text: `GPU 初始化失败，已回退 CPU：${runtime.cudaFallbackReason}${runtime.dmlInstalled ? "" : "；可下载 DirectML 运行库（约 12 MB，全显卡通用）改用显卡推理。"}`
     };
   }
-  if (runtime.runtimeInstalled) {
+  if (runtime.runtimeInstalled && runtime.cudaRuntimeLocated) {
     return {
       relevant: true,
       text: runtime.ortInitialized
@@ -1195,10 +1199,37 @@ function describeGpuRuntime() {
         : "GPU 运行库已就绪，开始抠图后自动启用（CUDA）。"
     };
   }
+  if (runtime.dmlInstalled) {
+    return {
+      relevant: true,
+      text: runtime.ortInitialized
+        ? "DirectML 运行库已就绪，但本次会话已先加载了 CPU 运行库，重启应用后生效。"
+        : "DirectML 运行库已就绪，开始抠图后自动启用（全显卡通用）。"
+    };
+  }
+  if (runtime.runtimeInstalled && !runtime.cudaRuntimeLocated) {
+    return {
+      relevant: true,
+      text: "检测到 GPU 运行库，但本机缺少 CUDA 运行库（cublasLt 等），无法启用 CUDA。可下载 DirectML 运行库（约 12 MB，全显卡通用）替代。"
+    };
+  }
+  if (runtime.nvidiaGpu) {
+    return {
+      relevant: true,
+      text: "检测到 NVIDIA 显卡。下载 GPU 运行库（约 233 MB，CUDA 满血，需已安装 CUDA Toolkit）或 DirectML 运行库（约 12 MB，免依赖）。"
+    };
+  }
   return {
     relevant: true,
-    text: "检测到 NVIDIA 显卡。下载 GPU 运行库（约 233 MB，一次性）可大幅提升抠图速度。"
+    text: "下载 DirectML 运行库（约 12 MB，全显卡通用，一次性）可大幅提升抠图速度。"
   };
+}
+
+// 下一次该装哪个运行库：NVIDIA 且 CUDA 运行库齐备 → CUDA 满血；否则 DirectML。
+function gpuInstallTarget() {
+  const runtime = state.gpuRuntime;
+  if (runtime?.nvidiaGpu && runtime.cudaRuntimeLocated && !runtime.runtimeInstalled) return "cuda";
+  return "dml";
 }
 
 async function refreshGpuRuntime() {
@@ -1222,10 +1253,15 @@ function renderGpuRuntime() {
   if (!info.relevant) return;
   setText("anime-gpu-status", info.text);
   const installing = state.gpuDownloading;
-  $("anime-gpu-install")?.classList.toggle(
-    "hidden",
-    installing || Boolean(state.gpuRuntime?.runtimeInstalled)
+  const runtime = state.gpuRuntime;
+  const gpuReady = Boolean(
+    runtime &&
+      (runtime.cudaActive ||
+        runtime.dmlActive ||
+        (runtime.runtimeInstalled && runtime.cudaRuntimeLocated) ||
+        runtime.dmlInstalled)
   );
+  $("anime-gpu-install")?.classList.toggle("hidden", installing || gpuReady);
   $("anime-gpu-progress")?.classList.toggle("hidden", !installing);
 }
 
@@ -1245,18 +1281,23 @@ async function installGpuRuntime() {
     addActivity("下载中", "已有模型正在下载，请等待完成后重试。", "idle");
     return;
   }
+  const target = gpuInstallTarget();
+  const label = target === "cuda" ? "GPU 运行库（CUDA）" : "DirectML 运行库";
   state.gpuDownloading = true;
   renderGpuRuntime();
-  addActivity("开始下载 GPU 运行库", "onnxruntime-gpu");
+  addActivity("开始下载运行库", label);
   try {
-    const result = await api.anime.installGpuRuntime();
+    const result =
+      target === "cuda"
+        ? await api.anime.installGpuRuntime()
+        : await api.anime.installDmlRuntime();
     addActivity(
-      "GPU 运行库下载完成",
+      `${label}下载完成`,
       result?.requiresRestart ? "重启应用后生效" : "立即生效",
       "success"
     );
   } catch (error) {
-    addActivity("GPU 运行库下载失败", error.message || String(error), "error");
+    addActivity(`${label}下载失败`, error.message || String(error), "error");
   }
   state.gpuDownloading = false;
   await refreshGpuRuntime();

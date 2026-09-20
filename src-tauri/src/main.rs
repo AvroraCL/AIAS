@@ -469,6 +469,7 @@ fn main() {
             superres_run,
             gpu_runtime_state,
             install_gpu_runtime,
+            install_dml_runtime,
             skin_auto_detect,
             skin_list,
             skin_import,
@@ -1151,6 +1152,9 @@ struct GpuRuntimeState {
     ort_initialized: bool,
     cuda_active: bool,
     cuda_fallback_reason: Option<String>,
+    dml_installed: bool,
+    dml_active: bool,
+    cuda_runtime_located: bool,
 }
 
 #[tauri::command]
@@ -1161,14 +1165,23 @@ async fn gpu_runtime_state(app: AppHandle) -> Result<GpuRuntimeState, String> {
         .map_err(to_string_error)?
         .available;
     let runtime_installed = anime::gpu_ort_ready(&base);
+    let dml_installed = anime::dml_ort_ready(&base);
+    let cuda_runtime_located = anime::cuda_runtime_located();
     let ort_initialized = anime::ort_initialized();
     // cuda_active 需要 ORT 已加载才准确；未初始化时不强行加载 dll。
     // CUDA 注册失败回退 CPU 时以 fallback_reason 为准，不再误报 GPU 生效。
     let mut cuda_active = ort_initialized && anime::cuda_ep_compiled();
+    let mut dml_active = ort_initialized && anime::dml_ep_compiled();
     let mut cuda_fallback_reason = None;
     if cuda_active {
         if let Some(reason) = anime::cuda_fallback_reason() {
             cuda_active = false;
+            cuda_fallback_reason = Some(reason);
+        }
+    }
+    if dml_active {
+        if let Some(reason) = anime::cuda_fallback_reason() {
+            dml_active = false;
             cuda_fallback_reason = Some(reason);
         }
     }
@@ -1178,6 +1191,9 @@ async fn gpu_runtime_state(app: AppHandle) -> Result<GpuRuntimeState, String> {
         ort_initialized,
         cuda_active,
         cuda_fallback_reason,
+        dml_installed,
+        dml_active,
+        cuda_runtime_located,
     })
 }
 
@@ -1194,6 +1210,19 @@ async fn install_gpu_runtime(app: AppHandle) -> Result<GpuRuntimeInstallResult, 
     // 若本会话已经加载过 CPU 版 ORT，新装的 GPU dll 要重启应用才会生效。
     let was_initialized = anime::ort_initialized();
     tauri::async_runtime::spawn_blocking(move || anime::install_gpu_ort(Some(&app), &base))
+        .await
+        .map_err(to_string_error)??;
+    Ok(GpuRuntimeInstallResult {
+        requires_restart: was_initialized && !already_installed,
+    })
+}
+
+#[tauri::command]
+async fn install_dml_runtime(app: AppHandle) -> Result<GpuRuntimeInstallResult, String> {
+    let base = anime_base_dir(&app)?;
+    let already_installed = anime::dml_ort_ready(&base);
+    let was_initialized = anime::ort_initialized();
+    tauri::async_runtime::spawn_blocking(move || anime::install_dml_ort(&app, &base))
         .await
         .map_err(to_string_error)??;
     Ok(GpuRuntimeInstallResult {
@@ -1276,15 +1305,23 @@ fn anime_cutout_inner(
                 Some(reason) => format!("推理后端：CPU（CUDA 初始化失败已回退：{reason}）"),
                 None => "推理后端：CUDA（GPU 加速）".to_string(),
             }
+        } else if anime::dml_ep_compiled() {
+            match anime::cuda_fallback_reason() {
+                Some(reason) => format!("推理后端：CPU（DirectML 初始化失败已回退：{reason}）"),
+                None => "推理后端：DirectML（GPU 加速·全显卡通用）".to_string(),
+            }
         } else if anime::gpu_ort_ready(&base) {
             "推理后端：CPU（GPU 运行库未生效，重启应用后再试）".to_string()
         } else {
-            "推理后端：CPU（检测到 NVIDIA 显卡时可在「GPU 加速」中下载运行库）".to_string()
+            "推理后端：CPU（NVIDIA 显卡可在「GPU 加速」下载运行库；其他显卡可下载 DirectML 运行库）"
+                .to_string()
         },
     );
     // CUDA 回退 CPU 时给出耗时预警：CPU 上 2K+ 输入单张可达数分钟，
     // 提前告知比让用户误以为卡死更好。
-    if anime::cuda_ep_compiled() && anime::cuda_fallback_reason().is_some() {
+    if (anime::cuda_ep_compiled() || anime::dml_ep_compiled())
+        && anime::cuda_fallback_reason().is_some()
+    {
         push_log(
             app,
             &mut logs,
@@ -1622,6 +1659,11 @@ fn superres_run_inner(
             match anime::cuda_fallback_reason() {
                 Some(reason) => format!("推理后端：CPU（CUDA 初始化失败已回退：{reason}）"),
                 None => "推理后端：CUDA（GPU 加速）".to_string(),
+            }
+        } else if anime::dml_ep_compiled() {
+            match anime::cuda_fallback_reason() {
+                Some(reason) => format!("推理后端：CPU（DirectML 初始化失败已回退：{reason}）"),
+                None => "推理后端：DirectML（GPU 加速·全显卡通用）".to_string(),
             }
         } else {
             "推理后端：CPU（通用模型较慢，NVIDIA 显卡可在 AI 抠图页下载 GPU 运行库）".to_string()

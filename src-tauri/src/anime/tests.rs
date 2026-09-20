@@ -3569,3 +3569,51 @@ pub(super) mod toonout_tests {
         std::thread::sleep(std::time::Duration::from_secs(15));
     }
 }
+
+#[test]
+fn dml_session_smoke() {
+    // 手动验证 DirectML 通道：准备一个目录，内含 DML 版 onnxruntime.dll、
+    // DirectML.dll 和任一 .onnx 模型，然后：
+    //   AIAS_DML_PROBE=<该目录> cargo test dml_session_smoke -- --nocapture
+    // 正常套件中此测试直接返回，不触碰 ORT。
+    let Some(probe) = std::env::var_os("AIAS_DML_PROBE") else {
+        return;
+    };
+    let probe = std::path::PathBuf::from(probe);
+    let base = std::env::temp_dir().join(format!("aias-dml-probe-{}", std::process::id()));
+    let dml_dest = base.join("directml");
+    std::fs::create_dir_all(&dml_dest).unwrap();
+    std::fs::copy(
+        probe.join("onnxruntime.dll"),
+        dml_dest.join("onnxruntime.dll"),
+    )
+    .unwrap();
+    std::fs::copy(probe.join("DirectML.dll"), dml_dest.join("DirectML.dll")).unwrap();
+    std::fs::copy(
+        probe.join("onnxruntime_providers_shared.dll"),
+        dml_dest.join("onnxruntime_providers_shared.dll"),
+    )
+    .unwrap();
+    let model_src = std::fs::read_dir(&probe)
+        .unwrap()
+        .flatten()
+        .find(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("onnx"))
+        })
+        .expect("探测目录需要包含一个 .onnx 模型")
+        .path();
+    let model = base.join("model.onnx");
+    std::fs::copy(&model_src, &model).unwrap();
+    crate::anime::ensure_ort_runtime(&base).unwrap();
+    assert!(crate::anime::dml_ort_ready(&base), "DML 运行库应就绪");
+    let session = crate::anime::build_session(&model, true).unwrap();
+    drop(session);
+    assert!(
+        crate::anime::cuda_fallback_reason().is_none(),
+        "DML 会话构建成功时不应记录回退原因"
+    );
+    println!("DirectML 会话构建成功（use_gpu=true 走 DML EP）");
+}

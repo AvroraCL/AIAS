@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 // ONNX Runtime acquisition (onnxruntime.dll next to the app data)
 pub(crate) fn ort_dll_path(base: &Path) -> PathBuf {
@@ -25,9 +25,13 @@ pub fn ensure_ort_runtime(base: &Path) -> Result<(), String> {
 /// （首次使用且本机无种子时，CPU 运行库有几十 MB，静默下载看起来像卡死）。
 pub fn ensure_ort_runtime_with(base: &Path, on_progress: &dyn Fn(u64, u64)) -> Result<(), String> {
     fs::create_dir_all(base).map_err(to_string_error)?;
-    // 进程内 ORT 只会加载一次 dll：优先使用完整 GPU 版运行库，其次才是种子/下载的 CPU 版。
-    let dll = if gpu_ort_ready(base) {
+    // 进程内 ORT 只会加载一次 dll：优先级 CUDA（运行库齐备时）> DirectML > CPU 种子/下载版。
+    // CUDA 运行库（cublasLt 等）不随显卡驱动分发，缺任意一个就让位 DirectML，
+    // 避免「选了 CUDA dll 又加载不了 provider」把已装好的 DirectML 顶掉。
+    let dll = if gpu_ort_ready(base) && cuda_runtime_located() {
         gpu_ort_capi_dir(base).join("onnxruntime.dll")
+    } else if dml_ort_ready(base) {
+        dml_dir(base).join("onnxruntime.dll")
     } else {
         ort_dll_path(base)
     };
@@ -38,6 +42,15 @@ pub fn ensure_ort_runtime_with(base: &Path, on_progress: &dyn Fn(u64, u64)) -> R
         return Ok(());
     }
     std::env::set_var("ORT_DYLIB_PATH", &dll);
+    if dll.starts_with(dml_dir(base)) {
+        // DML EP 初始化时按名字 LoadLibrary DirectML.dll：预载进进程 + PATH
+        // 前插双保险，覆盖各种搜索策略。
+        prepend_dll_search_paths(&[dml_dir(base)]);
+        let directml = dml_dir(base).join("DirectML.dll");
+        if directml.exists() {
+            let _ = ort::util::preload_dylib(directml);
+        }
+    }
     // set 失败说明另一个线程刚刚完成了同样的初始化（相同 dll 路径），视为成功。
     let _ = ORT_READY.set(());
     Ok(())
@@ -599,11 +612,17 @@ pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, Strin
             .with_conv_max_workspace(false)
             .build()
             .error_on_failure();
+        // provider DLL（onnxruntime_providers_cuda.dll）在注册阶段就会加载，
+        // cublasLt 等依赖缺失时报 Error 126——该错误必须落入下方回退分支，
+        // 不能经 `?` 逃出函数导致整批任务硬失败、一张图都不处理。
         let gpu_attempt = builder
             .with_execution_providers([cuda, cpu_ep()])
-            .map_err(to_string_error)?
-            .commit_from_file(path)
-            .map_err(|error| format!("加载模型 {} 失败：{error}", path.display()));
+            .map_err(to_string_error)
+            .and_then(|mut builder| {
+                builder
+                    .commit_from_file(path)
+                    .map_err(|error| format!("加载模型 {} 失败：{error}", path.display()))
+            });
         match gpu_attempt {
             Ok(session) => {
                 if let Ok(mut guard) = CUDA_FALLBACK_REASON.write() {
@@ -612,7 +631,39 @@ pub(crate) fn build_session(path: &Path, use_gpu: bool) -> Result<Session, Strin
                 return Ok(session);
             }
             Err(error) => {
-                // cuDNN 缺失/驱动过老/显存不足：记录真实原因，回退 CPU 重建。
+                // cublasLt/cuDNN 缺失、驱动过老、显存不足：记录真实原因，回退 CPU 重建。
+                if let Ok(mut guard) = CUDA_FALLBACK_REASON.write() {
+                    *guard = Some(error.clone());
+                }
+                builder = Session::builder()
+                    .map_err(to_string_error)?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(to_string_error)?
+                    .with_intra_threads(threads)
+                    .map_err(to_string_error)?;
+            }
+        }
+    } else if use_gpu && dml_ep_compiled() {
+        // DirectML：全显卡通用（NVIDIA/AMD/Intel），依赖随安装器分发的
+        // DirectML.dll，无 CUDA 运行库时唯一的 GPU 通道。
+        let dml = ort::ep::DirectML::default().build().error_on_failure();
+        let gpu_attempt = builder
+            .with_execution_providers([dml, cpu_ep()])
+            .map_err(to_string_error)
+            .and_then(|mut builder| {
+                builder
+                    .commit_from_file(path)
+                    .map_err(|error| format!("加载模型 {} 失败：{error}", path.display()))
+            });
+        match gpu_attempt {
+            Ok(session) => {
+                if let Ok(mut guard) = CUDA_FALLBACK_REASON.write() {
+                    *guard = None;
+                }
+                return Ok(session);
+            }
+            Err(error) => {
+                // DirectML 初始化失败（驱动/系统过老等）：记录原因，回退 CPU 重建。
                 if let Ok(mut guard) = CUDA_FALLBACK_REASON.write() {
                     *guard = Some(error.clone());
                 }
@@ -680,6 +731,34 @@ pub fn gpu_ort_capi_dir(base: &Path) -> PathBuf {
 pub fn gpu_ort_ready(base: &Path) -> bool {
     let dir = gpu_ort_capi_dir(base);
     GPU_ORT_DLLS.iter().all(|name| dir.join(name).exists())
+}
+
+/// DirectML 版 onnxruntime（微软官方 nuget，内含 CPU+DML EP，约 12 MB）。
+/// 覆盖 NVIDIA/AMD/Intel 全部显卡且无需任何 CUDA 运行库；性能低于 CUDA
+/// 但远快于 CPU，是没有 CUDA 环境时的 GPU 通道。
+pub const DML_ORT_NUPKG_NAME: &str = "microsoft.ml.onnxruntime.directml.1.23.0.nupkg";
+pub const DML_ORT_NUPKG_SIZE: u64 = 12_746_067;
+/// PyPI/nuget 官方发布的该 nupkg SHA256。
+pub const DML_ORT_NUPKG_SHA256: &str =
+    "a33ec2382b3c440bab74042a135733bb6e5085f293b908d3997688a58fe307e7";
+pub const DML_ORT_HOSTS: &[&str] = &["https://api.nuget.org"];
+pub const DML_ORT_NUPKG_PATH: &str = "v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.23.0/microsoft.ml.onnxruntime.directml.1.23.0.nupkg";
+/// nupkg 内 win-x64 native 目录中需要的 DLL。
+pub const DML_ORT_DLLS: &[&str] = &["onnxruntime.dll", "onnxruntime_providers_shared.dll"];
+
+pub fn dml_dir(base: &Path) -> PathBuf {
+    base.join("directml")
+}
+
+pub fn dml_ort_ready(base: &Path) -> bool {
+    let dir = dml_dir(base);
+    DML_ORT_DLLS.iter().all(|name| dir.join(name).exists()) && dir.join("DirectML.dll").exists()
+}
+
+/// 加载中的 ORT 是否带 DirectML EP（仅 DML 版 dll 有；需 dll 已加载后才准确）。
+pub fn dml_ep_compiled() -> bool {
+    use ort::ep::ExecutionProvider;
+    ort::ep::DirectML::default().is_available().unwrap_or(false)
 }
 
 /// 加载中的 ORT 是否编译了 CUDA EP（需要 dll 已按 ORT_DYLIB_PATH 加载后才准确）。
@@ -775,9 +854,124 @@ pub(crate) fn extract_gpu_ort_dlls(archive: &Path, dest: &Path) -> Result<(), St
     Ok(())
 }
 
-/// 定位 CUDA 12 与完整 cuDNN 9 运行时并预载；找不到时由 ONNX Runtime 回退 CPU。
-pub(crate) fn preload_cuda_runtime() {
-    let cuda_root = cuda_runtime_candidates().into_iter().find(|path| {
+/// 下载并安装 DirectML 版 onnxruntime（幂等；约 12 MB，一次性）。
+/// DirectML.dll 本体随安装器分发（resources/directml/），此处只做复制。
+pub fn install_dml_ort(app: &AppHandle, base: &Path) -> Result<(), String> {
+    if dml_ort_ready(base) {
+        return Ok(());
+    }
+    let dml_root = dml_dir(base);
+    fs::create_dir_all(&dml_root).map_err(to_string_error)?;
+    // 开发态资源目录不存在时回退仓库 build/directml，便于 npm run tauri dev 直测。
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("无法定位资源目录：{e}"))?
+        .join("directml")
+        .join("DirectML.dll");
+    let bundled = if bundled.exists() {
+        bundled
+    } else {
+        PathBuf::from("assets").join("directml").join("DirectML.dll")
+    };
+    if !bundled.exists() {
+        return Err("安装目录缺少 DirectML.dll，请重新安装应用。".into());
+    }
+    fs::copy(&bundled, dml_root.join("DirectML.dll")).map_err(|e| e.to_string())?;
+
+    let archive = dml_root.join(DML_ORT_NUPKG_NAME);
+    let progress = |completed: u64, total: u64| {
+        emit_progress(
+            Some(app),
+            ModelProgress {
+                model_id: "ort-dml".to_string(),
+                file: DML_ORT_NUPKG_NAME.to_string(),
+                completed,
+                total,
+            },
+        );
+    };
+    let mut last_error = String::from("没有可用的下载地址。");
+    for host in DML_ORT_HOSTS {
+        let url = format!("{host}/{DML_ORT_NUPKG_PATH}");
+        match curl_download(&url, &archive, Some(DML_ORT_NUPKG_SIZE), &progress) {
+            Ok(()) => {
+                // 12MB 也做 SHA256：nuget 源不可写但传输可被劫持，校验口径与 GPU 版一致。
+                match crate::model_bake::sha256_of_file(&archive) {
+                    Ok(actual) if actual == DML_ORT_NUPKG_SHA256 => {
+                        last_error = String::new();
+                        break;
+                    }
+                    Ok(actual) => {
+                        let _ = fs::remove_file(&archive);
+                        last_error =
+                            format!("SHA256 不匹配（期望 {DML_ORT_NUPKG_SHA256}，实际 {actual}）");
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_file(&archive);
+                        last_error = format!("校验读取失败：{error}");
+                    }
+                }
+            }
+            Err(error) => last_error = error,
+        }
+    }
+    if !last_error.is_empty() {
+        return Err(last_error);
+    }
+    if let Err(error) = extract_dml_ort_dlls(&archive, &dml_root) {
+        let _ = fs::remove_file(&archive);
+        return Err(error);
+    }
+    let _ = fs::remove_file(&archive);
+    if !dml_ort_ready(base) {
+        return Err("DirectML 运行库解压后不完整，请重新下载。".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn extract_dml_ort_dlls(archive: &Path, dest: &Path) -> Result<(), String> {
+    // 必须用 Windows 自带的 bsdtar（支持 zip）；GNU tar 无法读取 nupkg。
+    let tar = std::env::var_os("WINDIR")
+        .map(|windir| PathBuf::from(windir).join(r"System32\tar.exe"))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from("tar"));
+    // nupkg 内路径带 runtimes/win-x64/native 前缀，先解到暂存目录再归位。
+    let stage = dest.join(".stage");
+    let _ = fs::remove_dir_all(&stage);
+    fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    let output = crate::safety::quiet_command(tar)
+        .arg("-xf")
+        .arg(archive)
+        .arg("-C")
+        .arg(&stage)
+        .args([
+            "runtimes/win-x64/native/onnxruntime.dll",
+            "runtimes/win-x64/native/onnxruntime_providers_shared.dll",
+        ])
+        .output()
+        .map_err(|error| format!("无法启动 tar 解压：{error}"))?;
+    if !output.status.success() {
+        let _ = fs::remove_dir_all(&stage);
+        return Err(format!(
+            "解压 DirectML 运行库失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    for name in DML_ORT_DLLS {
+        let staged = stage.join("runtimes/win-x64/native").join(name);
+        let final_path = dest.join(name);
+        fs::rename(&staged, &final_path)
+            .or_else(|_| fs::copy(&staged, &final_path).map(|_| ()))
+            .map_err(|e| e.to_string())?;
+    }
+    let _ = fs::remove_dir_all(&stage);
+    Ok(())
+}
+
+/// 定位 CUDA 12 运行库目录（cudart/cublas/cublasLt/cufft 齐备）。
+pub(crate) fn locate_cuda_runtime() -> Option<PathBuf> {
+    cuda_runtime_candidates().into_iter().find(|path| {
         [
             "cudart64_12.dll",
             "cublasLt64_12.dll",
@@ -786,14 +980,30 @@ pub(crate) fn preload_cuda_runtime() {
         ]
         .iter()
         .all(|name| path.join(name).exists())
-    });
-    let cudnn_root = cudnn_runtime_candidates().into_iter().find(|path| {
+    })
+}
+
+/// 定位完整 cuDNN 9 运行库目录（自带 cublasLt/cudart 依赖）。
+pub(crate) fn locate_cudnn_runtime() -> Option<PathBuf> {
+    cudnn_runtime_candidates().into_iter().find(|path| {
         // cuDNN 运行时会按需加载 cublasLt64_1X 等依赖，找不到直接 abort 进程；
         // 因此候选目录必须自带这些依赖，否则视为不可用。
         CUDNN9_FILES.iter().all(|name| path.join(name).exists())
             && dir_contains_prefix(path, "cublasLt64_")
             && dir_contains_prefix(path, "cudart64_")
-    });
+    })
+}
+
+/// CUDA 与 cuDNN 运行库是否全部就位。决定启动时是否选择 CUDA 版 ORT dll：
+/// 缺任何一库都应让位 DirectML，否则 CUDA provider 必然加载失败。
+pub(crate) fn cuda_runtime_located() -> bool {
+    locate_cuda_runtime().is_some() && locate_cudnn_runtime().is_some()
+}
+
+/// 定位 CUDA 12 与完整 cuDNN 9 运行时并预载；找不到时由 ONNX Runtime 回退 CPU。
+pub(crate) fn preload_cuda_runtime() {
+    let cuda_root = locate_cuda_runtime();
+    let cudnn_root = locate_cudnn_runtime();
     if let Some(dir) = &cuda_root {
         for name in ort::ep::cuda::CUDA_DYLIBS {
             let _ = ort::util::preload_dylib(dir.join(name));
