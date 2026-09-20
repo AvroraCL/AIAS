@@ -25,17 +25,19 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、风格�
 - Mipmap 生成：把分层图片序列组装为带完整 Mipmap 链的单个 DDS，支持 8K→6K/4K 等游戏友好缩放
 - 图片转 DDS：批量转换图片并统一 BCn 压缩格式
 - 风格实验室：25 套图片风格化一键出图——图像转 ASCII（字符/方块/波点/线稿）与 21 套风格化（故障艺术、像素排序、坏块流动、信号撕裂、数据腐蚀、CRT 显像管、信号重影、迷彩生成、油画厚涂、半调印刷、素描炭笔、热感假彩、十字绣、双色调、水彩晕染、低多边形、像素画、版画木刻、胶片颗粒、水波纹、玻璃折射、马赛克拼贴、热浪扭曲、蜡笔粉彩、幻彩全息），全部本地实时预览；数值可直接键入、标签拖动微调、双击单参复位、滚轮步进、随机探索，每套附出厂预设并支持自定义预设
-- AI 抠图：动漫 / 人像 / 商品等任意图片智能抠图，输出透明背景 PNG；内置 6 个离线模型（AnimeSeg 动漫专精、ToonOut 动漫微调、BiRefNet 通用 1024、BiRefNet Lite 轻量、ISNet 动漫标准、RTMDet+精修 动漫精细），全部按需下载、可在应用内卸载；检测到 CUDA 环境时自动 GPU 加速，显存不足或依赖缺失时自动回退 CPU 保证出图；处理大图时有内置资源监控与对比视图
+- AI 抠图：动漫 / 人像 / 商品等任意图片智能抠图，输出透明背景 PNG；内置 6 个离线模型（AnimeSeg 动漫专精、ToonOut 动漫微调、BiRefNet 通用 1024、BiRefNet Lite 轻量、ISNet 动漫标准、RTMDet+精修 动漫精细），全部按需下载、可在应用内卸载；NVIDIA+CUDA Toolkit 环境自动满血 CUDA 加速，其他显卡可下载 DirectML 运行库（约 12 MB，全显卡通用）获得 GPU 加速，全部失败时自动回退 CPU 保证出图；处理大图时有内置资源监控与对比视图
 - AI 超分：动漫 / 通用双模型本地 4x 超分，放大细节的同时保持画面干净
 - 模型烘焙：为同一 OBJ/GLB/glTF 静态模型生成智能材质可识别的 AO、切线/世界空间法线、曲率、位置、厚度、ID 与 UV Mesh Map；支持智能 UV、DXR 光追、Intel OIDN 降噪、按材质输出
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.6.3
+### 下载 v5.6.4
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.6.3_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.6.3/AIAS_5.6.3_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+| [AIAS_5.6.4_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.6.4/AIAS_5.6.4_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+
+v5.6.4 GPU 加速更新：新增 DirectML 后端（NVIDIA/AMD/Intel 全显卡通用，应用内一键下载约 12 MB，无需安装 CUDA Toolkit）；修复 CUDA 依赖缺失导致整批失败的问题（现自动回退 CPU 保证出图）；烘焙 UV 判定对齐 Substance Painter（镜像/分层堆叠与零面积退化视为设计，不合格源 UV 按原样烘焙并给出警告）；安装器语言按系统语言自动选择。
 
 v5.6.3 模型烘焙更新：完善同模型 Mesh Map 工作流、智能 UV 与结果预览，预览保持模型源法线和硬边；烘焙过程持续显示阶段和进度，重新烘焙时保留上次结果，取消和失败不再破坏可用输出。
 
