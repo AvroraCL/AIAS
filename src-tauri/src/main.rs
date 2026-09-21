@@ -34,6 +34,8 @@ struct AppState {
 #[serde(rename_all = "camelCase")]
 struct Settings {
     auto_update: bool,
+    #[serde(default = "default_auto_collapse_style_nav")]
+    auto_collapse_style_nav: bool,
     #[serde(default)]
     material_maps: serde_json::Value,
     #[serde(default)]
@@ -80,6 +82,8 @@ fn default_comfyui_address() -> String {
     "127.0.0.1:8188".into()
 }
 
+fn default_auto_collapse_style_nav() -> bool { true }
+
 fn default_superres_scale() -> String {
     "2".into()
 }
@@ -92,6 +96,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             auto_update: false,
+            auto_collapse_style_nav: true,
             material_maps: serde_json::Value::Null,
             ascii: serde_json::Value::Null,
             style_lab: serde_json::Value::Null,

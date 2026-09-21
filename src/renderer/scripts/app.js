@@ -11,7 +11,7 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
-import { animateView, toggleGroup } from "./motion.js";
+import { animateView, toggleGroup, bindStyleNavMotion, collapseOtherStyleNav } from "./motion.js";
 import { createUpdateController, scheduleUpdateCheck } from "./updater.mjs";
 import { DEFAULTS as asciiDefaults } from "./ascii-state.mjs";
 import { mapDefaults } from "./material-map-state.mjs";
@@ -47,6 +47,7 @@ import {
   Info,
   ExternalLink,
   ChevronDown,
+  ChevronRight,
   Trash2,
   Play,
   X,
@@ -92,6 +93,7 @@ import {
 
 const defaults = {
   autoUpdate: false,
+  autoCollapseStyleNav: true,
   pbrInputPath: "",
   pbrOutputPath: "",
   pbrAlpha: "black",
@@ -433,6 +435,7 @@ const iconSet = {
   Info,
   ExternalLink,
   ChevronDown,
+  ChevronRight,
   Trash2,
   Play,
   X,
@@ -2748,6 +2751,9 @@ function applyMode(mode) {
   updateInspector();
   updateStatus();
   if (changed) animateView($(viewId));
+  if (state.settings.autoCollapseStyleNav !== false) {
+    collapseOtherStyleNav(document.querySelector('.mode-tab.active')?.closest('.style-nav-group'));
+  }
 }
 
 function bindSidebar() {
@@ -2785,6 +2791,7 @@ function bindSidebar() {
 }
 
 function bindTabs() {
+  bindStyleNavMotion(() => state.settings.autoCollapseStyleNav !== false);
   document.querySelectorAll(".mode-tab").forEach((button) => {
     button.title = button.textContent.trim();
     button.setAttribute("aria-label", button.title);
@@ -2903,6 +2910,19 @@ function syncSettingsView() {
 }
 
 function bindSettingsActions() {
+  const autoCollapse = $("set-auto-collapse-style-nav");
+  autoCollapse.checked = state.settings.autoCollapseStyleNav !== false;
+  autoCollapse.addEventListener("change", async () => {
+    const value = autoCollapse.checked;
+    autoCollapse.disabled = true;
+    try {
+      state.settings = await api.settings.set({ autoCollapseStyleNav: value });
+      if (value) collapseOtherStyleNav(document.querySelector('.mode-tab.active')?.closest('.style-nav-group'));
+    } catch (error) {
+      autoCollapse.checked = state.settings.autoCollapseStyleNav !== false;
+      addActivity("保存失败", error.message || String(error), "error");
+    } finally { autoCollapse.disabled = false; }
+  });
   $("set-auto-update")?.addEventListener("change", async () => {
     state.settings.autoUpdate = $("set-auto-update")?.checked ?? true;
     try {

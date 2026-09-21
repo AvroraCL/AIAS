@@ -4,7 +4,8 @@ const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const active = new Set();
 function track(tween) {
   active.add(tween);
-  tween.eventCallback("onComplete", () => active.delete(tween));
+  const complete = tween.eventCallback("onComplete");
+  tween.eventCallback("onComplete", () => { active.delete(tween); complete?.(); });
   tween.eventCallback("onInterrupt", () => active.delete(tween));
 }
 function finishMotion() {
@@ -49,6 +50,45 @@ export function toggleGroup(button) {
     duration: 0.24, ease: "power2.inOut",
     clearProps: "height,opacity,overflow,display"
   }));
+}
+
+export function setStyleNavExpanded(group, opening) {
+  const summary = group.querySelector('summary');
+  const content = group.querySelector('.tabs-track');
+  if (summary.getAttribute('aria-expanded') === String(opening)) return;
+  const height = group.getBoundingClientRect().height;
+  gsap.killTweensOf(group);
+  summary.setAttribute('aria-expanded', String(opening));
+  content.inert = !opening;
+  const finish = () => {
+    group.open = opening;
+    gsap.set(group, { clearProps: 'height,overflow' });
+  };
+  if (reducedMotion.matches) { finish(); return; }
+  group.open = true;
+  gsap.set(group, { height: 'auto', overflow: 'hidden' });
+  const target = opening ? group.getBoundingClientRect().height : summary.getBoundingClientRect().height;
+  gsap.set(group, { height });
+  track(gsap.to(group, { height: target, duration: 0.28, ease: 'power2.inOut', onComplete: finish }));
+}
+
+export function collapseOtherStyleNav(keep) {
+  document.querySelectorAll('.style-nav-group').forEach(group => {
+    if (group !== keep) setStyleNavExpanded(group, false);
+  });
+}
+
+export function bindStyleNavMotion(autoCollapse = () => true) {
+  document.querySelectorAll('.style-nav-group').forEach(group => {
+    const summary = group.querySelector('summary');
+    summary.setAttribute('aria-expanded', String(group.open));
+    summary.addEventListener('click', event => {
+      event.preventDefault();
+      const opening = summary.getAttribute('aria-expanded') !== 'true';
+      if (opening && autoCollapse()) collapseOtherStyleNav(group);
+      setStyleNavExpanded(group, opening);
+    });
+  });
 }
 
 if (import.meta.hot) import.meta.hot.dispose(() => {
