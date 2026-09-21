@@ -31,11 +31,13 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、风格�
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.6.4
+### 下载 v5.6.5
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.6.4_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.6.4/AIAS_5.6.4_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+| [AIAS_5.6.5_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.6.5/AIAS_5.6.5_x64-setup.exe) | 中文安装向导，按当前用户安装，无需管理员权限 |
+
+v5.6.5 侧栏导航更新：风格实验室 29 套风格归入 6 个可折叠分组（字符与线条、故障与信号、绘画与手作、像素与印刷、色彩与纹理、光学与扭曲），分组显示数量并高亮当前所在组；新增设置「切换区域时自动收起其他分类」（默认开启，可关闭以同时展开多组）。
 
 v5.6.4 GPU 加速更新：新增 DirectML 后端（NVIDIA/AMD/Intel 全显卡通用，应用内一键下载约 12 MB，无需安装 CUDA Toolkit）；修复 CUDA 依赖缺失导致整批失败的问题（现自动回退 CPU 保证出图）；烘焙 UV 判定对齐 Substance Painter（镜像/分层堆叠与零面积退化视为设计，不合格源 UV 按原样烘焙并给出警告）；安装器语言按系统语言自动选择。
 
