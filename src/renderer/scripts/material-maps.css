@@ -5,12 +5,12 @@
 .map-toolbar > span { margin-left: auto; font-size: 11px; color: var(--text-dim); }
 .map-tabs { padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface, #151519); }
 .map-tabs .secondary-action { min-height: 32px; border-color: transparent; background: transparent; color: var(--text-dim); }
-.map-tabs .secondary-action.selected { background: #25252c; border-color: var(--border-strong); color: var(--text); }
+.map-tabs .secondary-action.selected { background: var(--surface-hover); border-color: var(--border-strong); color: var(--text); }
 .map-tabs #map-retry { margin-left: auto; }
 .map-files { display: flex; gap: 8px; overflow: auto; max-height: 100px; }
 .map-file { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
 .map-file > button:first-child { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.map-file > button.selected { border-color: var(--border-strong); background: #25252c; color: var(--text); }
+.map-file > button.selected { border-color: var(--border-strong); background: var(--surface-hover); color: var(--text); }
 .map-file .icon-button { width: 28px; min-width: 28px; min-height: 28px; }
 .map-stage { height: clamp(280px, 48vh, 520px); min-height: 260px; overflow: auto; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 14px; background: repeating-conic-gradient(#17171c 0% 25%, #1c1c22 0% 50%) 50% / 20px 20px; }
 .map-stage canvas { display: block; max-width: none; touch-action: none; }

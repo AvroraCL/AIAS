@@ -124,7 +124,7 @@ input[type="checkbox"]:checked {
 
 input[type="checkbox"]:checked::after {
   transform: translateX(15px);
-  background: #0d0d0f;
+  background: var(--bg);
 }
 
 input[type="checkbox"]:checked:hover:not(:disabled) {
@@ -190,7 +190,7 @@ textarea:focus { border-color: var(--accent); }
   min-width: 0;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  background: #101012;
+  background: var(--surface);
 }
 
 .mode-tabs {
@@ -329,7 +329,7 @@ html[data-theme="light"] .toggle-track { background: #e2e2ea; }
 
 .toolbar-button { min-height: 38px; padding: 0 12px; color: var(--text-soft); }
 .toolbar-button svg { width: 16px; height: 16px; }
-.count-badge { min-width: 19px; height: 19px; padding: 0 5px; border-radius: 999px; color: var(--text); background: #2b2b30; font-size: 10px; line-height: 19px; text-align: center; }
+.count-badge { min-width: 19px; height: 19px; padding: 0 5px; border-radius: 999px; color: var(--text); background: var(--surface-hover); font-size: 10px; line-height: 19px; text-align: center; }
 
 .icon-button {
   display: inline-grid;
@@ -380,9 +380,9 @@ html[data-theme="light"] .toggle-track { background: #e2e2ea; }
   width: 100%;
   min-height: 132px;
   padding: 22px;
-  border: 1px dashed #3c3c42;
+  border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
-  background: #101012;
+  background: var(--surface);
   text-align: left;
 }
 
@@ -448,9 +448,9 @@ html[data-theme="light"] .toggle-track { background: #e2e2ea; }
   justify-content: center;
   gap: 10px;
   margin-top: 14px;
-  border: 1px dashed #3c3c42;
+  border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
-  background: #101012;
+  background: var(--surface-raised);
   color: var(--text-dim);
   text-align: center;
   min-height: 260px;
@@ -689,7 +689,7 @@ html[data-theme="light"] .toggle-track { background: #e2e2ea; }
   min-width: 0;
   min-height: 0;
   border-left: 1px solid var(--border);
-  background: #101012;
+  background: var(--surface);
 }
 
 .inspector-title {
@@ -731,17 +731,17 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .toggle-label input:disabled ~ span { opacity: 0.45; }
 .hair-refiner-content > .settings-hint { display: block; margin-top: 8px; }
 
-.run-area { padding: 14px 16px 16px; border-top: 1px solid var(--border); background: #0f0f11; }
+.run-area { padding: 14px 16px 16px; border-top: 1px solid var(--border); background: var(--surface-raised); }
 .run-area p { min-height: 17px; margin: 0 0 9px; color: var(--text-dim); font-size: 10px; }
 .run-area p.ready { color: var(--success); }
 .run-button { display: flex; width: 100%; min-height: 44px; align-items: center; justify-content: center; gap: 8px; border-color: var(--accent); color: #0d0d0f; background: var(--accent); font-size: 13px; font-weight: 700; }
 .run-button:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
-.run-button:disabled { border-color: #3d3d44; color: #8b8b93; background: #242428; opacity: 1; }
+.run-button:disabled { border-color: var(--border-strong); color: var(--text-dim); background: var(--surface-hover); opacity: 1; }
 .run-button.busy svg { animation: spin 0.8s linear infinite; }
 .task-progress { margin-top: 10px; }
 .task-progress > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--text-dim); font-size: 10px; }
 .task-progress strong { color: var(--text-soft); font-size: 10px; }
-.task-progress-track { height: 5px; overflow: hidden; border-radius: 999px; background: #2a2a2f; }
+.task-progress-track { height: 5px; overflow: hidden; border-radius: 999px; background: var(--surface-hover); }
 .task-progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent-strong); transition: width 180ms ease; }
 .task-progress-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .task-progress-footer .task-stop { min-height: 26px; padding: 0 12px; margin-top: 6px; font-size: 10px; }
@@ -828,7 +828,7 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
   height: 208px;
   overflow: hidden;
   border-top: 1px solid var(--border);
-  background: #0b0b0d;
+  background: var(--bg-deep);
   transition: height 180ms ease;
 }
 
