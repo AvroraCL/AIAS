@@ -82,23 +82,35 @@ button:disabled {
   opacity: 0.46;
 }
 
-/* 全局自定义勾选框：替换浏览器原生样式，配合应用黑白主题。
-   尺寸默认 15px，被组件级规则（如 .blk-param-inline input）覆盖时随之缩放。 */
+/* 全局勾选框统一为滑块开关：与 .toggle-track 组件同规格（34×19 轨道 + 13px 圆钮）。
+   .toggle-label 内的隐藏宿主输入（1px 透明）不受影响——其组件规则在文件后部覆盖。 */
 input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
   flex: none;
-  width: 15px;
-  height: 15px;
+  position: relative;
+  width: 34px;
+  height: 19px;
+  min-height: 0;
+  padding: 0;
   margin: 0;
-  border: 1px solid #4a4a55;
-  border-radius: 4px;
-  background-color: #202025;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background-color: #2a2a2f;
   cursor: pointer;
-  transition: border-color var(--transition), background-color var(--transition);
+  transition: background var(--transition), border-color var(--transition);
+}
+
+input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #d9d9dd;
+  transition: transform var(--transition), background var(--transition);
 }
 
 input[type="checkbox"]:hover:not(:disabled) {
@@ -108,7 +120,11 @@ input[type="checkbox"]:hover:not(:disabled) {
 input[type="checkbox"]:checked {
   border-color: var(--accent);
   background-color: var(--accent);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M3 8.6 6.4 12 13 4.6' fill='none' stroke='%2317171c' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+}
+
+input[type="checkbox"]:checked::after {
+  transform: translateX(15px);
+  background: #0d0d0f;
 }
 
 input[type="checkbox"]:checked:hover:not(:disabled) {
