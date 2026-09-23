@@ -38,6 +38,8 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、风格�
 |---|---|
 | [AIAS_5.7.0_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.7.0/AIAS_5.7.0_x64-setup.exe) | Windows 安装包，按当前用户安装无需管理员权限 |
 
+安装包 SHA-256：`827cf9b638f8265ebabb939fc53471e6c990ef99f54278bb21ebc51b50191b64`。完整更新说明见 [v5.7.0 正式发布页](https://github.com/AvroraCL/AIAS/releases/tag/v5.7.0)；应用内自动更新清单也已更新至 5.7.0。
+
 v5.7.0 更新设置与日常操作：设置页改为清晰的分组列表，新增可保存的中文 / English 切换；统一调整浅色主题和侧栏图标。默认输出目录、跟随输入目录及同名文件策略现能正确作用于各处理功能；BLK 映射批量填充和烘焙缓存清理也增加了保护。
 
 ### 历史版本 v5.6.6
