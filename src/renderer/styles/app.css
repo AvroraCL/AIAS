@@ -249,23 +249,24 @@ html[data-theme="light"] .theme-icon-sun { display: none; }
 
 /* 黑白主题：亮色覆盖根变量（暗色为默认）。组件内少量硬编码深色在下方就近翻转。 */
 html[data-theme="light"] {
-  --bg: #f4f4f7;
-  --bg-deep: #ececf1;
-  --surface: #ffffff;
-  --surface-raised: #ffffff;
-  --surface-hover: #ececf2;
-  --border: #d8d8e0;
-  --border-strong: #c2c2cd;
-  --text: #17171c;
-  --text-soft: #3d3d46;
-  --text-dim: #80808a;
-  --accent: #17171c;
-  --accent-hover: #2e2e37;
-  --accent-strong: #17171c;
-  --accent-soft: rgba(23, 23, 28, 0.09);
+  /* 柔灰基调：避免大面积纯白刺眼，表面与背景保持一档灰阶差 */
+  --bg: #e9e9ee;
+  --bg-deep: #e1e1e7;
+  --surface: #f4f4f6;
+  --surface-raised: #efeff2;
+  --surface-hover: #e4e4ea;
+  --border: #d0d0d9;
+  --border-strong: #b8b8c3;
+  --text: #1c1c21;
+  --text-soft: #42424b;
+  --text-dim: #7a7a85;
+  --accent: #23232b;
+  --accent-hover: #38383f;
+  --accent-strong: #23232b;
+  --accent-soft: rgba(35, 35, 43, 0.1);
   --danger: #c2372f;
-  --shadow-sm: 0 4px 16px rgba(20, 20, 40, 0.1);
-  --shadow-md: 0 16px 36px rgba(20, 20, 40, 0.14);
+  --shadow-sm: 0 4px 16px rgba(30, 30, 50, 0.12);
+  --shadow-md: 0 16px 36px rgba(30, 30, 50, 0.16);
 }
 html[data-theme="light"] .mode-tab.active { color: var(--text); }
 html[data-theme="light"] input[type="checkbox"] { border-color: #c2c2cd; background-color: #e8e8ef; }
@@ -400,7 +401,7 @@ html[data-theme="light"] .toggle-track { background: #e2e2ea; }
   background: var(--accent-soft);
 }
 
-.drop-icon { width: 52px; height: 52px; border: 1px solid rgba(255, 255, 255, 0.28); border-radius: var(--radius); }
+.drop-icon { width: 52px; height: 52px; border: 1px solid var(--border-strong); border-radius: var(--radius); }
 .drop-icon svg { width: 22px; height: 22px; }
 .drop-copy { min-width: 0; }
 .drop-copy strong { display: block; font-size: 15px; }
