@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { blkFileGroup, bulkFromFill, createBlkRules, defaultBlkName, renderBlk, validateBlk } from './blk-core.mjs';
+import { blkFileGroup, bulkFromFill, createBlkRules, defaultBlkName, highlightBlk, renderBlk, validateBlk } from './blk-core.mjs';
 
 test('groups DDS by suffix and fixes N files to replace_tex', () => {
   assert.equal(blkFileGroup('tank_C.DDS'), 'c');
@@ -62,4 +62,16 @@ test('bulkFromFill resets names by file name, stem, or clears them', () => {
   assert.ok(cleared.every(rule => rule.from === ''));
   // 纯函数：不改动原数组
   assert.ok(rules.every(rule => rule.from === 'manual_name'));
+});
+
+test('highlightBlk colors commands, keys, strings and escapes user text', () => {
+  const rules = createBlkRules(['a_c.dds']);
+  rules[0].command = 'set_tex';
+  rules[0].from = 'evil<b>&*';
+  const html = highlightBlk(renderBlk(rules));
+  assert.match(html, /<span class="tok-kw">set_tex<\/span>/);
+  assert.match(html, /<span class="tok-key">from:t<\/span>/);
+  assert.match(html, /<span class="tok-str">&quot;evil&lt;b&gt;&amp;\*&quot;<\/span>/);
+  assert.ok(!html.includes('<b>'), '用户输入不允许逃逸为标签');
+  assert.match(highlightBlk('name:t="user"'), /tok-key">name:t/);
 });

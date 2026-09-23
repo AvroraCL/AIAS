@@ -1,4 +1,4 @@
-import { blkFileGroup, bulkFromFill, createBlkRules, defaultBlkName, diffBlk, renderBlk, validateBlk } from './blk-core.mjs';
+import { blkFileGroup, bulkFromFill, createBlkRules, defaultBlkName, diffBlk, highlightBlk, renderBlk, validateBlk } from './blk-core.mjs';
 import { createBlkThumbnails } from './blk-thumbnails.js';
 
 // 行内编辑的紧凑行视图：每条映射一行（启用开关 · 缩略图 · 目标 DDS · 原名输入 ·
@@ -335,7 +335,7 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
 
   function updatePreview() {
     const error = blocker();
-    preview.textContent = error ? '' : renderBlk(rules);
+    preview.innerHTML = error ? '' : highlightBlk(renderBlk(rules));
     $('blk-preview-status').textContent = error || `${fileName.value.replace(/\.blk$/i, '')}.blk · ${rules.filter(rule => rule.enabled).length} 条规则`;
     $('blk-preview-status').classList.toggle('invalid', Boolean(error));
     changed();

@@ -62,3 +62,24 @@ export function bulkFromFill(rules, mode) {
   };
   return rules.map(rule => ({ ...rule, from: apply(rule.to) }));
 }
+
+const escapeHtml = text => text.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+/// BLK 文本按 IDE 风格着色：指令关键字、键名、字符串值、括号分色。
+/// 输出为 HTML 片段（全部经 HTML 转义），供预览区 innerHTML 使用。
+export function highlightBlk(content) {
+  return content.replace(/\r\n/g, '\n').split('\n').map(line => {
+    let match;
+    if ((match = line.match(/^(\s*)(replace_tex|set_tex)(\{\s*)$/))) {
+      return `${match[1]}<span class="tok-kw">${match[2]}</span><span class="tok-punc">${match[3]}</span>`;
+    }
+    if ((match = line.match(/^(\s*)(\}\s*)$/))) {
+      return `${match[1]}<span class="tok-punc">${match[2]}</span>`;
+    }
+    if ((match = line.match(/^(\s*)([A-Za-z_][\w]*:t)(=)("(?:[^"\\]|\\.)*")(,?\s*)$/))) {
+      const value = match[4].slice(1, -1);
+      return `${match[1]}<span class="tok-key">${match[2]}</span><span class="tok-punc">${match[3]}</span><span class="tok-str">&quot;${escapeHtml(value)}&quot;</span><span class="tok-punc">${match[5]}</span>`;
+    }
+    return escapeHtml(line);
+  }).join('\n');
+}
