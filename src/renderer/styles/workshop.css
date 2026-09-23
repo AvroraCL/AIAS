@@ -10,7 +10,7 @@
 .app-shell { transition: grid-template-columns 260ms var(--motion-ease); }
 .app-sidebar { position: relative; background: var(--surface); }
 .sidebar-toggle { position: absolute; top: 50%; left: 50%; translate: -50% -50%; display: grid; place-items: center; width: 18px; min-width: 18px; height: 36px; min-height: 36px; padding: 0; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-hover); color: var(--text-dim); box-shadow: 0 2px 8px #0005; z-index: 1; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, color 180ms ease; }
-.sidebar-toggle:hover:not(:disabled) { background: #303039; border-color: #747481; color: #fff; }
+.sidebar-toggle:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--text-dim); color: var(--text); }
 .sidebar-toggle:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
 .sidebar-toggle svg { width: 12px; height: 12px; transition: transform 260ms var(--motion-ease); }
 .sidebar-collapsed .sidebar-toggle svg { transform: rotate(180deg); }

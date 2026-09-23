@@ -232,7 +232,7 @@ textarea:focus { border-color: var(--accent); }
 }
 
 .mode-tab svg { width: 17px; height: 17px; }
-.mode-tab:hover:not(:disabled) { border-color: transparent; color: var(--text); background: rgba(255, 255, 255, 0.045); }
+.mode-tab:hover:not(:disabled) { border-color: transparent; color: var(--text); background: var(--surface-hover); }
 .mode-tab.active { color: #fff; background: var(--accent-soft); }
 .mode-tab.active::before { position: absolute; top: 9px; bottom: 9px; left: 0; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent-strong); content: ""; }
 .mode-tab.active svg { color: var(--accent-strong); }
@@ -280,6 +280,8 @@ html[data-theme="light"] .primary-compact:not(:disabled) { color: #ffffff; }
 html[data-theme="light"] .run-button:disabled { color: var(--text-dim); }
 html[data-theme="light"] .thumb-badge.done { color: #ffffff; }
 html[data-theme="light"] ::selection { color: #ffffff; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c4c4cd; background-clip: padding-box; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #adadba; background-clip: padding-box; }
 
 .app-main {
   display: grid;
@@ -436,7 +438,7 @@ html[data-theme="light"] ::selection { color: #ffffff; }
 .file-chip strong { overflow: hidden; min-width: 0; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
 .file-chip small { display: block; color: var(--text-dim); font-size: 10px; }
 .chip-remove { display: grid; width: 28px; height: 28px; min-height: 28px; padding: 0; place-items: center; color: var(--text-dim); background: transparent; }
-.chip-remove:hover:not(:disabled) { color: #fff; border-color: rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); }
+.chip-remove:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-hover); }
 .chip-remove svg { width: 14px; height: 14px; }
 
 /* AI 抠图：预览画廊与前后对比 */
@@ -616,7 +618,7 @@ html[data-theme="light"] ::selection { color: #ffffff; }
   background: linear-gradient(135deg, #232428 0%, #1a1b1e 100%);
 }
 .anime-thumb:hover { border-color: var(--border-strong); }
-.anime-thumb.active { border-color: #fff; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35); }
+.anime-thumb.active { border-color: var(--accent-strong); box-shadow: 0 0 0 1px var(--accent-soft); }
 
 .thumb-badge {
   position: absolute;
@@ -717,7 +719,7 @@ html[data-theme="light"] ::selection { color: #ffffff; }
 .inspector-scroll { min-height: 0; overflow-y: auto; }
 .inspector-group { border-bottom: 1px solid var(--border); }
 .group-toggle { display: flex; width: 100%; min-height: 42px; align-items: center; justify-content: space-between; padding: 0 16px; border: none; border-radius: 0; color: var(--text-soft); background: transparent; text-align: left; font-size: 12px; font-weight: 700; }
-.group-toggle:hover:not(:disabled) { border-color: transparent; background: rgba(255, 255, 255, 0.03); }
+.group-toggle:hover:not(:disabled) { border-color: transparent; background: var(--surface-hover); }
 .group-toggle svg { width: 15px; height: 15px; color: var(--text-dim); transition: transform var(--transition); }
 .group-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .group-content { padding: 3px 16px 16px; }
@@ -789,7 +791,7 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 .skin-card-meta { color: var(--text-dim); font-size: 10px; text-align: right; }
 .skin-card .toggle-label { margin: 0; }
 .skin-delete { display: inline-grid; width: 32px; height: 32px; min-height: 32px; padding: 0; place-items: center; color: var(--text-dim); background: transparent; }
-.skin-delete:hover:not(:disabled) { color: #fff; border-color: rgba(255, 255, 255, 0.4); background: rgba(255, 255, 255, 0.12); }
+.skin-delete:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--surface-hover); }
 .skin-delete svg { width: 15px; height: 15px; }
 
 .skin-empty { display: grid; min-height: 310px; place-items: center; align-content: center; gap: 8px; color: var(--text-dim); text-align: center; }
