@@ -780,7 +780,7 @@ pub async fn bake_result_release(result_handle: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|dir| dir.join("bake-cache"))
@@ -843,7 +843,12 @@ fn with_legend(files: &[String]) -> Vec<String> {
     all
 }
 
-fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result<usize, String> {
+fn export_files(
+    cache_root: &Path,
+    files: &[String],
+    directory: &Path,
+    policy: &str,
+) -> Result<usize, String> {
     let root = std::fs::canonicalize(cache_root)
         .map_err(|error| format!("烘焙缓存目录不可用：{error}"))?;
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
@@ -864,8 +869,11 @@ fn export_files(cache_root: &Path, files: &[String], directory: &Path) -> Result
         let name = source
             .file_name()
             .ok_or_else(|| format!("无效的文件名：{}", source.display()))?;
-        std::fs::copy(&source, directory.join(name))
-            .map_err(|error| format!("导出 {} 失败：{error}", name.to_string_lossy()))?;
+        std::fs::copy(
+            &source,
+            crate::safety::conflict_free(directory.join(name), policy),
+        )
+        .map_err(|error| format!("导出 {} 失败：{error}", name.to_string_lossy()))?;
         exported += 1;
     }
     Ok(exported)
@@ -913,7 +921,8 @@ pub async fn bake_export(
         }
         let root = bake_cache_root(&app)?;
         let files = with_legend(&files);
-        let exported = export_files(&root, &files, Path::new(&directory))?;
+        let policy = crate::conflict_policy(&app);
+        let exported = export_files(&root, &files, Path::new(&directory), &policy)?;
         Ok(json!({ "exported": exported, "directory": directory }))
     })
     .await
@@ -986,6 +995,7 @@ mod tests {
             cache.path(),
             &[a.display().to_string(), b.display().to_string()],
             output.path(),
+            "overwrite",
         )
         .unwrap();
         assert_eq!(exported, 2);
@@ -1002,11 +1012,16 @@ mod tests {
             cache.path(),
             &[outside.display().to_string()],
             output.path(),
+            "overwrite",
         );
         assert!(rejected.unwrap_err().contains("缓存目录之外"));
         let cache_child = cache.path().join("manual-export");
-        let rejected_destination =
-            export_files(cache.path(), &[a.display().to_string()], &cache_child);
+        let rejected_destination = export_files(
+            cache.path(),
+            &[a.display().to_string()],
+            &cache_child,
+            "overwrite",
+        );
         assert!(rejected_destination
             .unwrap_err()
             .contains("不能位于烘焙缓存目录内"));
@@ -1037,9 +1052,21 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let file = cache.path().join("2_id.png");
         std::fs::write(&file, b"first").unwrap();
-        export_files(cache.path(), &[file.display().to_string()], output.path()).unwrap();
+        export_files(
+            cache.path(),
+            &[file.display().to_string()],
+            output.path(),
+            "overwrite",
+        )
+        .unwrap();
         std::fs::write(&file, b"second").unwrap();
-        export_files(cache.path(), &[file.display().to_string()], output.path()).unwrap();
+        export_files(
+            cache.path(),
+            &[file.display().to_string()],
+            output.path(),
+            "overwrite",
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(output.path().join("2_id.png")).unwrap(),
             b"second"

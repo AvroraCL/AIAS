@@ -79,13 +79,46 @@ struct Settings {
     superres_output_path: String,
     #[serde(default = "default_superres_scale")]
     superres_scale: String,
+    /// 全局默认输出目录（第一档设置）：空 = 未配置。
+    #[serde(default)]
+    default_output_dir: String,
+    /// 输出目录策略：ask（沿用各模块记录值，缺省时询问）/ fixed（始终用默认目录）
+    /// / input（跟随输入文件所在目录）。
+    #[serde(default = "default_output_strategy")]
+    output_strategy: String,
+    /// 导出文件冲突策略：overwrite（默认，原样覆盖）/ suffix（已存在时追加 -N）。
+    #[serde(default)]
+    file_conflict: String,
+    /// 长任务完成时发送系统通知。
+    #[serde(default = "default_notify_on_complete")]
+    notify_on_complete: bool,
+}
+
+fn default_output_strategy() -> String {
+    "ask".into()
+}
+
+fn default_notify_on_complete() -> bool {
+    true
+}
+
+/// 从磁盘读取输出冲突策略；读取失败按 overwrite 处理，不阻塞任务。
+pub(crate) fn conflict_policy(app: &AppHandle) -> String {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return "overwrite".into();
+    };
+    load_settings(&dir.join("settings.json"))
+        .map(|settings| settings.file_conflict)
+        .unwrap_or_else(|_| "overwrite".into())
 }
 
 fn default_comfyui_address() -> String {
     "127.0.0.1:8188".into()
 }
 
-fn default_auto_collapse_style_nav() -> bool { true }
+fn default_auto_collapse_style_nav() -> bool {
+    true
+}
 
 fn default_superres_scale() -> String {
     "2".into()
@@ -122,6 +155,10 @@ impl Default for Settings {
             image_to_dds_format: "DXT5".into(),
             scale_target: "none".into(),
             skin_manager_path: String::new(),
+            default_output_dir: String::new(),
+            output_strategy: default_output_strategy(),
+            file_conflict: "overwrite".into(),
+            notify_on_complete: default_notify_on_complete(),
             comfyui_address: default_comfyui_address(),
             anime_cutout_output_path: String::new(),
             anime_model: default_anime_model(),
@@ -559,6 +596,88 @@ fn settings_set(state: State<AppState>, patch: serde_json::Value) -> Result<Sett
     Ok(settings)
 }
 
+/// 目录递归字节数（含文件数）；目录不存在返回 0。
+fn dir_stats(path: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    let Ok(entries) = fs::read_dir(path) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            let (sub_bytes, sub_files) = dir_stats(&entry.path());
+            bytes += sub_bytes;
+            files += sub_files;
+        } else {
+            bytes += metadata.len();
+            files += 1;
+        }
+    }
+    (bytes, files)
+}
+
+fn thumbs_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("thumbs"))
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))
+}
+
+#[tauri::command]
+fn storage_stats(app: AppHandle) -> Result<serde_json::Value, String> {
+    let bake = model_bake::bake_cache_root(&app)?;
+    let (thumbs_bytes, thumbs_files) = dir_stats(&thumbs_dir(&app)?);
+    let (bake_bytes, bake_files) = dir_stats(&bake);
+    Ok(serde_json::json!({
+        "thumbs": { "bytes": thumbs_bytes, "files": thumbs_files },
+        "bakeCache": { "bytes": bake_bytes, "files": bake_files },
+    }))
+}
+
+#[tauri::command]
+fn storage_clean(app: AppHandle, target: String) -> Result<serde_json::Value, String> {
+    let dir = match target.as_str() {
+        "thumbs" => thumbs_dir(&app)?,
+        "bakeCache" => model_bake::bake_cache_root(&app)?,
+        other => return Err(format!("未知清理目标：{other}")),
+    };
+    if !dir.exists() {
+        return Ok(serde_json::json!({ "bytes": 0 }));
+    }
+    let (bytes, _) = dir_stats(&dir);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(serde_json::json!({ "bytes": 0 }));
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            fs::remove_dir_all(&path).map_err(|e| format!("清理失败：{e}"))?;
+        } else {
+            fs::remove_file(&path).map_err(|e| format!("清理失败：{e}"))?;
+        }
+    }
+    Ok(serde_json::json!({ "bytes": bytes }))
+}
+
+/// 卸载 GPU 推理运行库（onnxruntime-gpu 约 700MB / directml 约 30MB），
+/// 下次需要时可在应用内重新下载。
+#[tauri::command]
+fn gpu_runtime_uninstall(app: AppHandle, kind: String) -> Result<(), String> {
+    let base = anime_base_dir(&app)?;
+    let dir = match kind.as_str() {
+        "cuda" => base.join("onnxruntime-gpu"),
+        "dml" => base.join("directml"),
+        other => return Err(format!("未知运行库：{other}")),
+    };
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| format!("卸载失败：{e}"))?;
+    }
+    Ok(())
+}
+
 fn load_settings(path: &Path) -> Result<Settings, String> {
     if !path.exists() {
         return Ok(Settings::default());
@@ -628,6 +747,7 @@ fn texture_merge_pbr_inner(
     app: &AppHandle,
     options: MergePbrOptions,
 ) -> Result<TaskResult, String> {
+    let policy = conflict_policy(app);
     require_directory(&options.input_path, "输入目录")?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let groups = find_texture_groups(Path::new(&options.input_path))?;
@@ -653,8 +773,14 @@ fn texture_merge_pbr_inner(
             );
             break;
         }
-        let c_path = Path::new(&options.output_path).join(format!("{}_c.dds", group.prefix));
-        let n_path = Path::new(&options.output_path).join(format!("{}_n.dds", group.prefix));
+        let c_path = safety::conflict_free(
+            Path::new(&options.output_path).join(format!("{}_c.dds", group.prefix)),
+            &policy,
+        );
+        let n_path = safety::conflict_free(
+            Path::new(&options.output_path).join(format!("{}_n.dds", group.prefix)),
+            &policy,
+        );
         // 逐组捕获：单组坏图跳过并在日志里带组名前缀，不再中断整个批次。
         let outcome = (|| -> Result<(), String> {
             process_base_color(
@@ -727,6 +853,7 @@ fn texture_split_pbr_inner(
     app: &AppHandle,
     options: SplitPbrOptions,
 ) -> Result<TaskResult, String> {
+    let policy = conflict_policy(app);
     safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let export_format = options.export_format.as_deref().unwrap_or("png");
@@ -782,7 +909,10 @@ fn texture_split_pbr_inner(
                     rgb,
                     width,
                     height,
-                    output_dir.join(format!("{prefix}_BaseColor.{export_format}")),
+                    safety::conflict_free(
+                        output_dir.join(format!("{prefix}_BaseColor.{export_format}")),
+                        &policy,
+                    ),
                     export_format,
                 )?;
                 if export_alpha {
@@ -790,7 +920,10 @@ fn texture_split_pbr_inner(
                         alpha,
                         width,
                         height,
-                        output_dir.join(format!("{prefix}_Alpha.{export_format}")),
+                        safety::conflict_free(
+                            output_dir.join(format!("{prefix}_Alpha.{export_format}")),
+                            &policy,
+                        ),
                         export_format,
                     )?;
                 }
@@ -811,19 +944,28 @@ fn texture_split_pbr_inner(
                     roughness,
                     width,
                     height,
-                    output_dir.join(format!("{prefix}_Roughness.{export_format}")),
+                    safety::conflict_free(
+                        output_dir.join(format!("{prefix}_Roughness.{export_format}")),
+                        &policy,
+                    ),
                     export_format,
                 )?;
                 save_luma_image(
                     metallic,
                     width,
                     height,
-                    output_dir.join(format!("{prefix}_Metallic.{export_format}")),
+                    safety::conflict_free(
+                        output_dir.join(format!("{prefix}_Metallic.{export_format}")),
+                        &policy,
+                    ),
                     export_format,
                 )?;
                 save_dynamic_image(
                     &DynamicImage::ImageRgba8(normal),
-                    output_dir.join(format!("{prefix}_Normal.{export_format}")),
+                    safety::conflict_free(
+                        output_dir.join(format!("{prefix}_Normal.{export_format}")),
+                        &policy,
+                    ),
                     export_format,
                 )?;
                 Ok(Some(format!("拆分 {stem}: Roughness / Metallic / Normal")))
@@ -883,6 +1025,7 @@ fn texture_create_mipmap_inner(
     app: &AppHandle,
     options: MipmapOptions,
 ) -> Result<TaskResult, String> {
+    let policy = conflict_policy(app);
     require_directory(&options.input_path, "输入目录")?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let alpha = options.alpha.as_deref().unwrap_or("keep");
@@ -917,7 +1060,7 @@ fn texture_create_mipmap_inner(
             } else {
                 "Mipmap_reference.dds"
             };
-            let output = Path::new(&options.output_path).join(name);
+            let output = safety::conflict_free(Path::new(&options.output_path).join(name), &policy);
             write_dds_with_mipmaps(&levels, &output, format)?;
             outputs.push(output.display().to_string());
         }
@@ -990,7 +1133,8 @@ fn texture_create_mipmap_inner(
             cancelled: true,
         });
     }
-    let output_file = Path::new(&options.output_path).join("Mipmap.dds");
+    let output_file =
+        safety::conflict_free(Path::new(&options.output_path).join("Mipmap.dds"), &policy);
     write_dds_with_mipmaps(&images, &output_file, format)?;
     Ok(TaskResult {
         completed: files.len(),
@@ -1018,6 +1162,7 @@ fn texture_convert_images_to_dds_inner(
     app: &AppHandle,
     options: ConvertImagesOptions,
 ) -> Result<TaskResult, String> {
+    let policy = conflict_policy(app);
     safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let alpha = options.alpha.as_deref().unwrap_or("keep");
@@ -1040,14 +1185,17 @@ fn texture_convert_images_to_dds_inner(
             break;
         }
         let input = Path::new(file);
-        let output_file = Path::new(&options.output_path)
-            .join(
-                input
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("output"),
-            )
-            .with_extension("dds");
+        let output_file = safety::conflict_free(
+            Path::new(&options.output_path)
+                .join(
+                    input
+                        .file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("output"),
+                )
+                .with_extension("dds"),
+            &policy,
+        );
         // 逐文件捕获：单张坏图跳过并在日志里带文件名，不再中断整个批次。
         if let Err(error) = image_to_dds(input, &output_file, alpha, format, scale) {
             push_log(
@@ -1263,6 +1411,9 @@ fn anime_cutout_inner(
     app: Option<&AppHandle>,
     options: AnimeCutoutOptions,
 ) -> Result<TaskResult, String> {
+    let policy = app
+        .map(conflict_policy)
+        .unwrap_or_else(|| "overwrite".into());
     safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let base = match app {
@@ -1430,9 +1581,12 @@ fn anime_cutout_inner(
             // 目标恰好是本批另一张输入图：换名保原图。
             let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
             if input_paths.contains(&canonical) {
-                Path::new(&options.output_path).join(name.replace(".png", "_cutout.png"))
+                safety::conflict_free(
+                    Path::new(&options.output_path).join(name.replace(".png", "_cutout.png")),
+                    &policy,
+                )
             } else {
-                path
+                safety::conflict_free(path, &policy)
             }
         };
         let target = output_name(format!("{stem}_{model_id}{suffix}.png"));
@@ -1633,6 +1787,9 @@ fn superres_run_inner(
     app: Option<&AppHandle>,
     options: SuperResRunOptions,
 ) -> Result<TaskResult, String> {
+    let policy = app
+        .map(conflict_policy)
+        .unwrap_or_else(|| "overwrite".into());
     safety::unique_stems(&options.files)?;
     fs::create_dir_all(&options.output_path).map_err(to_string_error)?;
     let base = match app {
@@ -1730,8 +1887,10 @@ fn superres_run_inner(
             );
             continue;
         }
-        let target =
-            Path::new(&options.output_path).join(superres_output_name(stem, &options.model, scale));
+        let target = safety::conflict_free(
+            Path::new(&options.output_path).join(superres_output_name(stem, &options.model, scale)),
+            &policy,
+        );
         let label = input
             .file_name()
             .and_then(|value| value.to_str())

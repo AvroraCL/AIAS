@@ -872,7 +872,9 @@ pub fn install_dml_ort(app: &AppHandle, base: &Path) -> Result<(), String> {
     let bundled = if bundled.exists() {
         bundled
     } else {
-        PathBuf::from("assets").join("directml").join("DirectML.dll")
+        PathBuf::from("assets")
+            .join("directml")
+            .join("DirectML.dll")
     };
     if !bundled.exists() {
         return Err("安装目录缺少 DirectML.dll，请重新安装应用。".into());

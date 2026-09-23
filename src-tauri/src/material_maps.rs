@@ -352,7 +352,7 @@ fn path_key(path: &Path) -> String {
 
 // Preflight every final output before processing any input. Canonical parents detect
 // relative paths and directory aliases; existing output canonicalization detects symlinks.
-fn output_plan(options: &RunOptions) -> Result<Vec<Vec<PathBuf>>, String> {
+fn output_plan(options: &RunOptions, policy: &str) -> Result<Vec<Vec<PathBuf>>, String> {
     options.parameters.validate()?;
     if !["normal", "height"].contains(&options.kind.as_str()) || options.files.is_empty() {
         return Err("请选择生成类型和素材。".into());
@@ -381,7 +381,10 @@ fn output_plan(options: &RunOptions) -> Result<Vec<Vec<PathBuf>>, String> {
             kinds
                 .into_iter()
                 .map(|kind| {
-                    let path = root.join(format!("{name}_{kind}.png"));
+                    let path = crate::safety::conflict_free(
+                        root.join(format!("{name}_{kind}.png")),
+                        &policy,
+                    );
                     let key = path_key(&path);
                     if !seen.insert(key.clone()) {
                         return Err(format!(
@@ -420,11 +423,14 @@ fn save(image: &DynamicImage, path: &Path) -> Result<(), String> {
     })
 }
 fn generate(app: Option<&AppHandle>, options: RunOptions) -> Result<crate::TaskResult, String> {
+    let policy = app
+        .map(crate::conflict_policy)
+        .unwrap_or_else(|| "overwrite".into());
     if options.output_path.trim().is_empty() {
         return Err("请选择输出目录。".into());
     }
     std::fs::create_dir_all(&options.output_path).map_err(crate::to_string_error)?;
-    let plan = output_plan(&options)?;
+    let plan = output_plan(&options, &policy)?;
     let mut outputs = Vec::new();
     let mut logs = Vec::new();
     let mut completed = 0;
@@ -702,11 +708,15 @@ mod tests {
             kind: "normal".into(),
             parameters: Parameters::default(),
         };
-        assert!(output_plan(&options).unwrap_err().contains("重名"));
+        assert!(output_plan(&options, "overwrite")
+            .unwrap_err()
+            .contains("重名"));
         options.files[1] = root.join("hero_normal.png").display().to_string();
-        assert!(output_plan(&options).unwrap_err().contains("覆盖输入"));
+        assert!(output_plan(&options, "overwrite")
+            .unwrap_err()
+            .contains("覆盖输入"));
         options.files = vec![root.join("hero_basecolor.png").display().to_string()];
-        assert!(output_plan(&options).unwrap()[0][0].ends_with("hero_normal.png"));
+        assert!(output_plan(&options, "overwrite").unwrap()[0][0].ends_with("hero_normal.png"));
     }
     #[test]
     fn generation_writes_sixteen_bit_height_and_pbr_named_normal() {

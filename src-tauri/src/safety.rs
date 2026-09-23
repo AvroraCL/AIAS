@@ -37,6 +37,32 @@ pub(crate) fn task_cancel_pending() -> bool {
     TASK_CANCEL.load(Ordering::SeqCst)
 }
 
+/// 输出文件冲突策略：overwrite 原样返回（历史行为）；suffix 在目标已存在时
+/// 追加 -1..-N 后缀取第一个空闲名。所有导出写点统一经此函数取名。
+pub fn conflict_free(path: std::path::PathBuf, policy: &str) -> std::path::PathBuf {
+    if policy != "suffix" || !path.exists() {
+        return path;
+    }
+    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default()
+        .to_string();
+    let extension = path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+    for index in 1u32.. {
+        let candidate = parent.join(format!("{stem}-{index}{extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    path
+}
+
 pub(crate) fn unique_stems(files: &[String]) -> Result<(), String> {
     let mut seen = HashSet::new();
     for file in files {
@@ -139,6 +165,19 @@ mod tests {
     fn rejects_cross_directory_and_extension_collisions() {
         assert!(unique_stems(&["a/Hero.png".into(), "b/hero.jpg".into()]).is_err());
         assert!(unique_stems(&["a/hero.png".into(), "b/hero_pose.jpg".into()]).is_ok());
+    }
+    #[test]
+    fn conflict_free_appends_numeric_suffix_only_when_policy_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.png");
+        std::fs::write(&target, b"1").unwrap();
+        // overwrite 策略原样返回；suffix 找第一个空闲名，且不再占用已存在的 -1。
+        assert_eq!(conflict_free(target.clone(), "overwrite"), target);
+        let first = conflict_free(target.clone(), "suffix");
+        assert_eq!(first.file_name().unwrap(), "out-1.png");
+        std::fs::write(&first, b"2").unwrap();
+        let second = conflict_free(target, "suffix");
+        assert_eq!(second.file_name().unwrap(), "out-2.png");
     }
     #[test]
     fn task_cancel_request_is_consumed_once() {

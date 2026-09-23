@@ -11,6 +11,7 @@ let modelBakeUI;
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { isPermissionGranted as notifyPermissionGranted, requestPermission as notifyRequestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
 import { animateView, toggleGroup, bindStyleNavMotion, collapseOtherStyleNav } from "./motion.js";
@@ -91,7 +92,8 @@ import {
   LayoutDashboard,
   Thermometer,
   Rainbow,
-  FileCode2
+  FileCode2,
+  FolderOutput
 } from "lucide";
 
 const defaults = {
@@ -387,6 +389,9 @@ const state = {
 
 const iconSet = {
   ClipboardCopy,
+  FolderOutput,
+  HardDrive,
+  Bell,
   PenLine,
   Zap,
   Target,
@@ -1002,6 +1007,10 @@ function createTauriApi() {
       gpuRuntimeState: () => invoke("gpu_runtime_state"),
       installGpuRuntime: () => invoke("install_gpu_runtime"),
       installDmlRuntime: () => invoke("install_dml_runtime")
+    },
+    storage: {
+      stats: () => invoke("storage_stats"),
+      clean: target => invoke("storage_clean", { target })
     },
     superres: {
       modelsStatus: () => invoke("superres_models_status"),
@@ -2128,7 +2137,7 @@ async function runSuperres(modelId, button) {
   const scale = superresScale();
   addActivity(`开始${superresLabels[modelId]}`, `${state.superresFiles.length} 张图片 · 放大 ${scale} 倍`);
   const files = [...state.superresFiles];
-  const outputPath = $("superres-output").value;
+  const outputPath = effectiveOutputDir($("superres-output").value, files[0]);
   const requestKeys = new Map(files.map((file) => [file, superresResultKey(file, modelId, scale)]));
   const revision = state.superresPreviewRevision || 0;
   state.superresRunning = true;
@@ -2526,6 +2535,7 @@ async function withLog(logId, button, action, title) {
       if (panel) panel.dataset.status = partial ? "partial" : "success";
       setTaskProgress(result.completed, result.total, partial ? `处理结束 · 成功 ${result.completed}/${result.total}，其余项目请查看日志` : `任务完成 · ${result.completed}/${result.total}`, 100);
       addActivity(title || "任务完成", `${result.completed} / ${result.total}`, partial ? "idle" : "success");
+      notifyDesktop(title || "任务完成", `成功 ${result.completed} / ${result.total}`);
     }
     state.lastOutputPath = getModeOutputPath();
     $("open-current-output")?.classList.toggle("hidden", !state.lastOutputPath);
@@ -2533,6 +2543,7 @@ async function withLog(logId, button, action, title) {
   } catch (error) {
     if (panel) panel.dataset.status = "error";
     setTaskProgress(0, 1, `任务失败 · ${error.message || error}`, Number(panel?.dataset.percent || 0));
+    notifyDesktop("任务失败", String(error.message || error));
     appendLogLine(log, `失败：${error.message || error}`, "error");
     addActivity(title || "任务失败", error.message || String(error), "error");
     return null;
@@ -2545,6 +2556,108 @@ async function withLog(logId, button, action, title) {
     resetTaskStop(stopButton);
     updateStatus();
   }
+}
+
+async function refreshStoragePanel() {
+  if (!isTauriRuntime) {
+    setText("set-storage-thumbs", "缩略图缓存：桌面版可查看");
+    setText("set-storage-bake", "烘焙缓存：桌面版可查看");
+    return;
+  }
+  try {
+    const stats = await api.storage.stats();
+    setText("set-storage-thumbs", `缩略图缓存：${formatBytes(stats?.thumbs?.bytes || 0)} · ${stats?.thumbs?.files || 0} 个文件`);
+    setText("set-storage-bake", `烘焙缓存：${formatBytes(stats?.bakeCache?.bytes || 0)} · ${stats?.bakeCache?.files || 0} 个文件`);
+  } catch (error) {
+    setText("set-storage-thumbs", "缓存占用读取失败");
+    setText("set-storage-bake", "缓存占用读取失败");
+  }
+  await renderStorageModels();
+}
+
+async function renderStorageModels() {
+  const container = $("set-storage-models");
+  if (!container) return;
+  const entries = [];
+  try {
+    for (const model of state.animeModels || []) {
+      if (model.installed) entries.push({ group: "抠图模型", name: animeModelCatalog[model.id]?.label || model.id, size: model.totalSize, uninstall: () => api.anime.modelUninstall(model.id) });
+    }
+    if (state.animeHairStatus?.installed) entries.push({ group: "边缘精修", name: "ViTMatte 发丝模型", size: state.animeHairStatus.totalSize, uninstall: () => api.anime.hairRefinerUninstall() });
+    const superresModels = await api.superres.modelsStatus();
+    for (const model of superresModels || []) {
+      if (model.installed) entries.push({ group: "超分模型", name: superresLabels?.[model.id] || model.id, size: model.totalSize, uninstall: () => api.superres.modelUninstall(model.id) });
+    }
+    const gpu = state.gpuRuntime;
+    if (gpu?.runtimeInstalled) entries.push({ group: "GPU 运行库", name: "onnxruntime-gpu（CUDA）", size: null, uninstall: () => invoke("gpu_runtime_uninstall", { kind: "cuda" }) });
+    if (gpu?.dmlInstalled) entries.push({ group: "GPU 运行库", name: "onnxruntime-directml", size: null, uninstall: () => invoke("gpu_runtime_uninstall", { kind: "dml" }) });
+  } catch { /* 单项失败不阻塞列表 */ }
+  container.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("small");
+    empty.className = "settings-hint";
+    empty.textContent = "暂无已安装模型或运行库。";
+    container.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "settings-row";
+    const label = document.createElement("small");
+    label.className = "settings-hint";
+    label.textContent = `${entry.group} · ${entry.name}${entry.size ? " · " + formatBytes(entry.size) : ""}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-action";
+    button.textContent = "卸载";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await entry.uninstall();
+        addActivity("已卸载", entry.name, "success");
+      } catch (error) {
+        addActivity("卸载失败", `${entry.name}：${error.message || error}`, "error");
+      }
+      await renderStorageModels();
+    });
+    row.append(label, button);
+    container.append(row);
+  }
+}
+
+document.querySelectorAll?.("[data-storage-clean]")?.forEach(button => {
+  button.addEventListener("click", async () => {
+    const target = button.dataset.storageClean;
+    button.disabled = true;
+    try {
+      const result = await api.storage.clean(target);
+      addActivity("缓存已清理", `${target === "thumbs" ? "缩略图" : "烘焙"}缓存释放 ${formatBytes(result?.bytes || 0)}`, "success");
+    } catch (error) {
+      addActivity("清理失败", error.message || String(error), "error");
+    }
+    button.disabled = false;
+    await refreshStoragePanel();
+  });
+});
+
+async function notifyDesktop(title, body) {
+  if (!state.settings?.notifyOnComplete || typeof isTauriRuntime === "undefined" || !isTauriRuntime) return;
+  try {
+    let granted = await notifyPermissionGranted();
+    if (!granted) granted = await notifyRequestPermission();
+    if (granted) sendNotification({ title: `AIAS · ${title}`, body: String(body).slice(0, 120) });
+  } catch { /* 通知失败不影响任务 */ }
+}
+
+function effectiveOutputDir(stored, firstInput) {
+  const settings = state.settings || {};
+  if (settings.outputStrategy === "fixed" && settings.defaultOutputDir) return settings.defaultOutputDir;
+  if (settings.outputStrategy === "input" && firstInput) {
+    const normalized = String(firstInput).replace(/[\/]+$/, "");
+    const cut = Math.max(normalized.lastIndexOf("\\"), normalized.lastIndexOf("/"));
+    if (cut > 0) return normalized.slice(0, cut);
+  }
+  return stored;
 }
 
 function collectSettings() {
@@ -2572,7 +2685,11 @@ function collectSettings() {
     animeDetailRecovery: Boolean($("anime-detail-recovery")?.checked),
     animeCutoutOutputPath: $("anime-output")?.value || "",
     superresOutputPath: $("superres-output")?.value || "",
-    superresScale: String(superresScale())
+    superresScale: String(superresScale()),
+    defaultOutputDir: $("set-output-dir")?.value || "",
+    outputStrategy: $("set-output-strategy")?.value || "ask",
+    fileConflict: $("set-file-conflict")?.value || "overwrite",
+    notifyOnComplete: $("set-notify-complete")?.checked ?? true
   };
 }
 
@@ -2601,6 +2718,9 @@ function applySettingsToForm() {
     "anime-hair-refiner": Boolean(settings.animeHairRefiner),
     "anime-detail-recovery": Boolean(settings.animeDetailRecovery),
     "anime-output": settings.animeCutoutOutputPath,
+    "set-output-dir": settings.defaultOutputDir,
+    "set-output-strategy": settings.outputStrategy || "ask",
+    "set-file-conflict": settings.fileConflict || "overwrite",
     "superres-output": settings.superresOutputPath,
     "superres-scale": settings.superresScale || "4"
   };
@@ -2810,7 +2930,26 @@ function bindTabs() {
     button.setAttribute("aria-label", button.title);
     button.addEventListener("click", () => applyMode(button.dataset.view));
   });
-  $("footer-settings")?.addEventListener("click", () => applyMode("settings"));
+  $("footer-settings")?.addEventListener("click", () => { applyMode("settings"); refreshStoragePanel(); });
+  $("set-notify-complete")?.addEventListener("change", async event => {
+    try { state.settings = await api.settings.set({ notifyOnComplete: event.target.checked }); } catch { }
+  });
+  $("set-output-strategy")?.addEventListener("change", async event => {
+    try { state.settings = await api.settings.set({ outputStrategy: event.target.value }); } catch { }
+  });
+  $("set-file-conflict")?.addEventListener("change", async event => {
+    try { state.settings = await api.settings.set({ fileConflict: event.target.value }); } catch { }
+  });
+  $("set-output-pick")?.addEventListener("click", async () => {
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === "string") {
+        $("set-output-dir").value = selected;
+        state.settings = await api.settings.set({ defaultOutputDir: selected });
+      }
+    } catch (e) { addActivity("选择失败", e.message || String(e), "error"); }
+  });
+  $("set-output-open")?.addEventListener("click", () => { const dir = $("set-output-dir")?.value; if (dir) api.shell.openPath(dir).catch?.(() => { }); });
 }
 
 function bindInspectorGroups() {
@@ -3143,7 +3282,7 @@ function bindRunActions() {
       () =>
         api.texture.mergePbr({
           inputPath: $("pbr-input").value,
-          outputPath: $("pbr-output").value,
+          outputPath: effectiveOutputDir($("pbr-output").value, $("pbr-input").value),
           alpha: $("pbr-alpha").value,
           format: $("pbr-format").value,
           scale: $("scale-target")?.value || "none"
@@ -3166,7 +3305,7 @@ function bindRunActions() {
       () =>
         api.texture.splitPbr({
           files: state.splitFiles,
-          outputPath: $("split-output").value,
+          outputPath: effectiveOutputDir($("split-output").value, $("pbr-input").value),
           exportFormat: $("split-format").value,
           exportAlpha: $("split-alpha").checked,
           scale: $("scale-target")?.value || "none"
@@ -3189,7 +3328,7 @@ function bindRunActions() {
       () =>
         api.texture.createMipmap({
           inputPath: $("mipmap-input").value,
-          outputPath: $("mipmap-output").value,
+          outputPath: effectiveOutputDir($("mipmap-output").value, $("mipmap-input").value),
           alpha: $("mipmap-alpha").value,
           intermediate: Boolean($("mipmap-intermediate")?.checked),
           format: $("mipmap-format").value,
@@ -3213,7 +3352,7 @@ function bindRunActions() {
       () =>
         api.texture.convertImagesToDds({
           files: state.imageFiles,
-          outputPath: $("image-output").value,
+          outputPath: effectiveOutputDir($("image-output").value, state.imageFiles[0]),
           alpha: $("image-alpha").value,
           format: $("image-format").value,
           scale: $("scale-target")?.value || "none"
@@ -3235,7 +3374,7 @@ function bindRunActions() {
     const experimental = [recoverDetails && "高分辨率细节补全", refineHair && "精细发丝边缘"].filter(Boolean).join(" + ");
     addActivity("开始抠图", `${state.animeFiles.length} 张图片 · ${animeModelCatalog[modelId]?.label || modelId}${experimental ? ` · ${experimental}` : ""}`);
     const files = [...state.animeFiles];
-    const outputPath = $("anime-output").value;
+    const outputPath = effectiveOutputDir($("anime-output").value, files[0]);
     const requestKeys = new Map(files.map((file) => [file, animeResultKey(file)]));
     state.animeRunning = true;
     renderAnimeModelStatus();
