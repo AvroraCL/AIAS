@@ -19,6 +19,7 @@
 .bake-floating-button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
 .bake-workspace button.busy::before { content: ''; width: 12px; height: 12px; flex: 0 0 12px; box-sizing: border-box; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .bake-import-button { min-width: auto; padding-inline: 13px; border-color: var(--accent); color: #0d0d0f; background: var(--accent); }
+html[data-theme="light"] .bake-import-button { color: #ffffff; }
 .bake-import-button:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
 
 .bake-view-tabs { justify-self: center; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }

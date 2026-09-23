@@ -274,6 +274,12 @@ html[data-theme="light"] input[type="checkbox"]:checked { border-color: var(--ac
 html[data-theme="light"] input[type="checkbox"]:checked::after { background: #ffffff; }
 html[data-theme="light"] .blk-from-input { border-color: #d0d0d9; background: #ffffff; color: var(--text); }
 html[data-theme="light"] .toggle-track { background: #e2e2ea; }
+html[data-theme="light"] .toggle-label input:checked + .toggle-track .toggle-thumb { background: #ffffff; }
+html[data-theme="light"] .run-button:not(:disabled),
+html[data-theme="light"] .primary-compact:not(:disabled) { color: #ffffff; }
+html[data-theme="light"] .run-button:disabled { color: var(--text-dim); }
+html[data-theme="light"] .thumb-badge.done { color: #ffffff; }
+html[data-theme="light"] ::selection { color: #ffffff; }
 
 .app-main {
   display: grid;
