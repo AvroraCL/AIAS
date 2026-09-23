@@ -4,6 +4,7 @@ mod anime;
 mod ascii;
 #[cfg(feature = "bake-validation")]
 mod bake_validation;
+mod blk;
 mod material_maps;
 mod model_bake;
 mod safety;
@@ -46,6 +47,8 @@ struct Settings {
     model_bake: serde_json::Value,
     pbr_input_path: String,
     pbr_output_path: String,
+    #[serde(default)]
+    blk_directory: String,
     pbr_alpha: String,
     pbr_format: String,
     split_output_path: String,
@@ -103,6 +106,7 @@ impl Default for Settings {
             model_bake: serde_json::Value::Null,
             pbr_input_path: String::new(),
             pbr_output_path: String::new(),
+            blk_directory: String::new(),
             pbr_alpha: "black".into(),
             pbr_format: "DXT5".into(),
             split_output_path: String::new(),
@@ -442,6 +446,8 @@ fn main() {
             updater_check_mirror,
             settings_get,
             ascii::ascii_export,
+            blk::blk_scan,
+            blk::blk_export,
             material_maps::material_maps_preview,
             material_maps::material_maps_generate,
             model_bake::bake_capabilities,

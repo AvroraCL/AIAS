@@ -1,4 +1,6 @@
 import { createAscii } from "./ascii.js";
+import { createBlk } from "./blk.js";
+let blkUI;
 import { createStyleLab } from "./style-lab.js";
 import { STYLE_IDS as STYLE_LAB_IDS, STYLE_LABELS as STYLE_LAB_LABELS, STYLE_DEFAULTS as STYLE_LAB_DEFAULTS } from "./style-lab-state.mjs";
 let asciiUI;
@@ -88,7 +90,8 @@ import {
   Diamond,
   LayoutDashboard,
   Thermometer,
-  Rainbow
+  Rainbow,
+  FileCode2
 } from "lucide";
 
 const defaults = {
@@ -96,6 +99,7 @@ const defaults = {
   autoCollapseStyleNav: true,
   pbrInputPath: "",
   pbrOutputPath: "",
+  blkDirectory: "",
   pbrAlpha: "black",
   pbrFormat: "DXT5",
   splitOutputPath: "",
@@ -164,6 +168,7 @@ const modeMeta = {
   "model-bake": { title: "模型烘焙", description: "生成 AO、曲率、世界法线等智能材质 Mesh Maps，并在模型上检查" },
   "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
   merge: { title: "PBR 多通道合成", description: "生成游戏可用的 _c 与 _n 通道贴图" },
+  blk: { title: "BLK 生成", description: "为 DDS 贴图建立游戏原贴图映射并生成涂装配置" },
   split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },
   mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
   "image-dds": { title: "图片转 DDS", description: "批量转换图片并统一 DDS 压缩格式" },
@@ -178,6 +183,7 @@ const modeMeta = {
 // 新增模式时在 index.html 加侧栏按钮/视图后，这里加一行即可，无需再散改
 // updateRunButtons / updateStatus / getRunBlocker / bindDragDrop 四处。
 const modeRegistry = {
+  blk: { run: "run-blk", log: "blk-log", output: "blk-directory", blocker: () => blkUI ? blkUI.blocker() : "请选择 DDS 文件夹。" },
   merge: {
     run: "run-merge", log: "merge-log", output: "pbr-output",
     blocker() {
@@ -408,6 +414,7 @@ const iconSet = {
   LayoutDashboard,
   Thermometer,
   Rainbow,
+  FileCode2,
   Box,
   ListTree,
   SlidersHorizontal,
@@ -898,6 +905,7 @@ function createBrowserPreviewApi() {
     texture: {
       findGroups: async () => [],
       mergePbr: () => previewOnly("PBR 合成"),
+      blkScan: async () => ({ files: [], existingContent: null }),
       splitPbr: () => previewOnly("PBR 拆分"),
       createMipmap: () => previewOnly("Mipmap 生成"),
       convertImagesToDds: () => previewOnly("图片转 DDS")
@@ -977,6 +985,8 @@ function createTauriApi() {
     texture: {
       findGroups: (inputPath) => invoke("texture_find_groups", { inputPath }),
       mergePbr: (options) => invoke("texture_merge_pbr", { options }),
+      blkScan: (directory, fileName) => invoke("blk_scan", { directory, fileName }),
+      blkExport: (options) => invoke("blk_export", { options }),
       splitPbr: (options) => invoke("texture_split_pbr", { options }),
       createMipmap: (options) => invoke("texture_create_mipmap", { options }),
       convertImagesToDds: (options) => invoke("texture_convert_images_to_dds", { options })
@@ -2541,6 +2551,7 @@ function collectSettings() {
   return {
     pbrInputPath: $("pbr-input")?.value || "",
     pbrOutputPath: $("pbr-output")?.value || "",
+    blkDirectory: $("blk-directory")?.value || "",
     pbrAlpha: $("pbr-alpha")?.value || "black",
     pbrFormat: $("pbr-format")?.value || "DXT5",
     splitOutputPath: $("split-output")?.value || "",
@@ -2571,6 +2582,7 @@ function applySettingsToForm() {
   const map = {
     "pbr-input": settings.pbrInputPath,
     "pbr-output": settings.pbrOutputPath,
+    "blk-directory": settings.blkDirectory,
     "pbr-alpha": settings.pbrAlpha,
     "pbr-format": settings.pbrFormat,
     "split-output": settings.splitOutputPath,
@@ -2682,7 +2694,7 @@ function updateStatus() {
       || (mode === "superres-general" && !isSuperresModelReady("general"));
   }
 
-  $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnable);
+  $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnable || (!isTauriRuntime && mode === "blk"));
 }
 
 function getRunBlocker(mode) {
@@ -2746,6 +2758,7 @@ function applyMode(mode) {
   styleLabUI?.activate(mode);
   materialMapsUI?.activate(mode);
   modelBakeUI?.activate(mode);
+  blkUI?.activate(mode);
   syncActiveLog(mode);
   updateRunButtons(mode);
   updateInspector();
@@ -3109,6 +3122,13 @@ function bindRunAction(id, action) {
 }
 
 function bindRunActions() {
+  bindRunAction("run-blk", async () => {
+    const result = await blkUI.generate();
+    if (result) {
+      addActivity("BLK 已生成", result, "success");
+      appendLogLine($("blk-log"), `生成 ${result}`, "success");
+    }
+  });
   bindRunAction("run-merge", async (button) => {
     await saveSettings();
     const blocker = getRunBlocker("merge");
@@ -3442,6 +3462,22 @@ async function boot() {
     busy: () => state.taskProgressActive, withLog, notify: error => addActivity("模型烘焙", String(error), "error"),
     progress: (fraction, phase) => { if (state.taskProgressActive) setTaskProgress(0, 1, phase, Math.round(fraction * 100)); },
   });
+  blkUI = createBlk({
+    desktop: isTauriRuntime,
+    scan: (directory, fileName) => api.texture.blkScan(directory, fileName),
+    exportFile: options => api.texture.blkExport(options),
+    pickDirectory: () => api.dialog.selectDirectory(),
+    saveDirectory: () => saveSettings(),
+    thumbnail: path => api.galleryThumbnail(path),
+    convertFileSrc,
+    confirm: openPreviewConfirm,
+    notify: (message, tone) => addActivity("BLK 生成", message, tone),
+    changed: updateStatus
+  });
+  if (isTauriRuntime && $("blk-directory")?.value) {
+    $("blk-file-name").value = basename($("blk-directory").value);
+    blkUI.rescan().catch(error => addActivity("BLK 扫描失败", error.message || String(error), "error"));
+  }
   enhanceSelectMenus();
   refreshIcons();
   bindTabs();

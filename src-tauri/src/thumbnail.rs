@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use image_dds::{ddsfile::Dds, image_from_dds};
 use tauri::{AppHandle, Manager};
 
 use crate::safety;
@@ -92,11 +93,37 @@ pub(crate) fn ensure_thumbnail(cache_dir: &Path, source: &Path) -> Result<PathBu
         return Ok(target);
     }
 
-    let (width, height) =
-        image::image_dimensions(source).map_err(|error| format!("无法读取图片尺寸：{error}"))?;
-    safety::memory_budget(width, height, 32)?;
-    let image = image::open(source).map_err(|error| format!("无法解码图片：{error}"))?;
-    let thumbnail = image.thumbnail(THUMB_SIZE, THUMB_SIZE);
+    let image = if source
+        .extension()
+        .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("dds"))
+    {
+        let file = fs::File::open(source).map_err(to_string_error)?;
+        let dds = Dds::read(&mut std::io::BufReader::new(file))
+            .map_err(|error| format!("无法读取 DDS：{error}"))?;
+        let mut level = 0;
+        while level < 31
+            && level + 1 < dds.get_num_mipmap_levels()
+            && dds.header.width.max(dds.header.height) >> level > THUMB_SIZE
+        {
+            level += 1;
+        }
+        let width = (dds.header.width >> level).max(1);
+        let height = (dds.header.height >> level).max(1);
+        safety::memory_budget(width, height, 32)?;
+        image::DynamicImage::ImageRgba8(
+            image_from_dds(&dds, level).map_err(|error| format!("无法解码 DDS：{error}"))?,
+        )
+    } else {
+        let (width, height) = image::image_dimensions(source)
+            .map_err(|error| format!("无法读取图片尺寸：{error}"))?;
+        safety::memory_budget(width, height, 32)?;
+        image::open(source).map_err(|error| format!("无法解码图片：{error}"))?
+    };
+    let thumbnail = if image.width().max(image.height()) > THUMB_SIZE {
+        image.thumbnail(THUMB_SIZE, THUMB_SIZE)
+    } else {
+        image
+    };
     safety::atomic_write(&target, |writer| {
         thumbnail
             .write_to(writer, image::ImageFormat::Png)
@@ -230,5 +257,50 @@ mod tests {
         let garbage = source_dir.path().join("garbage.png");
         fs::write(&garbage, b"not a png").unwrap();
         assert!(ensure_thumbnail(cache.path(), &garbage).is_err());
+        let broken_dds = source_dir.path().join("broken.dds");
+        fs::write(&broken_dds, b"not a DDS").unwrap();
+        assert!(ensure_thumbnail(cache.path(), &broken_dds).is_err());
+    }
+
+    #[test]
+    fn dds_thumbnail_decodes_bc3_and_rgba8() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let image = image::RgbaImage::from_pixel(8, 8, image::Rgba([210, 75, 32, 128]));
+        for (format, name) in [("DXT5", "color_c.dds"), ("8.8.8.8", "normal_n.dds")] {
+            let source = source_dir.path().join(name);
+            fs::write(&source, crate::encode_dds(&image, format).unwrap()).unwrap();
+            let output = ensure_thumbnail(cache.path(), &source).unwrap();
+            let decoded = image::open(output).unwrap().to_rgba8();
+            assert_eq!(decoded.dimensions(), (8, 8));
+            assert!(decoded.get_pixel(0, 0)[0] > 150);
+            assert!(decoded.get_pixel(0, 0)[3] < 255);
+        }
+    }
+
+    #[test]
+    fn dds_thumbnail_uses_a_small_mip() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("mipped_c.dds");
+        let first = image::RgbaImage::from_pixel(1024, 1024, image::Rgba([255, 0, 0, 255]));
+        let second = image::RgbaImage::from_pixel(512, 512, image::Rgba([0, 255, 0, 255]));
+        let levels = [
+            crate::MipmapLevel {
+                width: 1024,
+                height: 1024,
+                payload: first.into_raw(),
+            },
+            crate::MipmapLevel {
+                width: 512,
+                height: 512,
+                payload: second.into_raw(),
+            },
+        ];
+        fs::write(&source, crate::build_dds(&levels, "8.8.8.8").unwrap()).unwrap();
+        let output = ensure_thumbnail(cache.path(), &source).unwrap();
+        let decoded = image::open(output).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (512, 512));
+        assert_eq!(*decoded.get_pixel(0, 0), image::Rgba([0, 255, 0, 255]));
     }
 }
