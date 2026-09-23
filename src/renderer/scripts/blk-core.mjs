@@ -50,3 +50,15 @@ export function diffBlk(before, after) {
   const newLines = after.replace(/\r\n/g, '\n').trimEnd().split('\n');
   return ['原文件：', ...oldLines.map(line => `− ${line}`), '', '新文件：', ...newLines.map(line => `+ ${line}`)].join('\n');
 }
+
+/// 批量填充游戏原贴图名。mode: 'name' 文件名+*（与新建规则默认一致）；
+/// 'stem' 去掉 _c/_n 后缀再 +*（用户改名后最常用的形态）；'clear' 清空待逐条填写。
+export function bulkFromFill(rules, mode) {
+  const apply = to => {
+    const stem = to.replace(/\.dds$/i, '');
+    if (mode === 'clear') return '';
+    if (mode === 'stem') return stem.replace(/_(c|n)$/i, '') + '*';
+    return stem + '*';
+  };
+  return rules.map(rule => ({ ...rule, from: apply(rule.to) }));
+}

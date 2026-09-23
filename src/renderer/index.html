@@ -190,9 +190,11 @@
               <div class="stage-heading"><div><span>涂装配置</span><strong>DDS 映射工作区</strong></div><small id="blk-count">选择目录后扫描 DDS</small></div>
               <div class="blk-empty" id="blk-empty">选择已合成 DDS 所在目录，查看贴图缩略图与游戏原贴图名之间的映射。</div>
               <div class="blk-rules" id="blk-rules" aria-label="BLK 映射规则"></div>
-              <small class="settings-hint blk-guidance">N 文件固定 replace_tex；C 文件可批量设置后单独修改。其他 DDS 请逐条选择。固定迷彩使用 set_tex 时可能需要 camo_skin_tex 参数。</small>
-              <div class="blk-preview-heading"><strong>BLK 文本预览</strong><small id="blk-preview-status">等待选择目录</small></div>
-              <pre class="blk-preview" id="blk-preview"></pre>
+              <small class="settings-hint blk-guidance">每行直接编辑游戏原贴图名与指令：↑↓/Enter 在行间移动，原名支持批量填充。N 文件固定 replace_tex；set_tex 固定迷彩时可能需要 camo 参数。</small>
+              <details class="blk-preview-wrap">
+                <summary><strong>BLK 文本预览</strong><small id="blk-preview-status">等待选择目录</small></summary>
+                <pre class="blk-preview" id="blk-preview"></pre>
+              </details>
               <input id="blk-browser-directory" type="file" webkitdirectory multiple hidden />
             </section>
 
@@ -426,24 +428,6 @@
                   <label for="blk-file-name">BLK 文件名</label>
                   <input id="blk-file-name" aria-label="BLK 文件名" placeholder="默认与目录同名" />
                   <small class="settings-hint" id="blk-output-hint">生成的 BLK 与 DDS 保存在同一目录。</small>
-                </div>
-              </section>
-              <section class="inspector-group" data-modes="blk">
-                <button class="group-toggle" type="button"><span>当前映射</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
-                <div class="group-content">
-                  <p id="blk-selection-empty" class="settings-hint">点击来源节点或连线以编辑映射。</p>
-                  <div id="blk-selection-editor" hidden>
-                    <button id="blk-selected-thumb" class="blk-selected-thumb" type="button" aria-label="放大查看选中 DDS"><img alt="" hidden /><span>加载 DDS 缩略图</span></button>
-                    <strong id="blk-selected-to" class="blk-selected-to"></strong>
-                    <label for="blk-selected-from">游戏原贴图名 (from)</label>
-                    <input id="blk-selected-from" aria-label="游戏原贴图名" />
-                    <label for="blk-selected-command">规则指令</label>
-                    <select id="blk-selected-command" aria-label="选中映射的规则指令"><option value="">请选择指令</option><option value="replace_tex">replace_tex</option><option value="set_tex">set_tex</option></select>
-                    <div id="blk-selected-fixed" class="blk-fixed-command" hidden>replace_tex · N 文件固定</div>
-                    <label id="blk-selected-param" class="blk-param" hidden><input id="blk-selected-param-input" type="checkbox" />添加 camo_skin_tex 参数</label>
-                    <label class="blk-param"><input id="blk-selected-enabled" type="checkbox" />启用此映射</label>
-                    <button id="blk-selected-delete" class="secondary-action blk-delete-mapping" type="button" hidden>删除额外映射</button>
-                  </div>
                 </div>
               </section>
               <section class="inspector-group" data-modes="merge mipmap">

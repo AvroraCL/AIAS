@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { blkFileGroup, createBlkRules, defaultBlkName, renderBlk, validateBlk } from './blk-core.mjs';
+import { blkFileGroup, bulkFromFill, createBlkRules, defaultBlkName, renderBlk, validateBlk } from './blk-core.mjs';
 
 test('groups DDS by suffix and fixes N files to replace_tex', () => {
   assert.equal(blkFileGroup('tank_C.DDS'), 'c');
@@ -49,4 +49,17 @@ test('includes extra DDS, optional set_tex param, and validates stale or duplica
   assert.match(validateBlk('vehicle', files.slice(1), rules), /不存在/);
   assert.match(validateBlk('../vehicle', files, rules), /文件名无效/);
   assert.equal(defaultBlkName('F:\\Game\\UserSkins\\vehicle\\'), 'vehicle');
+});
+
+test('bulkFromFill resets names by file name, stem, or clears them', () => {
+  const rules = createBlkRules(['f_16xl_c.dds', 'f_16xl_n.dds', 'cockpit_glass.dds']);
+  rules.forEach(rule => { rule.from = 'manual_name'; });
+  const byName = bulkFromFill(rules, 'name');
+  assert.deepEqual(byName.map(rule => rule.from), ['cockpit_glass*', 'f_16xl_c*', 'f_16xl_n*']);
+  const byStem = bulkFromFill(rules, 'stem');
+  assert.deepEqual(byStem.map(rule => rule.from), ['cockpit_glass*', 'f_16xl*', 'f_16xl*']);
+  const cleared = bulkFromFill(rules, 'clear');
+  assert.ok(cleared.every(rule => rule.from === ''));
+  // 纯函数：不改动原数组
+  assert.ok(rules.every(rule => rule.from === 'manual_name'));
 });

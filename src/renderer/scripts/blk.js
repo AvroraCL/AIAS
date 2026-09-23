@@ -1,10 +1,12 @@
-import { blkFileGroup, createBlkRules, defaultBlkName, diffBlk, renderBlk, validateBlk } from './blk-core.mjs';
+import { blkFileGroup, bulkFromFill, createBlkRules, defaultBlkName, diffBlk, renderBlk, validateBlk } from './blk-core.mjs';
 import { createBlkThumbnails } from './blk-thumbnails.js';
 
-const svgNS = 'http://www.w3.org/2000/svg';
+// 行内编辑的紧凑行视图：每条映射一行（启用开关 · 缩略图 · 目标 DDS · 原名输入 ·
+// 指令下拉 · camo 参数 · 删除），右侧栏不再承载编辑。原名输入支持 ↑↓/Enter
+// 在行间移动，批量填充覆盖最常见的"整包重命名"场景。
 const groups = [
-  ['c', 'C 文件', '_c.dds · 可统一设置，也可单独修改'],
-  ['n', 'N 文件', '_n.dds · 固定 replace_tex'],
+  ['c', 'C 文件 · 颜色', '_c.dds · 可统一设置指令与原名'],
+  ['n', 'N 文件 · 法线', '_n.dds · 固定 replace_tex'],
   ['other', '其他 DDS', '逐条选择规则指令']
 ];
 
@@ -25,11 +27,7 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
   let scanVersion = 0;
   let thumbnailVersion = 0;
   let nextRuleId = 0;
-  let selectedId = null;
   let active = true;
-  let drawQueued = false;
-  let links = [];
-  const resizeObserver = new ResizeObserver(queueDraw);
   const thumbObserver = new IntersectionObserver(entries => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
@@ -38,7 +36,6 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
     }
   }, { rootMargin: '160px' });
 
-  function selectedRule() { return rules.find(rule => rule.id === selectedId) || null; }
   function browserDds(name) {
     return browserFiles.find(file => file.webkitRelativePath.split('/').length === 2 && file.name.toLowerCase() === name.toLowerCase());
   }
@@ -54,7 +51,6 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
     thumbnailVersion++;
     thumbObserver.disconnect();
     thumbs.reset();
-    delete $('blk-selected-thumb').dataset.dds;
   }
 
   async function loadThumb(node, name) {
@@ -123,71 +119,8 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
     close.focus();
   }
 
-  function queueDraw() {
-    if (drawQueued) return;
-    drawQueued = true;
-    requestAnimationFrame(() => { drawQueued = false; drawConnections(); });
-  }
-
-  function drawConnections() {
-    for (const { bundle, source, target, path, hit, label } of links) {
-      if (!bundle.isConnected) continue;
-      const base = bundle.getBoundingClientRect();
-      const from = source.getBoundingClientRect();
-      const to = target.getBoundingClientRect();
-      const horizontal = to.left - from.right >= 20;
-      const x1 = (horizontal ? from.right : from.left + from.width / 2) - base.left;
-      const y1 = (horizontal ? from.top + from.height / 2 : from.bottom) - base.top;
-      const x2 = (horizontal ? to.left : to.left + to.width / 2) - base.left;
-      const y2 = (horizontal ? to.top + to.height / 2 : to.top) - base.top;
-      const d = horizontal
-        ? `M ${x1} ${y1} C ${x1 + (x2 - x1) * .48} ${y1}, ${x1 + (x2 - x1) * .52} ${y2}, ${x2} ${y2}`
-        : `M ${x1} ${y1} C ${x1} ${y1 + (y2 - y1) * .48}, ${x2} ${y1 + (y2 - y1) * .52}, ${x2} ${y2}`;
-      path.setAttribute('d', d);
-      hit.setAttribute('d', d);
-      label.setAttribute('x', String((x1 + x2) / 2));
-      label.setAttribute('y', String((y1 + y2) / 2 - (horizontal ? 9 : 0)));
-    }
-  }
-
-  function updateSelection() {
-    for (const { source, link, rule } of links) {
-      const selected = rule.id === selectedId;
-      source.classList.toggle('selected', selected);
-      link.classList.toggle('selected', selected);
-      link.classList.toggle('disabled', !rule.enabled);
-    }
-    updateInspector();
-  }
-
-  function selectRule(rule) {
-    selectedId = rule.id;
-    updateSelection();
-  }
-
-  function updateInspector() {
-    const rule = selectedRule();
-    $('blk-selection-empty').hidden = Boolean(rule);
-    $('blk-selection-editor').hidden = !rule;
-    if (!rule) return;
-    $('blk-selected-to').textContent = rule.to;
-    if (document.activeElement !== $('blk-selected-from')) $('blk-selected-from').value = rule.from;
-    const commandSelect = $('blk-selected-command');
-    commandSelect.value = rule.command;
-    const normal = blkFileGroup(rule.to) === 'n';
-    commandSelect.hidden = normal;
-    const commandWrapper = commandSelect.closest('.custom-select');
-    if (commandWrapper) {
-      commandWrapper.hidden = normal;
-      commandWrapper.querySelector('.custom-select-button').textContent = commandSelect.selectedOptions[0]?.textContent || '请选择指令';
-    }
-    $('blk-selected-fixed').hidden = !normal;
-    $('blk-selected-param').hidden = rule.command !== 'set_tex';
-    $('blk-selected-param-input').checked = rule.camoSkinTex;
-    $('blk-selected-enabled').checked = rule.enabled;
-    $('blk-selected-delete').hidden = !rule.extra;
-    const selectedThumb = $('blk-selected-thumb');
-    if (selectedThumb.dataset.dds !== rule.to) watchThumb(selectedThumb, rule.to, true);
+  function updateCount() {
+    $('blk-count').textContent = `${files.length} 张 DDS · ${rules.filter(rule => rule.enabled).length} 条启用`;
   }
 
   function addMapping(to) {
@@ -195,19 +128,156 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
     const original = rules[index];
     const rule = { id: ++nextRuleId, to, from: '', enabled: true, command: original.command, camoSkinTex: false, extra: true };
     rules.splice(index + 1, 0, rule);
-    selectedId = rule.id;
     renderRows();
-    $('blk-selected-from').focus();
+    rows.querySelector(`.blk-row[data-rule-id="${rule.id}"] .blk-from-input`)?.focus();
+  }
+
+  function focusFromInput(current, offset) {
+    const inputs = [...rows.querySelectorAll('.blk-from-input')];
+    const index = inputs.indexOf(current);
+    const next = inputs[index + offset];
+    if (next) { next.focus(); next.select(); }
+  }
+
+  /// 一条映射一行。控件就地更新（不整表重渲染），保证输入焦点不丢。
+  function buildRow(rule) {
+    const row = document.createElement('div');
+    row.className = 'blk-row';
+    row.dataset.ruleId = String(rule.id);
+
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    enabled.className = 'blk-enabled';
+    enabled.checked = rule.enabled;
+    enabled.setAttribute('aria-label', `启用 ${rule.to} 映射`);
+    enabled.addEventListener('change', () => {
+      rule.enabled = enabled.checked;
+      row.classList.toggle('is-disabled', !rule.enabled);
+      updateCount();
+      updatePreview();
+    });
+
+    const thumb = document.createElement('button');
+    thumb.type = 'button';
+    thumb.className = 'blk-thumb';
+    thumb.setAttribute('aria-label', `放大查看 ${rule.to}`);
+    thumb.addEventListener('click', () => openLargePreview(rule.to));
+    watchThumb(thumb, rule.to);
+
+    const toCell = document.createElement('span');
+    toCell.className = 'blk-row-target';
+    toCell.title = rule.to;
+    if (rule.extra) {
+      const badge = document.createElement('i');
+      badge.className = 'blk-extra-badge';
+      badge.textContent = '额外';
+      toCell.append(badge);
+    }
+    const toName = document.createElement('span');
+    toName.className = 'blk-target-name';
+    toName.textContent = rule.to;
+    toCell.append(toName);
+
+    const from = document.createElement('input');
+    from.type = 'text';
+    from.className = 'blk-from-input';
+    from.value = rule.from;
+    from.placeholder = '游戏原贴图名';
+    from.setAttribute('aria-label', `${rule.to} 的游戏原贴图名`);
+    from.spellcheck = false;
+    from.addEventListener('input', () => {
+      rule.from = from.value;
+      updatePreview();
+    });
+    from.addEventListener('focus', () => { rows.querySelectorAll('.blk-row.selected').forEach(el => el.classList.remove('selected')); row.classList.add('selected'); });
+    from.addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown' || event.key === 'Enter') { event.preventDefault(); focusFromInput(from, 1); }
+      else if (event.key === 'ArrowUp') { event.preventDefault(); focusFromInput(from, -1); }
+    });
+
+    const normal = blkFileGroup(rule.to) === 'n';
+    let command;
+    if (normal) {
+      command = document.createElement('span');
+      command.className = 'blk-fixed-inline';
+      command.textContent = 'replace_tex';
+    } else {
+      command = document.createElement('select');
+      command.className = 'blk-cmd-select';
+      command.setAttribute('aria-label', `${rule.to} 的规则指令`);
+      command.append(...[['', '请选择指令'], ['replace_tex', 'replace_tex'], ['set_tex', 'set_tex']].map(([value, caption]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = caption;
+        return option;
+      }));
+      command.value = rule.command;
+      command.addEventListener('change', () => {
+        rule.command = command.value;
+        param.hidden = rule.command !== 'set_tex';
+        updatePreview();
+      });
+    }
+
+    const param = document.createElement('label');
+    param.className = 'blk-param-inline';
+    param.hidden = rule.command !== 'set_tex';
+    param.title = 'set_tex 固定迷彩可能需要 camo_skin_tex 参数';
+    const paramInput = document.createElement('input');
+    paramInput.type = 'checkbox';
+    paramInput.checked = rule.camoSkinTex;
+    paramInput.setAttribute('aria-label', `${rule.to} 添加 camo_skin_tex 参数`);
+    paramInput.addEventListener('change', () => {
+      rule.camoSkinTex = paramInput.checked;
+      updatePreview();
+    });
+    const paramText = document.createElement('span');
+    paramText.textContent = 'camo';
+    param.append(paramInput, paramText);
+
+    row.append(enabled, thumb, toCell, from, command, param);
+    if (rule.extra) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'blk-remove-extra';
+      remove.textContent = '×';
+      remove.setAttribute('aria-label', `删除 ${rule.to} 的这条额外映射`);
+      remove.title = '删除额外映射';
+      remove.addEventListener('click', () => {
+        rules.splice(rules.indexOf(rule), 1);
+        renderRows();
+      });
+      row.append(remove);
+    }
+    if (!rule.enabled) row.classList.add('is-disabled');
+    return row;
   }
 
   function renderRows() {
     rows.replaceChildren();
-    links = [];
     thumbObserver.disconnect();
-    resizeObserver.disconnect();
     $('blk-empty').hidden = files.length > 0;
-    $('blk-count').textContent = `${files.length} 张 DDS · ${rules.filter(rule => rule.enabled).length} 条启用`;
-    if (!selectedRule()) selectedId = rules[0]?.id ?? null;
+    updateCount();
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'blk-toolbar';
+    const toolbarLabel = document.createElement('span');
+    toolbarLabel.className = 'blk-toolbar-label';
+    toolbarLabel.textContent = '原名批量：';
+    toolbar.append(toolbarLabel);
+    for (const [mode, caption] of [['name', '文件名 + *'], ['stem', '去 _c/_n + *'], ['clear', '清空']]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary-action';
+      button.textContent = caption;
+      button.title = '对所有映射重新填充游戏原贴图名（可再逐条修改）';
+      button.addEventListener('click', () => {
+        rules = bulkFromFill(rules, mode);
+        renderRows();
+      });
+      toolbar.append(button);
+    }
+    rows.append(toolbar);
 
     for (const [group, title, description] of groups) {
       const members = rules.filter(rule => blkFileGroup(rule.to) === group);
@@ -218,7 +288,7 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
       heading.className = 'blk-group-heading';
       const copy = document.createElement('div');
       const name = document.createElement('strong');
-      name.textContent = `${title} · ${members.length} 条映射`;
+      name.textContent = `${title} · ${members.length} 条`;
       const hint = document.createElement('small');
       hint.textContent = description;
       copy.append(name, hint);
@@ -241,75 +311,21 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
       list.className = 'blk-group-list';
       const targets = [...new Map(members.map(rule => [rule.to.toLowerCase(), rule.to])).values()];
       for (const to of targets) {
-        const bundle = document.createElement('article');
-        bundle.className = 'blk-bundle';
-        const sources = document.createElement('div');
-        sources.className = 'blk-source-list';
-        const svg = document.createElementNS(svgNS, 'svg');
-        svg.classList.add('blk-link-layer');
-        svg.setAttribute('aria-label', `${to} 的映射连线`);
-        const targetColumn = document.createElement('div');
-        targetColumn.className = 'blk-target-column';
-        const thumb = document.createElement('button');
-        thumb.type = 'button';
-        thumb.className = 'blk-thumb';
-        thumb.setAttribute('aria-label', `放大查看 ${to}`);
-        thumb.addEventListener('click', () => openLargePreview(to));
-        watchThumb(thumb, to);
-        const fileLabel = document.createElement('strong');
-        fileLabel.className = 'blk-target-name';
-        fileLabel.textContent = to;
-        fileLabel.title = to;
+        const sameTarget = members.filter(item => item.to.toLowerCase() === to.toLowerCase());
+        for (const rule of sameTarget) list.append(buildRow(rule));
         const add = document.createElement('button');
         add.type = 'button';
-        add.className = 'secondary-action blk-add-mapping';
-        add.textContent = '+ 添加映射';
-        add.setAttribute('aria-label', `为 ${to} 添加映射`);
+        add.className = 'blk-add-row';
+        add.textContent = `+ ${to} 的额外映射`;
+        add.setAttribute('aria-label', `为 ${to} 添加额外映射`);
+        add.title = '同一目标 DDS 映射多个游戏原贴图名';
         add.addEventListener('click', () => addMapping(to));
-        targetColumn.append(thumb, fileLabel, add);
-        for (const rule of members.filter(item => item.to.toLowerCase() === to.toLowerCase())) {
-          const source = document.createElement('button');
-          source.type = 'button';
-          source.className = 'blk-source-node';
-          source.dataset.ruleId = String(rule.id);
-          source.setAttribute('aria-label', `编辑 ${rule.from || '未填写来源'} 到 ${to} 的映射`);
-          const label = document.createElement('span');
-          label.className = 'blk-source-name';
-          label.textContent = rule.from || '填写游戏原贴图名';
-          const detail = document.createElement('small');
-          detail.textContent = rule.enabled ? '游戏原贴图' : '已排除';
-          source.append(label, detail);
-          source.addEventListener('click', () => selectRule(rule));
-          sources.append(source);
-
-          const link = document.createElementNS(svgNS, 'g');
-          link.classList.add('blk-link');
-          const path = document.createElementNS(svgNS, 'path');
-          path.classList.add('blk-link-visible');
-          const hit = document.createElementNS(svgNS, 'path');
-          hit.classList.add('blk-link-hit');
-          hit.setAttribute('role', 'button');
-          hit.setAttribute('tabindex', '0');
-          hit.setAttribute('aria-label', `编辑 ${rule.from || '未填写来源'} 到 ${to} 的 ${rule.command || '未选指令'} 连线`);
-          hit.addEventListener('click', () => selectRule(rule));
-          hit.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectRule(rule); } });
-          const lineLabel = document.createElementNS(svgNS, 'text');
-          lineLabel.classList.add('blk-link-label');
-          lineLabel.textContent = rule.command || '选指令';
-          link.append(path, hit, lineLabel);
-          svg.append(link);
-          links.push({ bundle, source, target: thumb, path, hit, label: lineLabel, link, rule });
-        }
-        bundle.append(sources, svg, targetColumn);
-        list.append(bundle);
-        resizeObserver.observe(bundle);
+        list.append(add);
       }
       section.append(heading, list);
       rows.append(section);
     }
-    updateSelection();
     updatePreview();
-    queueDraw();
   }
 
   function blocker() {
@@ -353,7 +369,6 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
     if (!selected) return;
     directory.value = selected;
     fileName.value = defaultBlkName(selected);
-    selectedId = null;
     await rescan({ preserve: false });
     await saveDirectory();
   }
@@ -365,7 +380,6 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
     if (!browserFiles.length) return;
     directory.value = browserFiles[0].webkitRelativePath.split('/')[0];
     fileName.value = defaultBlkName(directory.value);
-    selectedId = null;
     rescan({ preserve: false }).catch(error => notify(error.message || String(error), 'error'));
   });
   let nameTimer;
@@ -376,47 +390,6 @@ export function createBlk({ desktop, scan, exportFile, pickDirectory, saveDirect
     clearTimeout(nameTimer);
     nameTimer = setTimeout(() => rescan({ refreshThumbnails: false }).catch(error => notify(error.message || String(error), 'error')), 250);
   });
-
-  $('blk-selected-from').addEventListener('input', event => {
-    const rule = selectedRule();
-    if (!rule) return;
-    rule.from = event.target.value;
-    const source = rows.querySelector(`.blk-source-node[data-rule-id="${rule.id}"]`);
-    if (source) {
-      source.querySelector('.blk-source-name').textContent = rule.from || '填写游戏原贴图名';
-      source.setAttribute('aria-label', `编辑 ${rule.from || '未填写来源'} 到 ${rule.to} 的映射`);
-    }
-    const link = links.find(item => item.rule.id === rule.id);
-    link?.hit.setAttribute('aria-label', `编辑 ${rule.from || '未填写来源'} 到 ${rule.to} 的 ${rule.command || '未选指令'} 连线`);
-    updatePreview();
-    queueDraw();
-  });
-  $('blk-selected-command').addEventListener('change', event => {
-    const rule = selectedRule();
-    if (!rule || blkFileGroup(rule.to) === 'n') return;
-    rule.command = event.target.value;
-    renderRows();
-  });
-  $('blk-selected-param-input').addEventListener('change', event => {
-    const rule = selectedRule();
-    if (!rule) return;
-    rule.camoSkinTex = event.target.checked;
-    updatePreview();
-  });
-  $('blk-selected-enabled').addEventListener('change', event => {
-    const rule = selectedRule();
-    if (!rule) return;
-    rule.enabled = event.target.checked;
-    renderRows();
-  });
-  $('blk-selected-delete').addEventListener('click', () => {
-    const rule = selectedRule();
-    if (!rule?.extra) return;
-    rules.splice(rules.indexOf(rule), 1);
-    selectedId = rules.find(item => item.to.toLowerCase() === rule.to.toLowerCase())?.id ?? rules[0]?.id ?? null;
-    renderRows();
-  });
-  $('blk-selected-thumb').addEventListener('click', () => { const rule = selectedRule(); if (rule) openLargePreview(rule.to); });
 
   async function generate() {
     const error = blocker();
