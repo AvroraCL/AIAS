@@ -65,9 +65,12 @@ ab/
 tmp/
 
 # Local documents and research materials (kept outside GitHub);
-# the banner png is whitelisted because README.md embeds it.
+# only the public README and social-preview images are whitelisted.
 docs/*
 !docs/AIAS-ico.png
+!docs/aias-ascii-workspace.png
+!docs/aias-blk-workspace.png
+!docs/social-preview.png
 
 # 测试区：图片功能测试专用（输入/输出/实验报告），永不入库
 测试区/
