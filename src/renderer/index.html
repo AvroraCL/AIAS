@@ -126,13 +126,16 @@
           </div>
         </nav>
 
-        <button class="sidebar-footer" id="footer-settings" type="button" aria-label="设置" title="设置">
-          <span class="footer-icon"><i data-lucide="settings" aria-hidden="true"></i></span>
-          <span class="footer-copy">
-            <strong>设置</strong>
-            <small id="runtime-badge">Ready</small>
-          </span>
-        </button>
+        <div class="sidebar-footer-row">
+          <button class="footer-tile" id="footer-theme" type="button" aria-label="切换黑白主题" title="切换黑白主题">
+            <span class="theme-icon theme-icon-sun"><i data-lucide="sun" aria-hidden="true"></i></span>
+            <span class="theme-icon theme-icon-moon"><i data-lucide="moon" aria-hidden="true"></i></span>
+          </button>
+          <button class="footer-tile" id="footer-settings" type="button" aria-label="设置" title="设置">
+            <span class="footer-tile-icon"><i data-lucide="settings" aria-hidden="true"></i></span>
+          </button>
+          <span class="footer-runtime" id="runtime-badge">Ready</span>
+        </div>
 
       </aside>
 

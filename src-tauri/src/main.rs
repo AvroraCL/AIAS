@@ -92,6 +92,9 @@ struct Settings {
     /// 长任务完成时发送系统通知。
     #[serde(default = "default_notify_on_complete")]
     notify_on_complete: bool,
+    /// 界面主题：dark（默认）/ light。
+    #[serde(default = "default_theme")]
+    theme: String,
 }
 
 fn default_output_strategy() -> String {
@@ -100,6 +103,10 @@ fn default_output_strategy() -> String {
 
 fn default_notify_on_complete() -> bool {
     true
+}
+
+fn default_theme() -> String {
+    "dark".into()
 }
 
 /// 从磁盘读取输出冲突策略；读取失败按 overwrite 处理，不阻塞任务。
@@ -159,6 +166,7 @@ impl Default for Settings {
             output_strategy: default_output_strategy(),
             file_conflict: "overwrite".into(),
             notify_on_complete: default_notify_on_complete(),
+            theme: default_theme(),
             comfyui_address: default_comfyui_address(),
             anime_cutout_output_path: String::new(),
             anime_model: default_anime_model(),

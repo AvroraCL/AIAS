@@ -237,28 +237,42 @@ textarea:focus { border-color: var(--accent); }
 .mode-tab.active::before { position: absolute; top: 9px; bottom: 9px; left: 0; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent-strong); content: ""; }
 .mode-tab.active svg { color: var(--accent-strong); }
 
-.sidebar-footer {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  border: none;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-dim);
-  text-align: left;
-}
+.sidebar-footer-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.footer-tile { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--text-dim); cursor: pointer; transition: color var(--transition), background-color var(--transition), border-color var(--transition); }
+.footer-tile:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-hover); color: var(--text); }
+.footer-tile.active { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+.footer-tile-icon, .theme-icon { display: grid; place-items: center; }
+.footer-tile svg { width: 17px; height: 17px; }
+html:not([data-theme="light"]) .theme-icon-moon { display: none; }
+html[data-theme="light"] .theme-icon-sun { display: none; }
+.footer-runtime { overflow: hidden; margin-left: auto; color: var(--text-dim); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; text-align: right; }
 
-.sidebar-footer:hover:not(:disabled) { border-color: var(--border); background: rgba(255, 255, 255, 0.045); color: var(--text); }
-.sidebar-footer.active { color: #fff; background: var(--accent-soft); }
-.sidebar-footer.active::before { position: absolute; top: 9px; bottom: 9px; left: 0; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent-strong); content: ""; }
-.footer-icon { display: grid; width: 30px; height: 30px; flex: 0 0 30px; place-items: center; }
-.footer-icon svg { width: 17px; height: 17px; }
-.footer-copy { min-width: 0; }
-.footer-copy strong { display: block; overflow: hidden; font-size: 13px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
-.footer-copy small { display: block; overflow: hidden; margin-top: 1px; color: var(--text-dim); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+/* 黑白主题：亮色覆盖根变量（暗色为默认）。组件内少量硬编码深色在下方就近翻转。 */
+html[data-theme="light"] {
+  --bg: #f4f4f7;
+  --bg-deep: #ececf1;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-hover: #ececf2;
+  --border: #d8d8e0;
+  --border-strong: #c2c2cd;
+  --text: #17171c;
+  --text-soft: #3d3d46;
+  --text-dim: #80808a;
+  --accent: #17171c;
+  --accent-hover: #2e2e37;
+  --accent-strong: #17171c;
+  --accent-soft: rgba(23, 23, 28, 0.09);
+  --danger: #c2372f;
+  --shadow-sm: 0 4px 16px rgba(20, 20, 40, 0.1);
+  --shadow-md: 0 16px 36px rgba(20, 20, 40, 0.14);
+}
+html[data-theme="light"] .mode-tab.active { color: var(--text); }
+html[data-theme="light"] input[type="checkbox"] { border-color: #c2c2cd; background-color: #e8e8ef; }
+html[data-theme="light"] input[type="checkbox"]:checked { border-color: var(--accent); background-color: var(--accent); }
+html[data-theme="light"] input[type="checkbox"]:checked::after { background: #ffffff; }
+html[data-theme="light"] .blk-from-input { border-color: #d0d0d9; background: #ffffff; color: var(--text); }
+html[data-theme="light"] .toggle-track { background: #e2e2ea; }
 
 .app-main {
   display: grid;

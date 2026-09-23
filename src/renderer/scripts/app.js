@@ -93,7 +93,9 @@ import {
   Thermometer,
   Rainbow,
   FileCode2,
-  FolderOutput
+  FolderOutput,
+  Sun,
+  Moon
 } from "lucide";
 
 const defaults = {
@@ -390,6 +392,8 @@ const state = {
 const iconSet = {
   ClipboardCopy,
   FolderOutput,
+  Sun,
+  Moon,
   HardDrive,
   Bell,
   PenLine,
@@ -2649,6 +2653,16 @@ async function notifyDesktop(title, body) {
   } catch { /* 通知失败不影响任务 */ }
 }
 
+function applyTheme(theme) {
+  const resolved = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = resolved;
+  const tile = $("footer-theme");
+  if (tile) {
+    tile.setAttribute("aria-label", resolved === "light" ? "切换到深色主题" : "切换到浅色主题");
+    tile.title = tile.getAttribute("aria-label");
+  }
+}
+
 function effectiveOutputDir(stored, firstInput) {
   const settings = state.settings || {};
   if (settings.outputStrategy === "fixed" && settings.defaultOutputDir) return settings.defaultOutputDir;
@@ -2930,7 +2944,11 @@ function bindTabs() {
     button.setAttribute("aria-label", button.title);
     button.addEventListener("click", () => applyMode(button.dataset.view));
   });
-  $("footer-settings")?.addEventListener("click", () => { applyMode("settings"); refreshStoragePanel(); });
+  $("footer-theme")?.addEventListener("click", async () => {
+    const next = (document.documentElement.dataset.theme === "light") ? "dark" : "light";
+    try { state.settings = await api.settings.set({ theme: next }); } catch { }
+    applyTheme(next);
+  });
   $("set-notify-complete")?.addEventListener("change", async event => {
     try { state.settings = await api.settings.set({ notifyOnComplete: event.target.checked }); } catch { }
   });
@@ -3566,6 +3584,7 @@ async function boot() {
   setText("set-version", "当前版本 " + appVersion);
   setText("about-version", appVersion);
   state.settings = await api.settings.get();
+  applyTheme(state.settings?.theme);
   refreshIcons();
   enhanceSelectMenus();
   applySettingsToForm();
