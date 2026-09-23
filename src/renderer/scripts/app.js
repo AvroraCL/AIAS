@@ -27,6 +27,14 @@ import { listen } from "@tauri-apps/api/event";
 import {
   createIcons,
   Box,
+  Axis3d,
+  Mountain,
+  Type,
+  Radio,
+  Paintbrush,
+  Printer,
+  SwatchBook,
+  Aperture,
   ListTree,
   SlidersHorizontal,
   Scan,
@@ -396,6 +404,14 @@ const state = {
 };
 
 const iconSet = {
+  Axis3d,
+  Mountain,
+  Type,
+  Radio,
+  Paintbrush,
+  Printer,
+  SwatchBook,
+  Aperture,
   ClipboardCopy,
   FolderOutput,
   Languages,

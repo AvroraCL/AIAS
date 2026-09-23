@@ -121,6 +121,8 @@ const EN = {
   "版本": "Version",
   "框架": "Framework",
   "平台": "Platform",
+  "作者": "Author",
+  "联系方式": "Contact",
   "仓库": "Repository",
   "镜像": "Mirror",
   "许可证": "License",
