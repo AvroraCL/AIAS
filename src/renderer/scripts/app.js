@@ -2944,6 +2944,7 @@ function bindTabs() {
     button.setAttribute("aria-label", button.title);
     button.addEventListener("click", () => applyMode(button.dataset.view));
   });
+  $("footer-settings")?.addEventListener("click", () => { applyMode("settings"); refreshStoragePanel(); });
   $("footer-theme")?.addEventListener("click", async () => {
     const next = (document.documentElement.dataset.theme === "light") ? "dark" : "light";
     try { state.settings = await api.settings.set({ theme: next }); } catch { }
