@@ -82,6 +82,10 @@
 .bake-results-toolbar { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 4px; }
 .bake-results-toolbar .secondary-action { width: auto; }
 .bake-results-toolbar small { color: var(--text-dim); font-size: 10px; }
+.bake-coverage { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-soft); font-size: 11px; }
+.bake-coverage summary { cursor: pointer; }
+.bake-coverage p { margin: 8px 0 4px; line-height: 1.5; }
+.bake-coverage ul { max-height: 180px; overflow: auto; margin: 7px 0 0; padding-left: 20px; line-height: 1.6; }
 .bake-result { padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .bake-result img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: repeating-conic-gradient(#232428 0 25%, #1a1b1e 0 50%) 0/16px 16px; }
 .bake-result p { margin: 8px 0; color: var(--text-soft); font-size: 11px; }

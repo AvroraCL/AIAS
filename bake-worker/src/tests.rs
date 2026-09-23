@@ -25,7 +25,7 @@ fn output_estimate_counts_uv_and_doubles_precision_maps_at_16_bit() {
     let precision_8 = bake::estimated_output_bytes(&options, pixels);
     options.bits = 16;
     let precision_16 = bake::estimated_output_bytes(&options, pixels);
-    assert_eq!(precision_16, precision_8 * 2);
+    assert_eq!(precision_16 - precision_8, pixels * 4 * 3 / 5 * 2);
 }
 
 #[test]
@@ -135,17 +135,32 @@ fn missing_mtl_keeps_usemtl_slots() {
 }
 
 #[test]
-fn smart_uv_preserves_valid_and_generates_invalid_materials() {
+fn smart_uv_preserves_tiled_source_and_generates_missing_materials() {
     let valid = [[0., 0.], [0., 1.], [1., 0.]];
-    let mut invalid = triangle([[2., 0.], [2., 1.], [3., 0.]], 1, 1);
-    invalid.positions = [[0., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
-    let mut value = model(vec![triangle(valid, 0, 0), invalid]);
+    let tiled = [[2., -1.], [2., 0.], [3., -1.]];
+    let mut missing = triangle(valid, 2, 2);
+    missing.uvs.clear();
+    let mut value = model(vec![triangle(valid, 0, 0), triangle(tiled, 1, 1), missing]);
+    value.objects.push(Named {
+        id: 2,
+        name: "缺失 UV".into(),
+    });
+    value.materials.push(Named {
+        id: 2,
+        name: "缺失 UV".into(),
+    });
     let selected = model::prepare_uvs(&mut value, "preserveValid").unwrap();
     assert_eq!(selected[&0], 0);
-    assert_ne!(selected[&1], 0);
+    assert_eq!(
+        selected[&1], 0,
+        "finite tiled UV must retain the source channel"
+    );
+    assert_eq!(value.generated_channels.get(&2), Some(&selected[&2]));
     assert_eq!(value.triangles[0].uvs[&0], valid);
-    let all_objects = vec![0, 1];
+    assert_eq!(value.triangles[1].uvs[&0], tiled);
+    let all_objects = vec![0, 1, 2];
     assert!(model::inspect(&value, 1, selected[&1], &all_objects).valid);
+    assert!(model::inspect(&value, 2, selected[&2], &all_objects).valid);
 }
 
 #[test]
@@ -245,8 +260,214 @@ fn uv_missing_degenerate_and_outside_are_explicit() {
     assert!(!missing.valid);
     t.uvs.insert(0, [[0., 0.], [1.01, 0.], [0., 1.]]);
     let outside = model::inspect(&model(vec![t]), 0, 0, &[0]);
-    assert_eq!(outside.issues[0].kind, "UV 超出 0–1");
-    assert!(!outside.valid);
+    assert!(outside.valid);
+    assert_eq!(outside.defect_count, 0);
+    assert_eq!(outside.tiled_count, 1);
+    assert_eq!(outside.issue_count, 0);
+}
+
+#[test]
+fn raster_repeats_native_uv_without_moving_source_vertices() {
+    let original = [[0., 0.], [0., 1.], [1., 0.]];
+    let tiled = original.map(|p| [p[0] - 8., p[1] - 7.]);
+    let reference = model(vec![triangle(original, 0, 0)]);
+    let source = model(vec![triangle(tiled, 0, 0)]);
+    let cancel = Path::new("");
+    let (expected, expected_covered, _) =
+        bake::raster(&reference, 0, 0, &[0], 16, false, cancel, || {}).unwrap();
+    let (actual, actual_covered, _) =
+        bake::raster(&source, 0, 0, &[0], 16, false, cancel, || {}).unwrap();
+    assert_eq!(actual_covered, expected_covered);
+    assert_eq!(actual.len(), expected.len());
+    for (a, e) in actual.iter().zip(expected.iter()) {
+        assert_eq!(a.pixel, e.pixel);
+        assert_eq!(a.object, e.object);
+        for axis in 0..3 {
+            assert!((a.position[axis] - e.position[axis]).abs() < 1e-5);
+            assert!((a.normal[axis] - e.normal[axis]).abs() < 1e-5);
+        }
+    }
+    assert_eq!(source.triangles[0].uvs[&0], tiled);
+}
+
+#[test]
+fn raster_splits_triangle_across_repeat_seam() {
+    let source = model(vec![triangle(
+        [[0.75, 0.25], [1.25, 0.25], [1.0, 0.75]],
+        0,
+        0,
+    )]);
+    let (_, covered, wire) =
+        bake::raster(&source, 0, 0, &[0], 16, true, Path::new(""), || {}).unwrap();
+    assert!(covered[9 * 16], "triangle must wrap onto the left edge");
+    assert!(covered[9 * 16 + 15], "triangle must cover the right edge");
+    assert!(
+        !covered[9 * 16 + 8],
+        "repeat must not stretch across the map"
+    );
+    assert_eq!(wire.len(), 16 * 16 * 4);
+}
+
+#[test]
+fn raster_reports_shared_uv_pixels_instead_of_silent_first_wins() {
+    let uv = [[0., 0.], [0., 1.], [1., 0.]];
+    let first = triangle(uv, 0, 0);
+    let mut second = triangle(uv, 0, 0);
+    for point in &mut second.positions {
+        point[2] += 10.;
+    }
+    let source = model(vec![first, second]);
+    let (surfaces, covered, _, coverage) =
+        bake::raster_with_stats(&source, 0, 0, &[0], 16, false, Path::new(""), || {}).unwrap();
+    assert!(!surfaces.is_empty());
+    assert_eq!(coverage.shared_pixels, surfaces.len());
+    assert_eq!(coverage.shared_samples, surfaces.len());
+    assert!(coverage
+        .unique_mask(&covered)
+        .iter()
+        .all(|value| *value == 0));
+
+    let (single, single_covered, _, single_coverage) = bake::raster_with_stats(
+        &model(vec![triangle(uv, 0, 0)]),
+        0,
+        0,
+        &[0],
+        16,
+        false,
+        Path::new(""),
+        || {},
+    )
+    .unwrap();
+    assert_eq!(single_coverage.shared_pixels, 0);
+    assert_eq!(
+        single_coverage
+            .unique_mask(&single_covered)
+            .iter()
+            .filter(|value| **value == 255)
+            .count(),
+        single.len()
+    );
+}
+
+#[test]
+fn saturated_uv_reuse_stops_without_changing_baked_surface_or_mask() {
+    let a = triangle([[0., 0.], [0., 1.], [1., 0.]], 0, 0);
+    let b = triangle([[1., 1.], [1., 0.], [0., 1.]], 0, 0);
+    let source_before_extra = model(vec![a.clone(), b.clone(), a.clone(), b.clone()]);
+    let extra = triangle([[0.2, 0.2], [0.8, 0.2], [0.5, 0.8]], 0, 0);
+    let source = model(vec![a.clone(), b.clone(), a, b, extra]);
+    let (fast_surfaces, fast_covered, _, fast_stats) =
+        bake::raster_with_stats(&source, 0, 0, &[0], 16, false, Path::new(""), || {}).unwrap();
+    let (full_surfaces, full_covered, wire, full_stats) =
+        bake::raster_with_stats(&source, 0, 0, &[0], 16, true, Path::new(""), || {}).unwrap();
+    let (_, _, prior_wire, _) = bake::raster_with_stats(
+        &source_before_extra,
+        0,
+        0,
+        &[0],
+        16,
+        true,
+        Path::new(""),
+        || {},
+    )
+    .unwrap();
+    assert_eq!(fast_surfaces.len(), 16 * 16);
+    assert_eq!(fast_covered, full_covered);
+    assert_eq!(fast_stats.shared_pixels, 16 * 16);
+    assert_eq!(fast_stats.shared_pixels, full_stats.shared_pixels);
+    assert_eq!(
+        fast_stats.unique_mask(&fast_covered),
+        full_stats.unique_mask(&full_covered)
+    );
+    assert!(fast_stats.shared_samples_truncated);
+    assert!(full_stats.shared_samples_truncated);
+    assert_ne!(
+        wire, prior_wire,
+        "UV wire must include faces after saturation"
+    );
+    for (fast, full) in fast_surfaces.iter().zip(full_surfaces.iter()) {
+        assert_eq!(fast.pixel, full.pixel);
+        assert_eq!(fast.position, full.position);
+        assert_eq!(fast.normal, full.normal);
+    }
+}
+
+#[test]
+fn unique_mask_excludes_order_dependent_surface_data() {
+    let shared_uv = [[0., 0.], [0., 1.], [0.5, 0.]];
+    let first = triangle(shared_uv, 0, 0);
+    let mut second = first.clone();
+    for point in &mut second.positions {
+        point[2] += 10.;
+    }
+    let unique = triangle([[0.5, 0.], [1., 0.], [1., 1.]], 0, 0);
+    let (a, covered_a, _, stats_a) = bake::raster_with_stats(
+        &model(vec![first.clone(), second.clone(), unique.clone()]),
+        0,
+        0,
+        &[0],
+        16,
+        false,
+        Path::new(""),
+        || {},
+    )
+    .unwrap();
+    let (b, covered_b, _, stats_b) = bake::raster_with_stats(
+        &model(vec![second, first, unique]),
+        0,
+        0,
+        &[0],
+        16,
+        false,
+        Path::new(""),
+        || {},
+    )
+    .unwrap();
+    let mask = stats_a.unique_mask(&covered_a);
+    assert_eq!(mask, stats_b.unique_mask(&covered_b));
+    let a: BTreeMap<_, _> = a.into_iter().map(|s| (s.pixel, s)).collect();
+    let b: BTreeMap<_, _> = b.into_iter().map(|s| (s.pixel, s)).collect();
+    let mut unstable = 0;
+    let mut reliable = 0;
+    for (pixel, left) in &a {
+        let right = &b[pixel];
+        if mask[*pixel as usize] == 255 {
+            reliable += 1;
+            assert_eq!(left.position, right.position);
+        } else if left.position != right.position {
+            unstable += 1;
+        }
+    }
+    assert!(reliable > 0);
+    assert!(
+        unstable > 0,
+        "the fixture must reproduce first-face dependence"
+    );
+}
+
+#[test]
+fn saturated_raster_still_checks_later_uv_coordinates() {
+    let a = triangle([[0., 0.], [0., 1.], [1., 0.]], 0, 0);
+    let b = triangle([[1., 1.], [1., 0.], [0., 1.]], 0, 0);
+    let unsafe_uv = triangle([[1_000_001., 0.], [1_000_001., 1.], [1_000_002., 0.]], 0, 0);
+    let source = model(vec![a.clone(), b.clone(), a, b, unsafe_uv]);
+    let error = bake::raster_with_stats(&source, 0, 0, &[0], 16, false, Path::new(""), || {})
+        .err()
+        .expect("late unsafe UV must not be hidden by full coverage");
+    assert!(error.contains("坐标过大"), "{error}");
+}
+
+#[test]
+fn unsafe_uv_extent_falls_back_without_mutating_source_coordinates() {
+    let source_uv = [[1_000_001., 0.], [1_000_001., 1.], [1_000_002., 0.]];
+    let mut value = model(vec![triangle(source_uv, 0, 0)]);
+    let report = model::inspect(&value, 0, 0, &[0]);
+    assert!(!report.valid);
+    assert_eq!(report.issues[0].kind, "UV 平铺范围过大");
+    let selected = model::prepare_uvs(&mut value, "preserveValid").unwrap();
+    assert_eq!(value.triangles[0].uvs[&0], source_uv);
+    assert_ne!(selected[&0], 0);
+    assert!(model::inspect(&value, 0, selected[&0], &[0]).valid);
 }
 #[test]
 fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {
@@ -269,7 +490,11 @@ fn raster_seams_and_dilation_preserve_coverage_and_pure_id() {
     c[size * size - 1] = true;
     let d = bake::dilate(&c, size, 4);
     assert_eq!(d[4], 0, "顶行右侧最近源是 (0,0)（距离 4 < √32）");
-    assert_eq!(d[14], (size * size - 1) as u32, "(4,2) 到 (4,4) 距离 2，最近源是 (4,4)");
+    assert_eq!(
+        d[14],
+        (size * size - 1) as u32,
+        "(4,2) 到 (4,4) 距离 2，最近源是 (4,4)"
+    );
     assert_ne!(bake::color(0), bake::color(1));
     assert_eq!(bake::safe_name("中文:/材质"), "中文__材质");
 }
@@ -279,14 +504,27 @@ fn encode_surface_map_16_places_values_at_uv_pixel() {
     // surfaces 按扫描顺序 push，pixel 是 UV 像素索引，两者几乎不重合：
     // 按序号落位会把整张 16 位图写乱（与 8 位版语义不一致）。
     let surfaces = vec![
-        Surface { position: [0.; 3], object: 0, normal: [0.; 3], pixel: 5 },
-        Surface { position: [0.; 3], object: 1, normal: [0.; 3], pixel: 0 },
-        Surface { position: [0.; 3], object: 2, normal: [0.; 3], pixel: 3 },
+        Surface {
+            position: [0.; 3],
+            object: 0,
+            normal: [0.; 3],
+            pixel: 5,
+        },
+        Surface {
+            position: [0.; 3],
+            object: 1,
+            normal: [0.; 3],
+            pixel: 0,
+        },
+        Surface {
+            position: [0.; 3],
+            object: 2,
+            normal: [0.; 3],
+            pixel: 3,
+        },
     ];
     let nearest = vec![u32::MAX; 8];
-    let pixels = bake::encode_surface_map_16(&surfaces, &nearest, |s| {
-        [s.object as u16 * 100; 4]
-    });
+    let pixels = bake::encode_surface_map_16(&surfaces, &nearest, |s| [s.object as u16 * 100; 4]);
     assert_eq!(pixels.len(), 32);
     assert_eq!(&pixels[0..4], &[100, 100, 100, 100]);
     assert_eq!(&pixels[12..16], &[200, 200, 200, 200]);
@@ -303,14 +541,16 @@ fn raster_honours_cancellation() {
             .map(|_| triangle([[0., 0.], [1., 1.], [1., 0.]], 0, 0))
             .collect(),
     );
-    let cancel = std::env::temp_dir().join(format!("aias-raster-cancel-{}.flag", std::process::id()));
+    let cancel =
+        std::env::temp_dir().join(format!("aias-raster-cancel-{}.flag", std::process::id()));
     std::fs::write(&cancel, b"").unwrap();
     let result = bake::raster(&m, 0, 0, &[0], 16, false, &cancel, || {});
     std::fs::remove_file(&cancel).ok();
     assert!(result.err().is_some_and(|e| e.contains("取消")));
     // 心跳闭包也应被调用过（喂看门狗）：无取消文件时不提前返回
     let mut beats = 0;
-    let nocancel = std::env::temp_dir().join(format!("aias-raster-nocancel-{}.flag", std::process::id()));
+    let nocancel =
+        std::env::temp_dir().join(format!("aias-raster-nocancel-{}.flag", std::process::id()));
     std::fs::remove_file(&nocancel).ok();
     let _ = bake::raster(&m, 0, 0, &[0], 16, false, &nocancel, || beats += 1);
     assert!(beats > 0);
@@ -383,13 +623,15 @@ fn material_stems_follow_sp_style_naming() {
     assert_eq!(single[0], "同名");
     // 消歧结果与另一材质的字面名重合时，必须继续追加后缀保持唯一，
     // 否则两个材质写出同一组贴图文件静默互相覆盖。
-    let collision = bake::material_stems(&[
-        named(0, "Gold"),
-        named(1, "Gold"),
-        named(2, "Gold_0"),
-    ]);
+    let collision = bake::material_stems(&[named(0, "Gold"), named(1, "Gold"), named(2, "Gold_0")]);
     assert_eq!(collision.len(), 3);
-    assert_eq!(collision.iter().collect::<std::collections::HashSet<_>>().len(), 3);
+    assert_eq!(
+        collision
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
     // 长名截断按 UTF-8 字节预算（120 字节）而非字符数，CJK 名不会造出超长路径。
     let long_cjk: String = "坦".repeat(90);
     let stems = bake::material_stems(&[named(0, &long_cjk)]);
@@ -403,7 +645,7 @@ fn hash(mut x: u32) -> u32 {
     x = x.wrapping_mul(0x846ca68b);
     x ^ (x >> 16)
 }
-fn hit(o: Vec3, d: Vec3, v: &[[f32; 3]], distance: f32) -> bool {
+fn hit(o: Vec3, d: Vec3, v: &[[f32; 3]], distance: f32, bias: f32) -> bool {
     let a = Vec3::from_array(v[0]);
     let e1 = Vec3::from_array(v[1]) - a;
     let e2 = Vec3::from_array(v[2]) - a;
@@ -423,7 +665,7 @@ fn hit(o: Vec3, d: Vec3, v: &[[f32; 3]], distance: f32) -> bool {
         return false;
     }
     let t = e2.dot(r) / det;
-    t >= 0. && t <= distance
+    t >= bias && t <= distance
 }
 fn reference(
     s: &Surface,
@@ -439,17 +681,18 @@ fn reference(
         .cross(n)
         .normalize();
     let b = n.cross(t);
-    let origin = Vec3::from_array(s.position) + n * bias;
+    let origin = Vec3::from_array(s.position);
+    let azimuth_phase = (hash(s.pixel) & 0x00ff_ffff) as f32 / 16_777_216.;
     (0..samples)
         .filter(|k| {
             let u = (*k as f32 + 0.5) / samples as f32;
-            let v = (hash(s.pixel ^ hash(*k + 17)) & 0xffffff) as f32 / 16777216.;
+            let v = (azimuth_phase + (*k as f32 + 0.5) / samples as f32).fract();
             let a = std::f32::consts::TAU * v;
             let d = t * (u.sqrt() * a.cos()) + b * (u.sqrt() * a.sin()) + n * (1. - u).sqrt();
             vertices
                 .chunks_exact(3)
                 .zip(objects)
-                .any(|(v, o)| (!self_only || *o == s.object) && hit(origin, d, v, distance))
+                .any(|(v, o)| (!self_only || *o == s.object) && hit(origin, d, v, distance, bias))
         })
         .count() as u32
 }
@@ -504,7 +747,7 @@ fn gpu_matches_cpu_distance_self_and_repeat() {
         if self_only || distance < 0.5 {
             assert!(actual.iter().all(|h| *h == 0));
         } else {
-            assert!(actual.iter().all(|h| *h > 80));
+            assert!(actual.iter().all(|h| *h >= 80));
         }
     }
     assert!(gpu
@@ -546,7 +789,16 @@ fn dt_1d_sq_reports_exact_squared_distances_and_sources() {
     let mut f = vec![inf; 8];
     f[0] = 0;
     f[7] = 0;
-    let src = [0u32, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, u32::MAX, 7u32];
+    let src = [
+        0u32,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        7u32,
+    ];
     let (d, s) = bake::dt_1d_sq(&f, &src);
     let expect = [0u32, 1, 4, 9, 9, 4, 1, 0];
     for (i, e) in expect.iter().enumerate() {

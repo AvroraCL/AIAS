@@ -45,6 +45,6 @@ export function restoreBakeSettings(value) {
   if (workspace.projection === 'perspective' || workspace.projection === 'orthographic') {
     out.workspace.projection = workspace.projection;
   }
-  if (['material', 'ao', 'normal', 'world_normal', 'curvature', 'position', 'thickness', 'id', 'uv'].includes(workspace.mapPreview)) out.workspace.mapPreview = workspace.mapPreview;
+  if (['material', 'ao', 'normal', 'world_normal', 'curvature', 'position', 'thickness', 'id', 'uv', 'uv_unique_mask'].includes(workspace.mapPreview)) out.workspace.mapPreview = workspace.mapPreview;
   return out;
 }

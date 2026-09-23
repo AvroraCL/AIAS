@@ -55,7 +55,7 @@ pub struct ResultSet {
     pub directory: PathBuf,
     pub files: Vec<Output>,
     pub failures: Vec<String>,
-    /// 非致命警告（如严格模式下源 UV 不合格仍按原样烘焙），与 failures 分开：
+    /// 非致命警告（如严格模式下源 UV 缺失仍按原样烘焙），与 failures 分开：
     /// 材质是成功的，不能因此报「部分完成」。
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -68,6 +68,20 @@ pub struct ResultSet {
     pub artifacts: Vec<Artifact>,
     #[serde(default)]
     pub selected_channels: BTreeMap<usize, u32>,
+    /// 记录源 UV 在实际分辨率下的像素复用量，不能仅凭“出图成功”推断数据图无歧义。
+    #[serde(default)]
+    pub uv_coverage: Vec<UvCoverage>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UvCoverage {
+    pub material: usize,
+    pub covered_pixels: usize,
+    pub shared_pixels: usize,
+    pub shared_samples: usize,
+    /// 所有像素都已被多个面命中后可提前停止；此时 shared_samples 是下界。
+    #[serde(default)]
+    pub shared_samples_truncated: bool,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Artifact {
@@ -88,10 +102,16 @@ pub(crate) fn estimated_output_bytes(options: &Options, pixels: u64) -> u64 {
         + usize::from(options.curvature)
         + usize::from(options.position);
     let gray_maps = usize::from(options.ao) + usize::from(options.thickness);
+    let may_need_unique_mask = options.ao
+        || options.world_normal
+        || options.curvature
+        || options.position
+        || options.thickness;
     let precision_bytes = if options.bits == 16 { 8 } else { 4 };
     (pixels * 4 * rgba8_maps as u64
         + pixels * precision_bytes * precision_rgba_maps as u64
-        + pixels * u64::from(options.bits / 8) * gray_maps as u64)
+        + pixels * u64::from(options.bits / 8) * gray_maps as u64
+        + pixels * u64::from(may_need_unique_mask))
         * 3
         / 5
         * options.materials.len() as u64
@@ -635,14 +655,18 @@ pub fn run(
     let pixels = u64::from(options.resolution).pow(2);
     let estimate = estimated_output_bytes(options, pixels);
     let disks = sysinfo::Disks::new_with_refreshed_list();
-    let output = options.output.canonicalize().unwrap_or_else(|_| options.output.clone());
+    let output = options
+        .output
+        .canonicalize()
+        .unwrap_or_else(|_| options.output.clone());
     let disk = disks
         .list()
         .iter()
         .filter(|d| {
-            output.as_os_str().as_encoded_bytes().starts_with(
-                d.mount_point().as_os_str().as_encoded_bytes(),
-            )
+            output
+                .as_os_str()
+                .as_encoded_bytes()
+                .starts_with(d.mount_point().as_os_str().as_encoded_bytes())
         })
         .max_by_key(|d| d.mount_point().as_os_str().len());
     if let Some(disk) = disk {
@@ -734,7 +758,7 @@ pub fn run(
                 None,
             );
             let mut last_raster_beat = Instant::now();
-            let (surfaces, covered, wire) = raster(
+            let (surfaces, covered, wire, coverage) = raster_with_stats(
                 &model,
                 material,
                 channel,
@@ -762,6 +786,13 @@ pub fn run(
                     }
                 },
             )?;
+            result.uv_coverage.push(UvCoverage {
+                material,
+                covered_pixels: surfaces.len(),
+                shared_pixels: coverage.shared_pixels,
+                shared_samples: coverage.shared_samples,
+                shared_samples_truncated: coverage.shared_samples_truncated,
+            });
             if options.uv {
                 emit_bake_progress(
                     &mut progress,
@@ -799,12 +830,25 @@ pub fn run(
                 || options.curvature
                 || options.position
                 || options.thickness;
-            if !report.valid && data_maps {
-                // 与 SP 一致：不拦截，按源 UV 原样烘焙。重叠与零面积退化多为
-                // 设计且覆盖不到像素，不告警；缺失/越界区域的数据图会出洞或
-                // 污染，由警告提示。
+            let geometry_maps = options.ao
+                || options.world_normal
+                || options.curvature
+                || options.position
+                || options.thickness;
+            let significant_uv_reuse = geometry_maps
+                && coverage.shared_pixels >= 1024
+                && coverage.shared_pixels * 20 >= surfaces.len();
+            if significant_uv_reuse {
+                let percentage = coverage.shared_pixels * 100 / surfaces.len().max(1);
                 result.warnings.push(format!(
-                    "{material_label}：源 UV 有 {} 处缺陷（缺失/越界），已按原样烘焙，问题区域可能出现瑕疵",
+                    "{material_label}：{percentage}% 的 UV 像素被多个面共用；原生 UV 保持不变，AO/厚度/位置等数据图在这些区域只能表示其中一个面，请使用附带的 UV 唯一映射蒙版限制作用范围"
+                ));
+            }
+            if !report.valid && data_maps {
+                // 严格模式允许带缺陷的源 UV 原样烘焙；平铺坐标已经按 repeat
+                // 寻址，此处只对缺失或无法安全光栅化的坐标告警。
+                result.warnings.push(format!(
+                    "{material_label}：源 UV 有 {} 处缺陷（缺失/坐标无效或过大），已按原样烘焙，问题区域可能出现空洞",
                     report.defect_count
                 ));
             }
@@ -911,7 +955,11 @@ pub fn run(
                     ]
                 };
                 let pixels = if options.bits == 16 {
-                    SurfacePixels::Bits16(encode_surface_map_16(&surfaces, &nearest, encode_normal_16))
+                    SurfacePixels::Bits16(encode_surface_map_16(
+                        &surfaces,
+                        &nearest,
+                        encode_normal_16,
+                    ))
                 } else {
                     SurfacePixels::Bits8(encode_surface_map(&surfaces, &nearest, encode_normal_8))
                 };
@@ -944,12 +992,7 @@ pub fn run(
                 let encode_position_16 = |surface: &Surface| -> [u16; 4] {
                     let value = (Vec3::from_array(surface.position) - min) / span;
                     let channel = |v: f32| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
-                    [
-                        channel(value.x),
-                        channel(value.y),
-                        channel(value.z),
-                        65535,
-                    ]
+                    [channel(value.x), channel(value.y), channel(value.z), 65535]
                 };
                 let encode_position_8 = |surface: &Surface| -> [u8; 4] {
                     let value = (Vec3::from_array(surface.position) - min) / span;
@@ -961,18 +1004,15 @@ pub fn run(
                     ]
                 };
                 let pixels = if options.bits == 16 {
-                    SurfacePixels::Bits16(encode_surface_map_16(&surfaces, &nearest, encode_position_16))
+                    SurfacePixels::Bits16(encode_surface_map_16(
+                        &surfaces,
+                        &nearest,
+                        encode_position_16,
+                    ))
                 } else {
                     SurfacePixels::Bits8(encode_surface_map(&surfaces, &nearest, encode_position_8))
                 };
-                write_surface_map(
-                    options,
-                    &mut result,
-                    material,
-                    &prefix,
-                    "position",
-                    pixels,
-                )?;
+                write_surface_map(options, &mut result, material, &prefix, "position", pixels)?;
                 map_index += 1;
             }
             if options.curvature {
@@ -1002,14 +1042,7 @@ pub fn run(
                         options.resolution as usize,
                     ))
                 };
-                write_surface_map(
-                    options,
-                    &mut result,
-                    material,
-                    &prefix,
-                    "curvature",
-                    pixels,
-                )?;
+                write_surface_map(options, &mut result, material, &prefix, "curvature", pixels)?;
                 map_index += 1;
             }
             if options.ao {
@@ -1034,7 +1067,12 @@ pub fn run(
                         .collect();
                     let vertices: Vec<_> = selected.iter().flat_map(|t| t.positions).collect();
                     let objects: Vec<_> = selected.iter().map(|t| t.object as u32).collect();
-                    gpu = Some(Gpu::new(options.device, &vertices, &objects, options.self_only)?);
+                    gpu = Some(Gpu::new(
+                        options.device,
+                        &vertices,
+                        &objects,
+                        options.self_only,
+                    )?);
                 }
                 let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
                 let mut values = vec![1f32; covered.len()];
@@ -1220,7 +1258,12 @@ pub fn run(
                         .collect();
                     let vertices: Vec<_> = selected.iter().flat_map(|t| t.positions).collect();
                     let objects: Vec<_> = selected.iter().map(|t| t.object as u32).collect();
-                    gpu = Some(Gpu::new(options.device, &vertices, &objects, options.self_only)?);
+                    gpu = Some(Gpu::new(
+                        options.device,
+                        &vertices,
+                        &objects,
+                        options.self_only,
+                    )?);
                 }
                 let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
                 let diagonal = (Vec3::from_array(model.bounds[1])
@@ -1290,6 +1333,28 @@ pub fn run(
                 map_index += 1;
                 atomic_json(&options.output.join("result.json"), &result)?;
             }
+            if significant_uv_reuse {
+                // 单张几何图不能同时表达共用纹素的多个表面。附带保守蒙版，
+                // 让智能材质仅在白色的唯一映射区域使用本次 Mesh Maps。
+                let path = options.output.join(format!("{prefix}_uv_unique_mask.png"));
+                save(
+                    &path,
+                    image::DynamicImage::ImageLuma8(
+                        image::GrayImage::from_raw(
+                            options.resolution,
+                            options.resolution,
+                            coverage.unique_mask(&covered),
+                        )
+                        .ok_or("UV 唯一映射蒙版尺寸错误")?,
+                    ),
+                )?;
+                result.files.push(Output {
+                    material,
+                    kind: "uv_unique_mask".into(),
+                    path,
+                });
+                atomic_json(&options.output.join("result.json"), &result)?;
+            }
             emit_bake_progress(
                 &mut progress,
                 format!("{material_label} · 已完成"),
@@ -1351,7 +1416,8 @@ pub fn run(
             .map(|f| f.material)
             .collect();
         // BTreeSet 去重：attempt 失败与补全扫描可能登记同一材质
-        let already: std::collections::BTreeSet<_> = result.failed_materials.iter().copied().collect();
+        let already: std::collections::BTreeSet<_> =
+            result.failed_materials.iter().copied().collect();
         for m in &options.materials {
             if !complete.contains(m) && !already.contains(m) {
                 result.failed_materials.push(*m);
@@ -1391,6 +1457,7 @@ pub fn run(
             "bounds": model.bounds,
         },
         "meshMapConventions": {
+            "uvAddressing": "repeat; each integer UV tile maps to the same 0-1 texture",
             "padding": "margin px of exact euclidean nearest-covered dilation; background: ao/thickness constant, curvature 0.5",
             "ao": "linear grayscale; 1 = unoccluded",
             "normal": "OpenGL tangent space; +Y",
@@ -1399,8 +1466,10 @@ pub fn run(
             "position": "RGB = model-bounds normalized world XYZ",
             "thickness": "linear grayscale; normalized inward hit distance",
             "id": "RGBA material color; see material-colors.json",
-            "uv": "diagnostic wireframe only"
+            "uv": "diagnostic wireframe only",
+            "uv_unique_mask": "8-bit grayscale; 255 = uniquely mapped source-UV pixel, 0 = shared or uncovered; no dilation"
         },
+        "uvCoverage": &result.uv_coverage,
         "textures": texture_manifest,
         "artifacts": artifact_manifest,
     });
@@ -1427,6 +1496,7 @@ pub fn run(
 fn cross(a: Vec2, b: Vec2) -> f32 {
     a.x * b.y - a.y * b.x
 }
+#[cfg(test)]
 pub fn raster(
     model: &Model,
     material: usize,
@@ -1435,10 +1505,58 @@ pub fn raster(
     size: u32,
     draw_wire: bool,
     cancel: &Path,
+    heartbeat: impl FnMut(),
+) -> Result<(Vec<Surface>, Vec<bool>, Vec<u8>), String> {
+    let (surfaces, covered, wire, _) = raster_with_stats(
+        model, material, channel, objects, size, draw_wire, cancel, heartbeat,
+    )?;
+    Ok((surfaces, covered, wire))
+}
+
+#[derive(Default)]
+pub struct RasterCoverage {
+    pub shared_pixels: usize,
+    pub shared_samples: usize,
+    pub shared_samples_truncated: bool,
+    shared_bits: Option<Vec<u64>>,
+}
+
+impl RasterCoverage {
+    pub fn unique_mask(&self, covered: &[bool]) -> Vec<u8> {
+        covered
+            .iter()
+            .enumerate()
+            .map(|(pixel, covered)| {
+                if *covered
+                    && self
+                        .shared_bits
+                        .as_ref()
+                        .is_none_or(|bits| bits[pixel / 64] & (1u64 << (pixel % 64)) == 0)
+                {
+                    255
+                } else {
+                    0
+                }
+            })
+            .collect()
+    }
+}
+
+pub fn raster_with_stats(
+    model: &Model,
+    material: usize,
+    channel: u32,
+    objects: &[usize],
+    size: u32,
+    draw_wire: bool,
+    cancel: &Path,
     mut heartbeat: impl FnMut(),
-) -> Result<(Vec<Surface>, Vec<bool>, Vec<u8>), String> {    let n = size as usize;
+) -> Result<(Vec<Surface>, Vec<bool>, Vec<u8>, RasterCoverage), String> {
+    let n = size as usize;
     let mut covered = vec![false; n * n];
     let mut surfaces = vec![];
+    let mut coverage = RasterCoverage::default();
+    let mut saturated = false;
     let mut wire = if draw_wire {
         vec![0; n * n * 4]
     } else {
@@ -1465,63 +1583,128 @@ pub fn raster(
         if uv.iter().flatten().any(|v| !v.is_finite()) {
             continue;
         }
-        let uv = uv.map(|p| Vec2::new(p[0] * size as f32, (1. - p[1]) * size as f32));
-        if draw_wire {
-            for edge in 0..3 {
-                line(&mut wire, n, uv[edge], uv[(edge + 1) % 3]);
-            }
+        let source_uv = uv.map(Vec2::from_array);
+        let source_min = source_uv
+            .iter()
+            .fold(Vec2::splat(f32::INFINITY), |a, b| a.min(*b));
+        let source_max = source_uv
+            .iter()
+            .fold(Vec2::splat(f32::NEG_INFINITY), |a, b| a.max(*b));
+        if source_min.abs().max(source_max.abs()).max_element() > 1_000_000. {
+            return Err("源 UV 坐标过大，无法可靠地重复寻址".into());
         }
-        let det = cross(uv[1] - uv[0], uv[2] - uv[0]);
-        if det.abs() < 1e-10 {
+        // 按贴图 repeat 寻址：每个与三角形相交的整数 UV 单元都映射回
+        // 0–1。只做 fract(顶点) 会把跨边界的三角形错误拉过整张贴图。
+        let tile_start = source_min.floor().as_ivec2();
+        let tile_end = source_max.ceil().as_ivec2() - glam::IVec2::ONE;
+        if tile_end.x < tile_start.x || tile_end.y < tile_start.y {
             continue;
         }
-        let min = uv
-            .iter()
-            .fold(Vec2::splat(f32::INFINITY), |a, b| a.min(*b))
-            .floor()
-            .max(Vec2::ZERO);
-        let max = uv
-            .iter()
-            .fold(Vec2::splat(f32::NEG_INFINITY), |a, b| a.max(*b))
-            .ceil()
-            .min(Vec2::splat(size as f32));
-        for y in min.y as usize..max.y as usize {
-            for x in min.x as usize..max.x as usize {
-                let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-                let w1 = cross(p - uv[0], uv[2] - uv[0]) / det;
-                let w2 = cross(uv[1] - uv[0], p - uv[0]) / det;
-                let w0 = 1. - w1 - w2;
-                if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
-                    continue;
+        let tile_count =
+            (tile_end.x - tile_start.x + 1) as u64 * (tile_end.y - tile_start.y + 1) as u64;
+        if tile_count > 1024 {
+            return Err("单个三角形跨越超过 1024 个 UV 平铺单元，无法安全烘焙".into());
+        }
+        if saturated && !draw_wire {
+            // 已确认全图共用，但仍走到这里校验后续面的 UV 范围。
+            continue;
+        }
+        for tile_y in tile_start.y..=tile_end.y {
+            for tile_x in tile_start.x..=tile_end.x {
+                if cancel.exists() {
+                    return Err("任务已取消".into());
                 }
-                let pixel = y * n + x;
-                if covered[pixel] {
-                    continue;
-                }
-                covered[pixel] = true;
-                let weights = [w0, w1, w2];
-                let mut position = Vec3::ZERO;
-                let mut normal = Vec3::ZERO;
-                for k in 0..3 {
-                    position += Vec3::from_array(t.positions[k]) * weights[k];
-                    normal += Vec3::from_array(t.normals[k]) * weights[k];
-                }
-                // 反向法线在特定重心坐标下会精确抵消为零，normalize 产生 NaN
-                // 污染 AO 射线方向；回退为几何面法线。
-                if normal == Vec3::ZERO {
-                    let [a, b, c] = t.positions.map(Vec3::from_array);
-                    normal = (b - a).cross(c - a);
-                }
-                surfaces.push(Surface {
-                    position: position.to_array(),
-                    normal: normal.normalize_or_zero().to_array(),
-                    object: t.object as u32,
-                    pixel: pixel as u32,
+                heartbeat();
+                let tile = Vec2::new(tile_x as f32, tile_y as f32);
+                let uv = source_uv.map(|p| {
+                    let p = p - tile;
+                    Vec2::new(p.x * size as f32, (1. - p.y) * size as f32)
                 });
+                if draw_wire {
+                    for edge in 0..3 {
+                        line(&mut wire, n, uv[edge], uv[(edge + 1) % 3]);
+                    }
+                }
+                if saturated {
+                    continue;
+                }
+                let det = cross(uv[1] - uv[0], uv[2] - uv[0]);
+                if det.abs() < 1e-10 {
+                    continue;
+                }
+                let min = uv
+                    .iter()
+                    .fold(Vec2::splat(f32::INFINITY), |a, b| a.min(*b))
+                    .floor()
+                    .clamp(Vec2::ZERO, Vec2::splat(size as f32));
+                let max = uv
+                    .iter()
+                    .fold(Vec2::splat(f32::NEG_INFINITY), |a, b| a.max(*b))
+                    .ceil()
+                    .clamp(Vec2::ZERO, Vec2::splat(size as f32));
+                'pixels: for y in min.y as usize..max.y as usize {
+                    if y % 64 == 0 {
+                        if cancel.exists() {
+                            return Err("任务已取消".into());
+                        }
+                        heartbeat();
+                    }
+                    for x in min.x as usize..max.x as usize {
+                        let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                        let w1 = cross(p - uv[0], uv[2] - uv[0]) / det;
+                        let w2 = cross(uv[1] - uv[0], p - uv[0]) / det;
+                        let w0 = 1. - w1 - w2;
+                        if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
+                            continue;
+                        }
+                        let pixel = y * n + x;
+                        if covered[pixel] {
+                            coverage.shared_samples += 1;
+                            let bits = coverage
+                                .shared_bits
+                                .get_or_insert_with(|| vec![0; (n * n).div_ceil(64)]);
+                            let word = &mut bits[pixel / 64];
+                            let mask = 1u64 << (pixel % 64);
+                            if *word & mask == 0 {
+                                *word |= mask;
+                                coverage.shared_pixels += 1;
+                                // 首个命中面、共用像素集合和唯一映射蒙版此时都已
+                                // 完全确定；后续只需继续画 UV 线框（如启用），
+                                // 无需再对面内部做数十亿次重复命中计算。
+                                if coverage.shared_pixels == n * n {
+                                    coverage.shared_samples_truncated = true;
+                                    saturated = true;
+                                    break 'pixels;
+                                }
+                            }
+                            continue;
+                        }
+                        covered[pixel] = true;
+                        let weights = [w0, w1, w2];
+                        let mut position = Vec3::ZERO;
+                        let mut normal = Vec3::ZERO;
+                        for k in 0..3 {
+                            position += Vec3::from_array(t.positions[k]) * weights[k];
+                            normal += Vec3::from_array(t.normals[k]) * weights[k];
+                        }
+                        // 反向法线在特定重心坐标下会精确抵消为零，normalize 产生 NaN
+                        // 污染 AO 射线方向；回退为几何面法线。
+                        if normal == Vec3::ZERO {
+                            let [a, b, c] = t.positions.map(Vec3::from_array);
+                            normal = (b - a).cross(c - a);
+                        }
+                        surfaces.push(Surface {
+                            position: position.to_array(),
+                            normal: normal.normalize_or_zero().to_array(),
+                            object: t.object as u32,
+                            pixel: pixel as u32,
+                        });
+                    }
+                }
             }
         }
     }
-    Ok((surfaces, covered, wire))
+    Ok((surfaces, covered, wire, coverage))
 }
 fn line(pixels: &mut [u8], n: usize, a: Vec2, b: Vec2) {
     // Clip before stepping, so extreme out-of-range UVs cannot cause unbounded work.
@@ -1648,12 +1831,11 @@ pub(crate) fn dt_1d_sq(f: &[u32], src_in: &[u32]) -> (Vec<u32>, Vec<u32>) {
     for q in 1..n {
         let fq = f[q] as i64 + (q * q) as i64;
         // Meijster 包络要求欧几里得除法：分子可为负，向零截断会算错边界
-        let mut s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64))
-            .div_euclid(2 * (q - v[k]) as i64);
+        let mut s =
+            (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64)).div_euclid(2 * (q - v[k]) as i64);
         while s <= z[k] {
             k -= 1;
-            s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64))
-                .div_euclid(2 * (q - v[k]) as i64);
+            s = (fq - (f[v[k]] as i64 + (v[k] * v[k]) as i64)).div_euclid(2 * (q - v[k]) as i64);
         }
         k += 1;
         v[k] = q;

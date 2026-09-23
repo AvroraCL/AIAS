@@ -84,7 +84,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       </div>
 
       <div class="bake-display-tools" aria-label="视图显示工具">
-        <label class="bake-map-preview-control">贴图预览<select id="bake-map-preview" aria-label="模型贴图预览"><option value="ao">环境遮蔽</option><option value="curvature">曲率</option><option value="world_normal">世界空间法线</option><option value="position">位置</option><option value="thickness">厚度</option><option value="normal">切线法线</option><option value="id">材质 ID</option><option value="uv">UV 线框</option><option value="material">着色 + AO</option></select></label>
+        <label class="bake-map-preview-control">贴图预览<select id="bake-map-preview" aria-label="模型贴图预览"><option value="ao">环境遮蔽</option><option value="curvature">曲率</option><option value="world_normal">世界空间法线</option><option value="position">位置</option><option value="thickness">厚度</option><option value="normal">切线法线</option><option value="id">材质 ID</option><option value="uv">UV 线框</option><option value="uv_unique_mask">UV 唯一映射蒙版</option><option value="material">着色 + AO</option></select></label>
         <button id="bake-focus" data-bake-display="focus" class="bake-floating-button" type="button" title="聚焦所选对象 · F" aria-label="聚焦所选对象"><i data-lucide="scan" aria-hidden="true"></i></button>
         <button id="bake-reset" data-bake-display="reset" class="bake-floating-button" type="button" title="复位视图" aria-label="复位视图"><i data-lucide="rotate-ccw" aria-hidden="true"></i></button>
         <button id="bake-projection" data-bake-display="projection" class="bake-floating-button" type="button" title="切换透视 / 正交">透视</button>
@@ -108,7 +108,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
           ${section('02 / 烘焙质量', `<div class="bake-presets" aria-label="质量预设"><button data-bake-preset="draft" type="button">快速</button><button data-bake-preset="standard" type="button">标准</button><button data-bake-preset="high" type="button">精细</button></div>${select('resolution', '贴图尺寸', [512, 1024, 2048, 4096].map(value => [value, `${value} × ${value}`]))}<small id="bake-quality-note"></small>`)}
           ${section('03 / 导出', `<button id="bake-export" class="secondary-action output-action" data-bake-export type="button"><i data-lucide="download" aria-hidden="true"></i>导出全部贴图</button><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开缓存目录</button><small>结果先缓存在应用数据目录，导出时选择目标文件夹</small>`)}
           <details class="bake-advanced"><summary>高级设置</summary>
-          ${section('UV 工作流', `${select('uvMode', '导入时 UV 处理', [['preserveValid', '智能保留'], ['regenerateAll', '全部重新展开'], ['strictSource', '严格使用源 UV']])}<small>智能保留会优先使用合格源 UV，仅修复缺失或越界的材质；UV 重叠（镜像/分层堆叠）与零面积退化面视为无害设计，保留原样。烘焙贴图供智能材质制作使用。</small>`)}
+          ${section('UV 工作流', `${select('uvMode', '导入时 UV 处理', [['preserveValid', '智能保留'], ['regenerateAll', '全部重新展开'], ['strictSource', '严格使用源 UV']])}<small>智能保留会使用原生 UV，包括 0–1 外的平铺坐标；仅在 UV 缺失或坐标无效时生成工作通道。镜像与分层重叠仍按源 UV 烘焙。</small>`)}
           ${section('计算设备', `${select('device', 'GPU', [[0, '检测设备中…']])}<small id="bake-device-note"></small>`)}
           ${section('光线追踪与边缘', `${select('samples', 'AO / 厚度采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', '输出位深', [[8, '8 位'], [16, '16 位（AO/厚度/曲率/位置/世界法线）']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>射线距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${check('denoise', 'AI 降噪（仅用于 AO）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相影响'], ['true', '仅同一对象']])}<small>AO 与厚度使用 GPU；其余 Mesh Map 由模型几何直接生成。</small>`)}
           </details>
@@ -754,15 +754,17 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     highlightedTriangle = highlight;
     if (!model || focused === null) return;
     if (view !== 'uv') { ++uvDrawRevision; return; }
-    const applyFocus = (valuesFor, finder) => {
+    const applyFocus = finder => {
       if (focusTriangle == null) return;
       // 以目标三角形 UV 包围盒中心居中放大（zoom 至少 4），便于定位小缺陷面
       const found = finder(focusTriangle);
       if (!found) return;
       const { minU, maxU, minV, maxV } = found;
+      const centerU = (minU + maxU) / 2;
+      const centerV = (minV + maxV) / 2;
       uvZoom = Math.max(uvZoom, 4);
-      uvPanX = size / 2 - 12 - ((minU + maxU) / 2) * (size - 24) * uvZoom;
-      uvPanY = size / 2 - 12 - (1 - (minV + maxV) / 2) * (size - 24) * uvZoom;
+      uvPanX = size / 2 - 12 - (centerU - Math.floor(centerU)) * (size - 24) * uvZoom;
+      uvPanY = size / 2 - 12 - (1 - (centerV - Math.floor(centerV))) * (size - 24) * uvZoom;
     };
     const canvas = $('uv-canvas');
     const stage = $('stage');
@@ -780,10 +782,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const batches = geometry.batches.filter(batch => batch.material === focused && batch.uvOffsets[String(channels[focused] ?? 0)] != null)
       .map(batch => ({ batch, values: new Float32Array(geometry.buffer, batch.uvOffsets[String(channels[focused] ?? 0)], batch.vertexCount * 2), triangleIds: new Uint32Array(geometry.buffer, batch.triangleOffset, batch.triangleCount) }));
     if (focusTriangle != null) {
-      applyFocus(valuesFor => {
+      applyFocus(triangleId => {
         // 在批内查目标三角形的 UV 包围盒
         for (const { values, triangleIds } of batches) {
-          const local = triangleIds.indexOf(focusTriangle);
+          const local = triangleIds.indexOf(triangleId);
           if (local >= 0) {
             const base = local * 6;
             return {
@@ -814,13 +816,25 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         const index = triangleIds[triangle];
         const bucket = highlight === index ? buckets.highlight : bad.has(index) ? buckets.bad : buckets.normal;
         const path = bucket.path;
-        for (let point = 0; point < 3; point++) {
-          const base = triangle * 6 + point * 2;
-          const x = uvPanX + 12 + values[base] * (size - 24) * uvZoom;
-          const y = uvPanY + 12 + (1 - values[base + 1]) * (size - 24) * uvZoom;
-          if (point) path.lineTo(x, y); else path.moveTo(x, y);
+        const base = triangle * 6;
+        const us = [values[base], values[base + 2], values[base + 4]];
+        const vs = [values[base + 1], values[base + 3], values[base + 5]];
+        if (!us.every(Number.isFinite) || !vs.every(Number.isFinite)) { triangle++; continue; }
+        if (us.some(value => Math.abs(value) > 1_000_000) || vs.some(value => Math.abs(value) > 1_000_000)) { triangle++; continue; }
+        const minU = Math.floor(Math.min(...us)), maxU = Math.ceil(Math.max(...us)) - 1;
+        const minV = Math.floor(Math.min(...vs)), maxV = Math.ceil(Math.max(...vs)) - 1;
+        if ((maxU - minU + 1) * (maxV - minV + 1) > 1024) { triangle++; continue; }
+        // 与 worker 相同的 repeat 规则：跨整数边界的三角形在两侧各绘一段。
+        for (let tileV = minV; tileV <= maxV; tileV++) {
+          for (let tileU = minU; tileU <= maxU; tileU++) {
+            for (let point = 0; point < 3; point++) {
+              const x = uvPanX + 12 + (us[point] - tileU) * (size - 24) * uvZoom;
+              const y = uvPanY + 12 + (1 - (vs[point] - tileV)) * (size - 24) * uvZoom;
+              if (point) path.lineTo(x, y); else path.moveTo(x, y);
+            }
+            path.closePath();
+          }
         }
-        path.closePath();
         triangle++;
       }
       if (batchIndex < batches.length) requestAnimationFrame(drawChunk);
@@ -839,10 +853,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     drawChunk();
     const issues = $('issues');
     issues.replaceChildren();
-    if (report?.issues?.length) {
+    if (report && (report.issues?.length || report.tiledCount)) {
       const note = document.createElement('p');
       const overlap = Math.max((report.issueCount ?? 0) - (report.defectCount ?? 0), 0);
-      note.textContent = `缺陷 ${report.defectCount ?? 0} 处（缺失/越界），无害记录 ${overlap} 处（重叠/零面积退化，镜像分层设计常见）。烘焙按源 UV 原样进行。`;
+      note.textContent = `缺陷 ${report.defectCount ?? 0} 处（缺失/坐标无效或过大），平铺三角面 ${report.tiledCount ?? 0} 个，重叠/退化记录 ${overlap} 处。平铺 UV 使用重复寻址，不会自动重排。`;
       issues.append(note);
       for (const issue of report.issues.slice(0, 30)) {
         const button = document.createElement('button');
@@ -1042,7 +1056,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       focusMaterial(model.materials[0].id);
       setView('model');
       const generated = Object.keys(model.generatedChannels || {}).length;
-      status(generated ? `模型已导入，${generated} 个材质已生成自动 UV。` : '模型已导入，源 UV 检查通过。');
+      status(generated ? `模型已导入，${generated} 个材质因 UV 缺失或无效生成工作通道。` : '模型已导入，已保留原生 UV（含平铺坐标）。');
     } catch (error) {
       if (prepared) disposePreparedMeshes(prepared.meshes);
       if (pendingModel) invoke('bake_release', { handle: pendingModel.handle }).catch(() => {});
@@ -1115,12 +1129,46 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     hint.dataset.baseText = '烘焙贴图与清单缓存在应用数据目录，导出时选择目标文件夹；贴图供智能材质制作使用';
     hint.textContent = hint.dataset.baseText;
     toolbar.append(exportButton, openCache, hint);
+    if (data.warnings?.length) {
+      const details = document.createElement('details');
+      details.className = 'bake-coverage';
+      const summary = document.createElement('summary');
+      summary.textContent = `烘焙提示 ${data.warnings.length} 条`;
+      const list = document.createElement('ul');
+      for (const warning of data.warnings) {
+        const row = document.createElement('li');
+        row.textContent = warning;
+        list.append(row);
+      }
+      details.append(summary, list);
+      toolbar.append(details);
+    }
+    const reusedUv = (data.uvCoverage || []).filter(item => item.coveredPixels > 0 && item.sharedPixels >= 1024 && item.sharedPixels * 20 >= item.coveredPixels);
+    if (reusedUv.length) {
+      const details = document.createElement('details');
+      details.className = 'bake-coverage';
+      const summary = document.createElement('summary');
+      summary.textContent = `${reusedUv.length} 个材质的原生 UV 存在多面共用像素 · 查看影响`;
+      const explanation = document.createElement('p');
+      explanation.textContent = results.some(file => file.kind === 'uv_unique_mask')
+        ? '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、厚度、位置或世界法线图中分别表示；这些区域当前取先覆盖的面。附带蒙版的白色区域可使用几何图，黑色区域应避免直接使用。'
+        : '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、厚度、位置或世界法线图中分别表示；本次没有对应蒙版，请检查输出类型和失败提示。';
+      const list = document.createElement('ul');
+      for (const item of reusedUv) {
+        const row = document.createElement('li');
+        const materialName = model?.materials.find(material => material.id === item.material)?.name || `材质 ${item.material}`;
+        row.textContent = `${materialName}：${Math.round(item.sharedPixels * 100 / item.coveredPixels)}% 像素共用`;
+        list.append(row);
+      }
+      details.append(summary, explanation, list);
+      toolbar.append(details);
+    }
     $('results').append(toolbar);
     for (const file of results) {
       const card = document.createElement('div');
       card.className = 'bake-result';
       const materialName = model?.materials.find(item => item.id === file.material)?.name;
-      const kindNames = { ao: '环境遮蔽', normal: '切线法线', world_normal: '世界空间法线', curvature: '曲率', position: '位置', thickness: '厚度', id: '材质 ID', uv: 'UV 线框' };
+      const kindNames = { ao: '环境遮蔽', normal: '切线法线', world_normal: '世界空间法线', curvature: '曲率', position: '位置', thickness: '厚度', id: '材质 ID', uv: 'UV 线框', uv_unique_mask: 'UV 唯一映射蒙版' };
       const kindName = kindNames[file.kind] || file.kind.toUpperCase();
       const label = materialName ? `${materialName} · ${kindName}` : `材质 ${file.material} · ${kindName}`;
       const title = document.createElement('p');
@@ -1168,7 +1216,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       // 占用大量内存，也确保模型不会继续显示上一次烘焙或无贴图材质。
       pendingResultPreview = defaultPreview;
     }
-    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${view === 'model' ? ' · 已更新模型预览' : ' · 当前视图保持不变，切回模型后显示新结果'}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${data.warnings?.length ? `。${data.warnings.join('；')}` : ''}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
+    const warningCount = data.warnings?.length || 0;
+    const warningSummary = warningCount ? ` · ${warningCount} 条提示（见结果详情）` : '';
+    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${view === 'model' ? ' · 已更新模型预览' : ' · 当前视图保持不变，切回模型后显示新结果'}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${warningSummary}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
   }
 
   $('run').onclick = async () => {

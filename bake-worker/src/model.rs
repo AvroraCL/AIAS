@@ -55,10 +55,13 @@ pub struct UvReport {
     pub valid: bool,
     pub issues: Vec<Issue>,
     pub issue_count: usize,
-    /// 缺失/越界两类硬缺陷数。重叠（镜像/分层堆叠）与零面积退化面在烘焙中
-    /// 覆盖不到像素、无害，记入 issue_count 供视口标红，但不影响 valid。
+    /// 缺失、非有限坐标或不可安全光栅化的范围是硬缺陷。普通越界坐标使用重复寻址并计入
+    /// tiled_count；重叠与退化 UV 记入 issue_count，但不触发重排。
     #[serde(default)]
     pub defect_count: usize,
+    /// 使用 repeat 寻址的三角形数；平铺不是缺陷，也不应在预览里标红。
+    #[serde(default)]
+    pub tiled_count: usize,
 }
 pub fn load(path: &Path) -> Result<Model, String> {
     let bytes = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
@@ -550,9 +553,8 @@ fn generate_material_uv(model: &mut Model, material: usize) -> Result<u32, Strin
     Ok(channel)
 }
 
-
-
-/// 为每个材质选择实际烘焙通道；智能模式只为不存在合法源通道的材质生成 UV。
+/// 为每个材质选择实际烘焙通道；智能模式保留可重复寻址的源 UV，
+/// 只为缺失或非有限坐标导致无法完整光栅化的材质生成工作通道。
 pub fn prepare_uvs_with_progress(
     model: &mut Model,
     mode: &str,
@@ -675,9 +677,7 @@ pub fn write_preview(model: &Model, dir: &Path) -> Result<serde_json::Value, Str
         }
         writer.flush().map_err(|e| e.to_string())?;
     }
-    temp.as_file()
-        .sync_all()
-        .map_err(|e| e.to_string())?;
+    temp.as_file().sync_all().map_err(|e| e.to_string())?;
     crate::bake::persist_with_retry(temp, &path)?;
     let manifest_path = dir.join("preview.json");
     let manifest =
@@ -737,10 +737,16 @@ fn visit(
     // glTF 解析器不校验节点图：环状引用或数万层嵌套会让递归栈溢出硬崩
     // （EXCEPTION_STACK_OVERFLOW 无法安全落 dump）。显式拒绝，给出可读错误。
     if depth > 256 {
-        return Err(format!("节点 {} 嵌套层级过深（>256），请简化层级后导出", node.index()));
+        return Err(format!(
+            "节点 {} 嵌套层级过深（>256），请简化层级后导出",
+            node.index()
+        ));
     }
     if !seen.insert(node.index()) {
-        return Err(format!("节点 {} 被循环引用，请修复模型节点层级", node.index()));
+        return Err(format!(
+            "节点 {} 被循环引用，请修复模型节点层级",
+            node.index()
+        ));
     }
     if node.skin().is_some() {
         return Err(format!("节点 {} 含蒙皮，请导出静态网格", node.index()));
@@ -886,6 +892,7 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
     let mut issues = vec![];
     let mut count = 0;
     let mut defect_count = 0usize;
+    let mut tiled_count = 0usize;
     let mut valid = vec![];
     let mut add = |kind: &str, index: usize, other: Option<usize>, defect: bool| {
         count += 1;
@@ -915,25 +922,33 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
             add("缺失 UV", index, None, true);
             continue;
         };
-        if uv
-            .iter()
-            .flatten()
-            .any(|v| !v.is_finite() || *v < 0. || *v > 1.)
-        {
-            add("UV 超出 0–1", index, None, true);
+        if uv.iter().flatten().any(|v| !v.is_finite()) {
+            add("UV 坐标无效", index, None, true);
             continue;
         }
         let v = uv.map(Vec2::from_array);
+        let min = v.iter().fold(Vec2::splat(f32::INFINITY), |a, b| a.min(*b));
+        let max = v
+            .iter()
+            .fold(Vec2::splat(f32::NEG_INFINITY), |a, b| a.max(*b));
+        let tile_span = (max.ceil() - min.floor()).max(Vec2::ZERO);
+        if min.abs().max(max.abs()).max_element() > 1_000_000. || tile_span.x * tile_span.y > 1024.
+        {
+            add("UV 平铺范围过大", index, None, true);
+            continue;
+        }
+        if uv.iter().flatten().any(|v| *v < 0. || *v > 1.) {
+            // 游戏模型常用负坐标或大于 1 的坐标平铺同一张贴图；不能为此
+            // 改写原生 UV，也不能将正常平铺误报为需定位的缺陷。
+            tiled_count += 1;
+            continue;
+        }
         // 零面积退化面覆盖不到任何像素（实测真实模型中的退化面全部恒为 0
         // 面积或 <1e-15 的微刺），与 SP 一致不算缺陷。
         if cross(v[1] - v[0], v[2] - v[0]).abs() < 1e-12 {
             add("退化 UV", index, None, false);
             continue;
         }
-        let min = v.iter().fold(Vec2::splat(f32::INFINITY), |a, b| a.min(*b));
-        let max = v
-            .iter()
-            .fold(Vec2::splat(f32::NEG_INFINITY), |a, b| a.max(*b));
         valid.push((index, *uv, min, max));
     }
     valid.sort_by(|a, b| a.2.x.total_cmp(&b.2.x));
@@ -960,5 +975,6 @@ pub fn inspect(model: &Model, material: usize, channel: u32, objects: &[usize]) 
         issues,
         issue_count: count,
         defect_count,
+        tiled_count,
     }
 }

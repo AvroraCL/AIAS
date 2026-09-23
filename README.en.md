@@ -14,7 +14,7 @@ The screenshot shows the real BLK workspace with generated sample textures. AIAS
 2. **Create the BLK mapping:** scan the DDS folder, review each source-to-file rule and generate a `.blk` configuration beside the textures.
 3. **Check and manage the skin:** use the built-in skin manager to find, import and enable War Thunder UserSkins.
 
-For smart-material workflows, the model baker generates AO, normal, curvature, position, thickness, ID and UV Mesh Maps from the **same static model**. It is not a high-poly-to-low-poly projection baker. OBJ, GLB and glTF import are supported; the source model is not overwritten.
+For smart-material workflows, the model baker generates AO, normal, curvature, position, thickness, ID and UV Mesh Maps from the **same static model**. It is not a high-poly-to-low-poly projection baker. OBJ, GLB and glTF import are supported; the source model is not overwritten. Native tiled UVs are preserved. Results report texture pixels shared by multiple surfaces; when baking geometry-dependent maps with substantial reuse, an extra `uv_unique_mask` PNG (white = uniquely mapped, black = shared or uncovered) helps limit those maps to reliable regions.
 
 AIAS also provides PBR splitting, mipmap generation, batch image-to-DDS conversion, 29 image styles including ASCII art, local background removal, 4× upscaling and normal/height map generation. Processing runs locally; optional AI models and acceleration runtimes are downloaded on demand.
 
