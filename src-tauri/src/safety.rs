@@ -63,6 +63,27 @@ pub fn conflict_free(path: std::path::PathBuf, policy: &str) -> std::path::PathB
     path
 }
 
+/// Keep a PBR color/normal pair on the same numbered stem, with _c/_n at the end.
+pub fn conflict_free_pbr_pair(
+    directory: &Path,
+    stem: &str,
+    policy: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    for index in 0u32.. {
+        let numbered = if index == 0 {
+            stem.to_string()
+        } else {
+            format!("{stem}-{index}")
+        };
+        let color = directory.join(format!("{numbered}_c.dds"));
+        let normal = directory.join(format!("{numbered}_n.dds"));
+        if policy != "suffix" || (!color.exists() && !normal.exists()) {
+            return (color, normal);
+        }
+    }
+    unreachable!("exhausted PBR output suffixes")
+}
+
 pub(crate) fn unique_stems(files: &[String]) -> Result<(), String> {
     let mut seen = HashSet::new();
     for file in files {
@@ -178,6 +199,18 @@ mod tests {
         std::fs::write(&first, b"2").unwrap();
         let second = conflict_free(target, "suffix");
         assert_eq!(second.file_name().unwrap(), "out-2.png");
+    }
+    #[test]
+    fn pbr_pair_keeps_suffixes_and_uses_one_free_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tank_c.dds"), b"old").unwrap();
+        let (color, normal) = conflict_free_pbr_pair(dir.path(), "tank", "suffix");
+        assert_eq!(color.file_name().unwrap(), "tank-1_c.dds");
+        assert_eq!(normal.file_name().unwrap(), "tank-1_n.dds");
+        std::fs::write(dir.path().join("tank-1_n.dds"), b"old").unwrap();
+        let (color, normal) = conflict_free_pbr_pair(dir.path(), "tank", "suffix");
+        assert_eq!(color.file_name().unwrap(), "tank-2_c.dds");
+        assert_eq!(normal.file_name().unwrap(), "tank-2_n.dds");
     }
     #[test]
     fn task_cancel_request_is_consumed_once() {

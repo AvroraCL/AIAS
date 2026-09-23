@@ -381,20 +381,35 @@
 
               <div class="settings-grid">
                 <section class="settings-section">
+                  <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="languages" aria-hidden="true"></i></span><div><h3>界面语言</h3><p>选择应用界面的显示语言</p></div></div>
+                  <div class="settings-section-body">
+                    <div class="settings-language" role="group" aria-label="界面语言">
+                      <button type="button" data-language="zh-CN" aria-pressed="true">中文</button>
+                      <button type="button" data-language="en" aria-pressed="false">English</button>
+                    </div>
+                    <p class="settings-hint">切换后立即生效，并在下次启动时保留。</p>
+                  </div>
+                </section>
+                <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="layout-grid" aria-hidden="true"></i></span><div><h3>侧栏导航</h3><p>风格实验室分类的展开方式</p></div></div>
+                  <div class="settings-section-body">
                   <label class="toggle-label setting-toggle"><input id="set-auto-collapse-style-nav" type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span><span>切换区域时自动收起其他分类</span></label>
                   <p class="settings-hint">默认开启。展开另一分类或切换到其他功能时，自动收起之前的分类；关闭后可同时展开多组。</p>
+                  </div>
                 </section>
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="refresh-cw" aria-hidden="true"></i></span><div><h3>更新</h3><p>保持应用版本最新</p></div></div>
+                  <div class="settings-section-body">
                   <label class="toggle-label setting-toggle"><input id="set-auto-update" type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span><span>启动时自动检查更新</span></label>
                   <div class="settings-row"><button id="set-check-update" class="secondary-action" type="button">检查更新</button><small id="set-version" class="settings-hint">正在读取版本…</small></div>
+                  </div>
                 </section>
 
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="folder-output" aria-hidden="true"></i></span><div><h3>输出</h3><p>默认目录与文件冲突策略</p></div></div>
+                  <div class="settings-section-body">
                   <label for="set-output-dir">默认输出目录</label>
-                  <div class="field-row"><input id="set-output-dir" readonly aria-label="默认输出目录" title="默认输出目录" /><button id="set-output-pick" type="button">选择</button><button id="set-output-open" type="button">打开</button></div>
+                  <div class="field-row settings-output-path"><input id="set-output-dir" readonly aria-label="默认输出目录" title="默认输出目录" /><button id="set-output-pick" type="button">选择</button><button id="set-output-open" type="button">打开</button></div>
                   <label for="set-output-strategy">目录策略</label>
                   <select id="set-output-strategy" aria-label="输出目录策略">
                     <option value="ask">沿用各模块记录的目录（默认）</option>
@@ -406,31 +421,39 @@
                     <option value="overwrite">直接覆盖同名文件（默认）</option>
                     <option value="suffix">自动追加 -1/-2 后缀，不覆盖</option>
                   </select>
-                  <p class="settings-hint">目录策略对抠图、超分、PBR、Mipmap、转 DDS 与材质生成生效；冲突策略对全部导出文件生效。</p>
+                  <p class="settings-hint">目录策略对抠图、超分、PBR、Mipmap、转 DDS 与材质生成生效；冲突策略对这些任务及模型烘焙导出生效。BLK 覆盖仍需单独确认。</p>
+                  </div>
                 </section>
 
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="bell" aria-hidden="true"></i></span><div><h3>通知</h3><p>长任务完成提醒</p></div></div>
+                  <div class="settings-section-body">
                   <label class="toggle-label setting-toggle"><input id="set-notify-complete" type="checkbox" checked /><span class="toggle-track"><span class="toggle-thumb"></span></span><span>任务完成时发送系统通知</span></label>
                   <p class="settings-hint">抠图、超分、烘焙等长任务完成或失败时弹系统通知，适合最小化窗口挂后台等结果。</p>
+                  </div>
                 </section>
 
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="hard-drive" aria-hidden="true"></i></span><div><h3>存储</h3><p>缓存清理与模型管理</p></div></div>
+                  <div class="settings-section-body">
                   <div class="settings-row"><small id="set-storage-thumbs" class="settings-hint">缩略图缓存：读取中…</small><button class="secondary-action" data-storage-clean="thumbs" type="button">清理</button></div>
-                  <div class="settings-row"><small id="set-storage-bake" class="settings-hint">烘焙缓存：读取中…</small><button class="secondary-action" data-storage-clean="bakeCache" type="button">清理</button></div>
+                  <div class="settings-row"><small id="set-storage-bake" class="settings-hint">烘焙缓存：读取中…</small><button class="secondary-action" data-storage-clean="bakeCache" type="button" title="仅清理超过 24 小时且未被结果引用的缓存">清理过期项</button></div>
                   <div id="set-storage-models" class="settings-models" aria-label="已安装模型与运行库"></div>
+                  </div>
                 </section>
 
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="database" aria-hidden="true"></i></span><div><h3>应用数据</h3><p>配置与路径记录</p></div></div>
+                  <div class="settings-section-body">
                   <label for="set-data-dir">配置目录</label>
                   <div class="field-row"><input id="set-data-dir" readonly aria-label="配置目录" title="配置目录" /><button id="set-open-dir" type="button">打开</button></div>
                   <button id="set-reset" class="secondary-action danger" type="button"><i data-lucide="rotate-ccw" aria-hidden="true"></i>重置所有设置</button>
+                  </div>
                 </section>
 
                 <section class="settings-section">
                   <div class="settings-section-heading"><span class="settings-icon"><i data-lucide="info" aria-hidden="true"></i></span><div><h3>关于</h3><p>AIAS Texture Workshop</p></div></div>
+                  <div class="settings-section-body">
                   <dl class="about-list">
                     <div><dt>版本</dt><dd id="about-version">—</dd></div>
                     <div><dt>框架</dt><dd>Tauri 2</dd></div>
@@ -440,6 +463,7 @@
                     <a class="about-link" href="https://github.com/AvroraCL/AIAS" target="_blank" rel="noreferrer"><span class="about-link-label">仓库</span><span class="about-link-value">GitHub · AvroraCL/AIAS</span><i data-lucide="external-link" aria-hidden="true"></i></a>
                     <a class="about-link" href="https://gitcode.com/HelenaSG/Aias" target="_blank" rel="noreferrer"><span class="about-link-label">镜像</span><span class="about-link-value">GitCode · HelenaSG/Aias</span><i data-lucide="external-link" aria-hidden="true"></i></a>
                     <button class="about-link" id="set-license" type="button"><span class="about-link-label">许可证</span><span class="about-link-value">LGPL-3</span><i data-lucide="external-link" aria-hidden="true"></i></button>
+                  </div>
                   </div>
                 </section>
               </div>

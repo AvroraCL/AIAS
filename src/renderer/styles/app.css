@@ -21,6 +21,9 @@
   --accent-hover: #e6e6ea;
   --accent-strong: #ffffff;
   --accent-soft: rgba(255, 255, 255, 0.14);
+  --switch-off-track: #505057;
+  --switch-off-border: #74747c;
+  --switch-off-thumb: #f4f4f5;
   --success: #4caf84;
   --success-soft: rgba(76, 175, 132, 0.13);
   --warning: #d5a24a;
@@ -94,9 +97,9 @@ input[type="checkbox"] {
   min-height: 0;
   padding: 0;
   margin: 0;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--switch-off-border);
   border-radius: 999px;
-  background-color: #2a2a2f;
+  background-color: var(--switch-off-track);
   cursor: pointer;
   transition: background var(--transition), border-color var(--transition);
 }
@@ -109,12 +112,12 @@ input[type="checkbox"]::after {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: #d9d9dd;
+  background: var(--switch-off-thumb);
   transition: transform var(--transition), background var(--transition);
 }
 
 input[type="checkbox"]:hover:not(:disabled) {
-  border-color: #bcbcc4;
+  border-color: var(--text-soft);
 }
 
 input[type="checkbox"]:checked {
@@ -249,39 +252,50 @@ html[data-theme="light"] .theme-icon-sun { display: none; }
 
 /* 黑白主题：亮色覆盖根变量（暗色为默认）。组件内少量硬编码深色在下方就近翻转。 */
 html[data-theme="light"] {
-  /* 柔灰基调：避免大面积纯白刺眼，表面与背景保持一档灰阶差 */
-  --bg: #e9e9ee;
-  --bg-deep: #e1e1e7;
-  --surface: #f4f4f6;
-  --surface-raised: #efeff2;
-  --surface-hover: #e4e4ea;
-  --border: #d0d0d9;
-  --border-strong: #b8b8c3;
-  --text: #1c1c21;
-  --text-soft: #42424b;
-  --text-dim: #7a7a85;
-  --accent: #23232b;
-  --accent-hover: #38383f;
-  --accent-strong: #23232b;
-  --accent-soft: rgba(35, 35, 43, 0.1);
-  --danger: #c2372f;
-  --shadow-sm: 0 4px 16px rgba(30, 30, 50, 0.12);
-  --shadow-md: 0 16px 36px rgba(30, 30, 50, 0.16);
+  /* Neutral paper and ink: keep controls, cards and workspace distinct. */
+  --bg: #eeeeee;
+  --bg-deep: #ffffff;
+  --surface: #f9f9f9;
+  --surface-raised: #ffffff;
+  --surface-hover: #e9e9e9;
+  --border: #d2d2d2;
+  --border-strong: #aaaaaa;
+  --text: #202020;
+  --text-soft: #404040;
+  --text-dim: #606060;
+  --accent: #242424;
+  --accent-hover: #3a3a3a;
+  --accent-strong: #242424;
+  --accent-soft: rgba(0, 0, 0, 0.08);
+  --switch-off-track: #888888;
+  --switch-off-border: #6e6e6e;
+  --switch-off-thumb: #ffffff;
+  --success: #19724b;
+  --success-soft: rgba(25, 114, 75, 0.1);
+  --warning: #875d17;
+  --danger: #ad2828;
+  --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.09);
+  --shadow-md: 0 16px 36px rgba(0, 0, 0, 0.14);
 }
 html[data-theme="light"] .mode-tab.active { color: var(--text); }
-html[data-theme="light"] input[type="checkbox"] { border-color: #c2c2cd; background-color: #e8e8ef; }
 html[data-theme="light"] input[type="checkbox"]:checked { border-color: var(--accent); background-color: var(--accent); }
 html[data-theme="light"] input[type="checkbox"]:checked::after { background: #ffffff; }
-html[data-theme="light"] .blk-from-input { border-color: #d0d0d9; background: #ffffff; color: var(--text); }
-html[data-theme="light"] .toggle-track { background: #e2e2ea; }
 html[data-theme="light"] .toggle-label input:checked + .toggle-track .toggle-thumb { background: #ffffff; }
 html[data-theme="light"] .run-button:not(:disabled),
 html[data-theme="light"] .primary-compact:not(:disabled) { color: #ffffff; }
 html[data-theme="light"] .run-button:disabled { color: var(--text-dim); }
+html[data-theme="light"] .primary-compact:disabled {
+  border-color: var(--border);
+  color: var(--text-dim);
+  background: var(--surface-hover);
+}
 html[data-theme="light"] .thumb-badge.done { color: #ffffff; }
 html[data-theme="light"] ::selection { color: #ffffff; }
-html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c4c4cd; background-clip: padding-box; }
-html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #adadba; background-clip: padding-box; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #bcbcbc; background-clip: padding-box; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #999999; background-clip: padding-box; }
+html[data-theme="light"] button:disabled { opacity: 1; color: var(--text-dim); }
+html[data-theme="light"] input:disabled,
+html[data-theme="light"] select:disabled { color: var(--text-dim); }
 
 .app-main {
   display: grid;
@@ -732,8 +746,8 @@ label { display: block; margin: 11px 0 5px; color: var(--text-dim); font-size: 1
 
 .toggle-label { display: inline-flex; align-items: center; gap: 9px; min-height: 28px; margin-top: 12px; color: var(--text-soft); cursor: pointer; }
 .toggle-label input { position: absolute; width: 1px; height: 1px; min-height: 1px; opacity: 0; pointer-events: none; }
-.toggle-track { position: relative; width: 34px; height: 19px; flex: 0 0 34px; border: 1px solid var(--border-strong); border-radius: 999px; background: #2a2a2f; transition: background var(--transition), border-color var(--transition); }
-.toggle-thumb { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #d9d9dd; transition: transform var(--transition); }
+.toggle-track { position: relative; width: 34px; height: 19px; flex: 0 0 34px; border: 1px solid var(--switch-off-border); border-radius: 999px; background: var(--switch-off-track); transition: background var(--transition), border-color var(--transition); }
+.toggle-thumb { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--switch-off-thumb); transition: transform var(--transition); }
 .toggle-label input:checked + .toggle-track { border-color: var(--accent); background: var(--accent); }
 .toggle-label input:checked + .toggle-track .toggle-thumb { transform: translateX(15px); background: #0d0d0f; }
 .toggle-label input:focus-visible + .toggle-track { outline: 2px solid var(--accent-strong); outline-offset: 2px; }

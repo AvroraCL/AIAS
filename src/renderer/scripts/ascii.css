@@ -16,7 +16,7 @@
 #ascii-empty { text-align: center; color: var(--text-dim); }
 #ascii-empty strong { color: var(--text); font-size: 22px; font-weight: 600; }
 #ascii-empty p { margin: 14px 0 24px; }
-.ascii-controls label { display: grid; gap: 8px; margin-bottom: 16px; color: var(--text-muted); font-size: 12px; }
+.ascii-controls label { display: grid; gap: 8px; margin-bottom: 16px; color: var(--text-soft); font-size: 12px; }
 .ascii-controls label.ascii-check { display: flex; align-items: center; }
 .ascii-controls small { display: block; color: var(--text-dim); font-size: 11px; line-height: 1.7; }
 .ascii-controls output { color: var(--text); }

@@ -4,6 +4,8 @@ import { blkFileGroup, bulkFromFill, createBlkRules, defaultBlkName, highlightBl
 
 test('groups DDS by suffix and fixes N files to replace_tex', () => {
   assert.equal(blkFileGroup('tank_C.DDS'), 'c');
+  assert.equal(blkFileGroup('tank-1_c.dds'), 'c');
+  assert.equal(blkFileGroup('tank-1_n.dds'), 'n');
   assert.equal(blkFileGroup('tank_n.dds'), 'n');
   assert.equal(blkFileGroup('tank_mask.dds'), 'other');
   const files = ['tank_c.dds', 'tank_n.dds', 'tank_mask.dds'];
@@ -57,7 +59,9 @@ test('bulkFromFill resets names by file name, stem, or clears them', () => {
   const byName = bulkFromFill(rules, 'name');
   assert.deepEqual(byName.map(rule => rule.from), ['cockpit_glass*', 'f_16xl_c*', 'f_16xl_n*']);
   const byStem = bulkFromFill(rules, 'stem');
-  assert.deepEqual(byStem.map(rule => rule.from), ['cockpit_glass*', 'f_16xl*', 'f_16xl*']);
+  assert.deepEqual(byStem.map(rule => rule.from), ['cockpit_glass*', 'f_16xl*', 'f_16xl_n*']);
+  byStem.forEach(rule => { rule.command = 'replace_tex'; });
+  assert.equal(validateBlk('vehicle', byStem.map(rule => rule.to), byStem), null);
   const cleared = bulkFromFill(rules, 'clear');
   assert.ok(cleared.every(rule => rule.from === ''));
   // 纯函数：不改动原数组

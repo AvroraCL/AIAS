@@ -95,6 +95,9 @@ struct Settings {
     /// 界面主题：dark（默认）/ light。
     #[serde(default = "default_theme")]
     theme: String,
+    /// 界面语言：zh-CN（默认）/ en。
+    #[serde(default = "default_language")]
+    language: String,
 }
 
 fn default_output_strategy() -> String {
@@ -107,6 +110,10 @@ fn default_notify_on_complete() -> bool {
 
 fn default_theme() -> String {
     "dark".into()
+}
+
+fn default_language() -> String {
+    "zh-CN".into()
 }
 
 /// 从磁盘读取输出冲突策略；读取失败按 overwrite 处理，不阻塞任务。
@@ -167,6 +174,7 @@ impl Default for Settings {
             file_conflict: "overwrite".into(),
             notify_on_complete: default_notify_on_complete(),
             theme: default_theme(),
+            language: default_language(),
             comfyui_address: default_comfyui_address(),
             anime_cutout_output_path: String::new(),
             anime_model: default_anime_model(),
@@ -490,6 +498,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             updater_check_mirror,
             settings_get,
+            storage_stats,
+            storage_clean,
+            gpu_runtime_uninstall,
             ascii::ascii_export,
             blk::blk_scan,
             blk::blk_export,
@@ -647,9 +658,17 @@ fn storage_stats(app: AppHandle) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn storage_clean(app: AppHandle, target: String) -> Result<serde_json::Value, String> {
+    if target == "bakeCache" {
+        let dir = model_bake::bake_cache_root(&app)?;
+        let (before, _) = dir_stats(&dir);
+        // Bake results remain owned by result handles until explicitly released.
+        // Only the existing stale-cache pruning policy may remove bake entries.
+        model_bake::clean_stale_cache(&app)?;
+        let (after, _) = dir_stats(&dir);
+        return Ok(serde_json::json!({ "bytes": before.saturating_sub(after) }));
+    }
     let dir = match target.as_str() {
         "thumbs" => thumbs_dir(&app)?,
-        "bakeCache" => model_bake::bake_cache_root(&app)?,
         other => return Err(format!("未知清理目标：{other}")),
     };
     if !dir.exists() {
@@ -781,14 +800,8 @@ fn texture_merge_pbr_inner(
             );
             break;
         }
-        let c_path = safety::conflict_free(
-            Path::new(&options.output_path).join(format!("{}_c.dds", group.prefix)),
-            &policy,
-        );
-        let n_path = safety::conflict_free(
-            Path::new(&options.output_path).join(format!("{}_n.dds", group.prefix)),
-            &policy,
-        );
+        let (c_path, n_path) =
+            safety::conflict_free_pbr_pair(Path::new(&options.output_path), &group.prefix, &policy);
         // 逐组捕获：单组坏图跳过并在日志里带组名前缀，不再中断整个批次。
         let outcome = (|| -> Result<(), String> {
             process_base_color(
@@ -2752,6 +2765,18 @@ mod tests {
         assert_eq!(serialized["superresScale"], "4");
         let restored: super::Settings = serde_json::from_value(serialized).unwrap();
         assert_eq!(restored.superres_scale, "4");
+    }
+
+    #[test]
+    fn language_setting_defaults_and_round_trips() {
+        let mut settings = super::Settings::default();
+        assert_eq!(settings.language, "zh-CN");
+        super::merge_settings(&mut settings, serde_json::json!({ "language": "en" })).unwrap();
+        assert_eq!(settings.language, "en");
+        let mut legacy = serde_json::to_value(settings).unwrap();
+        legacy.as_object_mut().unwrap().remove("language");
+        let restored: super::Settings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.language, "zh-CN");
     }
 
     use super::*;

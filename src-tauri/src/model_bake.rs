@@ -788,6 +788,13 @@ pub(crate) fn bake_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn prune_bake_cache(root: &Path) {
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(24 * 60 * 60))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    prune_bake_cache_before(root, cutoff);
+}
+
+fn prune_bake_cache_before(root: &Path, cutoff: SystemTime) {
     // 锁中毒时恢复而非按空保留集执行：宁可多留，也不能把活动结果目录误删。
     let retained: std::collections::HashSet<PathBuf> = RESULTS
         .lock()
@@ -795,9 +802,6 @@ fn prune_bake_cache(root: &Path) {
         .values()
         .cloned()
         .collect();
-    let cutoff = SystemTime::now()
-        .checked_sub(Duration::from_secs(24 * 60 * 60))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let path = entry.path();
         // RESULTS 存的是 bake_start 里 canonicalize 过的路径（\??\ 前缀），
@@ -824,6 +828,17 @@ pub(crate) fn prune_stale_cache_on_startup(app: &AppHandle) {
             prune_bake_cache(&root);
         }
     }
+}
+
+pub(crate) fn clean_stale_cache(app: &AppHandle) -> Result<(), String> {
+    if ACTIVE_BAKE.lock().map_err(|_| "烘焙状态锁损坏")?.is_some() {
+        return Err("烘焙正在运行，请完成后再清理过期缓存。".into());
+    }
+    let root = bake_cache_root(app)?;
+    if root.is_dir() {
+        prune_bake_cache(&root);
+    }
+    Ok(())
 }
 
 /// 把缓存目录内的贴图复制到用户选择的目标文件夹。源必须位于缓存目录内，
@@ -968,6 +983,26 @@ pub fn validation_fault(job: &str, suspend: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_cache_cleanup_preserves_result_handles() {
+        let root = tempfile::tempdir().unwrap();
+        let retained = root.path().join("AIAS_bake_retained");
+        let stale = root.path().join("AIAS_bake_stale");
+        std::fs::create_dir(&retained).unwrap();
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::write(retained.join("result.json"), b"retained").unwrap();
+        std::fs::write(stale.join("result.json"), b"stale").unwrap();
+        let handle = id();
+        RESULTS
+            .lock()
+            .unwrap()
+            .insert(handle.clone(), std::fs::canonicalize(&retained).unwrap());
+        prune_bake_cache_before(root.path(), SystemTime::now() + Duration::from_secs(60));
+        assert!(retained.join("result.json").exists());
+        assert!(!stale.exists());
+        RESULTS.lock().unwrap().remove(&handle);
+    }
 
     #[test]
     fn bake_options_must_be_an_object() {

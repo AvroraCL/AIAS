@@ -26,6 +26,7 @@ function fixture() {
     },
     basename: path => path.split(/[\\/]/).pop(),
     $: id => controls[id], isTauriRuntime: true, convertFileSrc: path => path,
+    getModeOutputPath: () => controls['anime-output'].value,
     wantsDetailRecovery: () => false, wantsHairRefiner: () => false,
     // 探测命中应走增量更新：全量重建与对比图刷新只计数，供断言使用
     renderAnimeGallery() { calls.rebuilds += 1; },
@@ -95,6 +96,12 @@ test('similar file prefixes map to the exact input, including model fallback', (
   context.applyAnimeOutputs(['C:/output/hero_pose_simple.png']);
   assert.equal(state.animeResults.get('hero_pose_anime-specialist'), 'C:/output/hero_pose_simple.png');
   assert.equal(state.animeResults.has('hero_anime-specialist'), false);
+});
+
+test('numbered conflict output still updates the original image preview', () => {
+  const { context, state } = fixture();
+  context.applyAnimeOutputs(['C:/output/hero_anime-specialist-1.png']);
+  assert.equal(state.animeResults.get('hero_anime-specialist'), 'C:/output/hero_anime-specialist-1.png');
 });
 
 test('completed outputs keep the model key captured when the task started', () => {

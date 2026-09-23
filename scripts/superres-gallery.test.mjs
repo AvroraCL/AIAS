@@ -17,7 +17,7 @@ function fixture({ scale = '4' } = {}) {
     'superres-scale-text': {},
     'superres-output': { value: 'C:/output' }
   };
-  const state = { superresFiles: ['C:/input/hero.png'], superresResults: new Map(), superresProbed: new Set() };
+  const state = { activeMode: 'superres-general', superresFiles: ['C:/input/hero.png'], superresResults: new Map(), superresProbed: new Set() };
   const calls = { rebuilds: 0 };
   const context = vm.createContext({
     state, Image: ImageIcon,
@@ -31,6 +31,7 @@ function fixture({ scale = '4' } = {}) {
     },
     basename: path => path.split(/[\\/]/).pop(),
     $: id => controls[id], isTauriRuntime: true, convertFileSrc: path => path,
+    getModeOutputPath: () => controls['superres-output'].value,
     setText: (id, value) => { controls[id].textContent = value; },
     // 探测命中应走增量更新：全量重建只计数，供断言使用
     renderSuperresGallery() { calls.rebuilds += 1; },
@@ -97,6 +98,12 @@ test('legacy-style 4x outputs still map without run-start keys', () => {
   const { context, state } = fixture();
   context.applySuperresOutputs(['C:/output/hero_4x_general.png']);
   assert.equal(state.superresResults.get(context.superresResultKey('C:/input/hero.png', 'general', 4)), 'C:/output/hero_4x_general.png');
+});
+
+test('numbered conflict output remains visible in the superres preview', () => {
+  const { context, state } = fixture();
+  context.applySuperresOutputs(['C:/output/hero_4x_general-1.png']);
+  assert.equal(state.superresResults.get(context.superresResultKey('C:/input/hero.png', 'general', 4)), 'C:/output/hero_4x_general-1.png');
 });
 
 test('result probes look for the file named after the current scale', () => {

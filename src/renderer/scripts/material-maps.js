@@ -30,7 +30,7 @@ function lightRenderer(canvas) {
   };
 }
 
-export function createMaterialMaps({ root, inspector, runArea, syncSelect = () => {}, desktop, invoke, open, openPath, settings, save, busy, withLog, notify }) {
+export function createMaterialMaps({ root, inspector, runArea, syncSelect = () => {}, desktop, invoke, open, openPath, settings, save, busy, withLog, notify, resolveOutputDir = stored => stored, outputStrategy = () => 'ask' }) {
   root.innerHTML = `
     <div class="stage-heading"><div><span>输入资源</span><strong id="map-title">材质贴图</strong></div><small id="map-runtime"></small></div>
     <p class="map-notice">明暗会被解释成表面凹凸，不等同于真实几何高度。光照预览使用固定材质，仅供检查强度和方向。</p>
@@ -104,6 +104,7 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
   $('map-runtime').textContent = desktop ? '本地处理' : '网页演示 · 请在桌面软件中导入并生成';
   if (!renderer) { root.querySelector('[data-map-view="light"]').disabled = true; $('map-preview-status').textContent = 'WebGL 不可用，已使用二维贴图预览。'; }
   function parameters() { return stored[kind].parameters; }
+  function outputPath() { return resolveOutputDir(stored[kind].outputPath, files[0]); }
   function message(error) { return error?.message || String(error); }
   let saveTimer, saveChain = Promise.resolve();
   function persist() {
@@ -114,8 +115,10 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
     }, 200);
   }
   function updateRun() {
-    $('map-run').disabled = !desktop || !files.length || !stored[kind].outputPath || busy() || exporting;
+    $('map-run').disabled = !desktop || !files.length || !outputPath() || busy() || exporting;
+    $('map-output').value = outputPath();
     for (const control of [...controls.querySelectorAll('input,select'), $('map-add'), $('map-clear'), $('map-pick-output')]) control.disabled = exporting;
+    $('map-pick-output').disabled = exporting || outputStrategy() !== 'ask';
     controls.querySelectorAll('select').forEach(syncSelect);
   }
   function renderFiles() {
@@ -200,7 +203,7 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
       if (control.tagName === 'SELECT') syncSelect(control);
       if ($(`map-${key}-value`)) $(`map-${key}-value`).textContent = value;
     }
-    $('map-output').value = stored[kind].outputPath;
+    $('map-output').value = outputPath();
     $('map-title').textContent = '材质贴图';
     $('map-also-label').hidden = kind !== 'normal';
     if ($('map-run').dataset.busy !== 'true') $('map-run').innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg><span>${kind === 'normal' ? '生成法线图' : '生成高度图'}</span>`; updateRun();
@@ -232,12 +235,12 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
     catch (error) { $('map-export-status').textContent = message(error); }
   };
   $('map-open-output').onclick = async () => {
-    if (!desktop || !stored[kind].outputPath) return;
-    try { await openPath(stored[kind].outputPath); } catch (error) { $('map-export-status').textContent = message(error); }
+    if (!desktop || !outputPath()) return;
+    try { await openPath(outputPath()); } catch (error) { $('map-export-status').textContent = message(error); }
   };
   $('map-run').onclick = async () => {
-    if (!desktop || exporting || busy() || !files.length || !stored[kind].outputPath) return;
-    const options = { files: [...files], kind, outputPath: stored[kind].outputPath, parameters: structuredClone(parameters()) };
+    if (!desktop || exporting || busy() || !files.length || !outputPath()) return;
+    const options = { files: [...files], kind, outputPath: outputPath(), parameters: structuredClone(parameters()) };
     exporting = true; updateRun();
     try {
       const result = await withLog('material-maps-log', $('map-run'), async () => {
@@ -262,7 +265,9 @@ export function createMaterialMaps({ root, inspector, runArea, syncSelect = () =
   const interval = setInterval(updateRun, 500);
   syncControls();
   return {
-    blocker() { return !desktop ? '请在桌面软件中生成贴图。' : exporting || busy() ? '任务正在运行。' : !files.length ? '请添加素材。' : !stored[kind].outputPath ? '请选择输出目录。' : null; },
+    blocker() { return !desktop ? '请在桌面软件中生成贴图。' : exporting || busy() ? '任务正在运行。' : !files.length ? '请添加素材。' : !outputPath() ? '请选择输出目录。' : null; },
+    outputPath,
+    refreshOutput: updateRun,
     activate(mode) { active = mode === 'normal-map' || mode === 'height-map'; controls.hidden = !active; if (active) { kind = mode === 'normal-map' ? 'normal' : 'height'; syncControls(); } requestPreview(); },
     addFiles,
     dispose() { disposed = true; queue.dispose(); clearPreview(); clearTimeout(saveTimer); clearInterval(interval); resize.disconnect(); renderer?.dispose(); controls.remove(); $('map-run').remove(); },

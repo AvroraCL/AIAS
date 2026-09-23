@@ -54,13 +54,28 @@ export function diffBlk(before, after) {
 /// 批量填充游戏原贴图名。mode: 'name' 文件名+*（与新建规则默认一致）；
 /// 'stem' 去掉 _c/_n 后缀再 +*（用户改名后最常用的形态）；'clear' 清空待逐条填写。
 export function bulkFromFill(rules, mode) {
+  const used = new Set();
   const apply = to => {
     const stem = to.replace(/\.dds$/i, '');
     if (mode === 'clear') return '';
     if (mode === 'stem') return stem.replace(/_(c|n)$/i, '') + '*';
     return stem + '*';
   };
-  return rules.map(rule => ({ ...rule, from: apply(rule.to) }));
+  return rules.map(rule => {
+    let from = apply(rule.to);
+    if (mode !== 'clear' && used.has(from.toLowerCase())) {
+      const fullName = rule.to.replace(/\.dds$/i, '') + '*';
+      if (!used.has(fullName.toLowerCase())) from = fullName;
+      else if (rule.from && !used.has(rule.from.toLowerCase())) from = rule.from;
+      else {
+        let index = 2;
+        while (used.has(`${fullName.slice(0, -1)}-${index}*`.toLowerCase())) index++;
+        from = `${fullName.slice(0, -1)}-${index}*`;
+      }
+    }
+    if (mode !== 'clear') used.add(from.toLowerCase());
+    return { ...rule, from };
+  });
 }
 
 const escapeHtml = text => text.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
