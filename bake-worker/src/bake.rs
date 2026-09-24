@@ -5,7 +5,7 @@ use crate::{
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     io::Write,
     path::{Path, PathBuf},
     time::Instant,
@@ -99,9 +99,10 @@ pub(crate) fn estimated_output_bytes(options: &Options, pixels: u64) -> u64 {
     let rgba8_maps =
         usize::from(options.uv) + usize::from(options.id) + usize::from(options.normal);
     let precision_rgba_maps = usize::from(options.world_normal)
-        + usize::from(options.curvature)
+        + usize::from(options.curvature) * 2
         + usize::from(options.position);
-    let gray_maps = usize::from(options.ao) + usize::from(options.thickness);
+    // AO、厚度和曲率在复用 UV 上可能额外输出可靠区域版本。
+    let gray_maps = (usize::from(options.ao) + usize::from(options.thickness)) * 2;
     let may_need_unique_mask = options.ao
         || options.world_normal
         || options.curvature
@@ -232,6 +233,14 @@ fn unit_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+pub(crate) fn scalar_byte(value: f32, background: f32, index: usize) -> u8 {
+    if value == background {
+        unit_byte(background)
+    } else {
+        unit_byte(value + dither_lsb(index) / 255.0)
+    }
+}
+
 /// 8 位标量输出的 TPDF 抖动（两路均匀噪声相减，幅度 ±1 LSB，均值 0）：
 /// AO/厚度的缓坡渐变在 8 位下会产生量化条带，抖动把它们打散为不可见噪点。
 pub(crate) fn dither_lsb(index: usize) -> f32 {
@@ -268,6 +277,57 @@ fn encode_surface_map(
     pixels
 }
 
+#[derive(Hash, PartialEq, Eq)]
+struct MeshEdge {
+    material: usize,
+    object: usize,
+    start: [u32; 3],
+    end: [u32; 3],
+}
+
+fn vertex_bits(position: [f32; 3]) -> [u32; 3] {
+    position.map(|value| if value == 0.0 { 0 } else { value.to_bits() })
+}
+
+/// 同对象、同材质且共享一整条几何边的三角面属于同一连续表面。
+/// UV 岛可拆开但仍属于该表面；只在 UV 图上相邻的独立零件则不能互相贡献曲率。
+pub(crate) fn mesh_components(model: &Model) -> Vec<usize> {
+    let mut parents: Vec<usize> = (0..model.triangles.len()).collect();
+    let mut edges = HashMap::<MeshEdge, usize>::new();
+    fn root(parents: &mut [usize], mut index: usize) -> usize {
+        while parents[index] != index {
+            parents[index] = parents[parents[index]];
+            index = parents[index];
+        }
+        index
+    }
+    for (triangle_index, triangle) in model.triangles.iter().enumerate() {
+        let vertices = triangle.positions.map(vertex_bits);
+        for edge in 0..3 {
+            let a = vertices[edge];
+            let b = vertices[(edge + 1) % 3];
+            let (start, end) = if a <= b { (a, b) } else { (b, a) };
+            let key = MeshEdge {
+                material: triangle.material,
+                object: triangle.object,
+                start,
+                end,
+            };
+            if let Some(previous) = edges.insert(key, triangle_index) {
+                let left = root(&mut parents, previous);
+                let right = root(&mut parents, triangle_index);
+                if left != right {
+                    parents[left.max(right)] = left.min(right);
+                }
+            }
+        }
+    }
+    for index in 0..parents.len() {
+        parents[index] = root(&mut parents, index);
+    }
+    parents
+}
+
 /// Windows 上刚写完的文件可能被杀软/索引器短暂持有，persist 的 rename 会
 /// 撞"拒绝访问"(os error 5)。带退避重试，每次失败取回 NamedTempFile 句柄，
 /// 清除这类瞬时失败而不损数据。
@@ -289,8 +349,29 @@ pub(crate) fn persist_with_retry(f: tempfile::NamedTempFile, path: &Path) -> Res
     Err(last)
 }
 
+#[cfg(test)]
 pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<u8> {
-    let values = curvature_values(surfaces, nearest, size);
+    curvature_map_with_mask(surfaces, nearest, size, None, None)
+}
+
+#[cfg(test)]
+pub(crate) fn curvature_map_unique(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    size: usize,
+    unique_mask: &[u8],
+) -> Vec<u8> {
+    curvature_map_with_mask(surfaces, nearest, size, Some(unique_mask), None)
+}
+
+pub(crate) fn curvature_map_with_mask(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    size: usize,
+    unique_mask: Option<&[u8]>,
+    components: Option<&[usize]>,
+) -> Vec<u8> {
+    let values = curvature_values(surfaces, nearest, size, unique_mask, components);
     let mut pixels = vec![0u8; nearest.len() * 4];
     for (rgba, value) in pixels.chunks_exact_mut(4).zip(&values) {
         let v = unit_byte(*value);
@@ -300,8 +381,24 @@ pub(crate) fn curvature_map(surfaces: &[Surface], nearest: &[u32], size: usize) 
 }
 
 /// 16 位曲率图：磨损/边缘污垢遮罩用途下对条带敏感，动态范围 ×256。
-pub(crate) fn curvature_map_16(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<u16> {
-    let values = curvature_values(surfaces, nearest, size);
+#[cfg(test)]
+pub(crate) fn curvature_map_16_unique(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    size: usize,
+    unique_mask: &[u8],
+) -> Vec<u16> {
+    curvature_map_16_with_mask(surfaces, nearest, size, Some(unique_mask), None)
+}
+
+pub(crate) fn curvature_map_16_with_mask(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    size: usize,
+    unique_mask: Option<&[u8]>,
+    components: Option<&[usize]>,
+) -> Vec<u16> {
+    let values = curvature_values(surfaces, nearest, size, unique_mask, components);
     let mut pixels = vec![0u16; nearest.len() * 4];
     for (rgba, value) in pixels.chunks_exact_mut(4).zip(&values) {
         let v = (value.clamp(0.0, 1.0) * 65535.0).round() as u16;
@@ -311,14 +408,34 @@ pub(crate) fn curvature_map_16(surfaces: &[Surface], nearest: &[u32], size: usiz
 }
 
 /// 曲率值计算（0.5 中性背景 + 折痕处的符号偏移）。
-fn curvature_values(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<f32> {
+fn curvature_values(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    size: usize,
+    unique_mask: Option<&[u8]>,
+    components: Option<&[usize]>,
+) -> Vec<f32> {
+    if let Some(mask) = unique_mask {
+        assert_eq!(mask.len(), nearest.len());
+    }
+    if let Some(components) = components {
+        assert_eq!(components.len(), surfaces.len());
+    }
     let mut surface_at = vec![u32::MAX; nearest.len()];
     for (index, surface) in surfaces.iter().enumerate() {
-        surface_at[surface.pixel as usize] = index as u32;
+        let pixel = surface.pixel as usize;
+        // 共用 UV 纹素的首面值不可靠：可靠曲率的邻域搜索也必须排除它，
+        // 否则先遮蔽结果仍会在旁边的白色唯一映射区域留下假边缘。
+        if unique_mask.is_none_or(|mask| mask[pixel] == 255) {
+            surface_at[pixel] = index as u32;
+        }
     }
     let mut values = vec![0.5f32; nearest.len()];
-    for surface in surfaces {
+    for (surface_index, surface) in surfaces.iter().enumerate() {
         let pixel = surface.pixel as usize;
+        if unique_mask.is_some_and(|mask| mask[pixel] != 255) {
+            continue;
+        }
         let x = pixel % size;
         let y = pixel / size;
         let position = Vec3::from_array(surface.position);
@@ -349,6 +466,14 @@ fn curvature_values(surfaces: &[Surface], nearest: &[u32], size: usize) -> Vec<f
                 continue;
             }
             let other = surfaces[other_index as usize];
+            // 对象间相邻的 UV 岛并不构成同一曲面；即使两对象在模型空间
+            // 恰好贴近，也不能由另一对象的法线推导当前对象的曲率。
+            if other.object != surface.object {
+                continue;
+            }
+            if components.is_some_and(|ids| ids[surface_index] != ids[other_index as usize]) {
+                continue;
+            }
             let delta = Vec3::from_array(other.position) - position;
             if delta.length_squared() <= 1e-20 {
                 continue;
@@ -515,8 +640,9 @@ fn save_scalar_map(
                 if *source == u32::MAX {
                     unit_byte(background)
                 } else {
-                    // 覆盖像素加 TPDF 抖动防条带；背景保持精确值。
-                    unit_byte(values[*source as usize] + dither_lsb(index) / 255.0)
+                    // 派生安全图的中性区域必须精确为 255/0；抖动会把
+                    // AO 白色降到 254，重新引入不真实的阴影。
+                    scalar_byte(values[*source as usize], background, index)
                 }
             })
             .collect::<Vec<_>>();
@@ -692,6 +818,24 @@ pub fn run(
     let stems = material_stems(&model.materials);
     let material_total = options.materials.len();
     let map_total = enabled_map_count(options);
+    let curvature_components = if options.curvature {
+        emit_bake_progress(
+            &mut progress,
+            "分析曲率网格连接关系".into(),
+            "prepare",
+            "curvature",
+            options.materials[0],
+            0,
+            material_total,
+            0,
+            map_total,
+            0.0,
+            None,
+        );
+        Some(mesh_components(&model))
+    } else {
+        None
+    };
     // 降噪组件整批只加载一次：每材质重复 LoadLibrary/FreeLibrary 并两次翻转
     // 进程 cwd，是批量降噪失败（OIDN 错误码 3）的头号嫌疑，也白白拖慢开跑。
     let denoiser = if options.denoise && options.ao {
@@ -758,7 +902,7 @@ pub fn run(
                 None,
             );
             let mut last_raster_beat = Instant::now();
-            let (surfaces, covered, wire, coverage) = raster_with_stats(
+            let (surfaces, covered, wire, coverage) = raster_with_component_stats(
                 &model,
                 material,
                 channel,
@@ -766,6 +910,7 @@ pub fn run(
                 options.resolution,
                 options.uv,
                 &options.cancel_path,
+                curvature_components.as_deref(),
                 || {
                     // 同一阶段文案重发只为喂看门狗与刷新取消状态，节流 ≥500ms。
                     if last_raster_beat.elapsed().as_millis() >= 500 {
@@ -835,13 +980,31 @@ pub fn run(
                 || options.curvature
                 || options.position
                 || options.thickness;
-            let significant_uv_reuse = geometry_maps
+            let reused_uv = geometry_maps && coverage.shared_pixels > 0;
+            let unique_mask = reused_uv.then(|| coverage.unique_mask(&covered));
+            let significant_uv_reuse = reused_uv
                 && coverage.shared_pixels >= 1024
                 && coverage.shared_pixels * 20 >= surfaces.len();
             if significant_uv_reuse {
                 let percentage = coverage.shared_pixels * 100 / surfaces.len().max(1);
+                let reliable_maps = [
+                    options.ao.then_some("AO"),
+                    options.curvature.then_some("曲率"),
+                    options.thickness.then_some("厚度"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+                let guidance = if reliable_maps.is_empty() {
+                    "请使用附带的 UV 唯一映射蒙版限制几何图的作用范围".to_string()
+                } else {
+                    format!(
+                        "请使用 UV 唯一映射蒙版，或直接使用附带的可靠区域{}图",
+                        reliable_maps.join("/")
+                    )
+                };
                 result.warnings.push(format!(
-                    "{material_label}：{percentage}% 的 UV 像素被多个面共用；原生 UV 保持不变，AO/厚度/位置等数据图在这些区域只能表示其中一个面，请使用附带的 UV 唯一映射蒙版限制作用范围"
+                    "{material_label}：{percentage}% 的 UV 像素被多个面共用；原生 UV 保持不变，AO/厚度/位置等数据图在这些区域只能表示其中一个面。{guidance}"
                 ));
             }
             if !report.valid && data_maps {
@@ -1016,6 +1179,7 @@ pub fn run(
                 map_index += 1;
             }
             if options.curvature {
+                let components = coverage.surface_components.as_deref();
                 emit_bake_progress(
                     &mut progress,
                     format!("{material_label} · 曲率"),
@@ -1030,19 +1194,66 @@ pub fn run(
                     None,
                 );
                 let pixels = if options.bits == 16 {
-                    SurfacePixels::Bits16(curvature_map_16(
+                    SurfacePixels::Bits16(curvature_map_16_with_mask(
                         &surfaces,
                         &nearest,
                         options.resolution as usize,
+                        None,
+                        components,
                     ))
                 } else {
-                    SurfacePixels::Bits8(curvature_map(
+                    SurfacePixels::Bits8(curvature_map_with_mask(
                         &surfaces,
                         &nearest,
                         options.resolution as usize,
+                        None,
+                        components,
                     ))
                 };
                 write_surface_map(options, &mut result, material, &prefix, "curvature", pixels)?;
+                if let Some(mask) = unique_mask.as_ref() {
+                    if options.cancel_path.exists() {
+                        return Err("任务已取消".into());
+                    }
+                    emit_bake_progress(
+                        &mut progress,
+                        format!("{material_label} · 可靠区域曲率"),
+                        "mesh_map",
+                        "curvature_unique",
+                        material,
+                        position,
+                        material_total,
+                        map_index,
+                        map_total,
+                        0.7,
+                        None,
+                    );
+                    let pixels = if options.bits == 16 {
+                        SurfacePixels::Bits16(curvature_map_16_with_mask(
+                            &surfaces,
+                            &nearest,
+                            options.resolution as usize,
+                            Some(mask),
+                            components,
+                        ))
+                    } else {
+                        SurfacePixels::Bits8(curvature_map_with_mask(
+                            &surfaces,
+                            &nearest,
+                            options.resolution as usize,
+                            Some(mask),
+                            components,
+                        ))
+                    };
+                    write_surface_map(
+                        options,
+                        &mut result,
+                        material,
+                        &prefix,
+                        "curvature_unique",
+                        pixels,
+                    )?;
+                }
                 map_index += 1;
             }
             if options.ao {
@@ -1133,6 +1344,11 @@ pub fn run(
                     0.84,
                     Some(block),
                 );
+                // 可靠 AO 必须在降噪前清除共用像素的首面数值，否则 OIDN 会把
+                // 错误阴影卷积进旁边原本唯一映射的纹素。原始 AO 独立保留。
+                let mut reliable_values = unique_mask
+                    .as_ref()
+                    .map(|mask| unique_scalar_values(&values, mask, 1.0));
                 if options.denoise {
                     emit_bake_progress(
                         &mut progress,
@@ -1154,16 +1370,37 @@ pub fn run(
                     // 未覆盖像素的 1.0 背景会把岛边 AO 拉亮并跨岛渗色。
                     // 预填后整图降噪，覆盖像素的降噪结果就是输出（不做写回，
                     // 否则「AI 降噪」对落盘 AO 零效果）。
-                    for (i, s) in nearest.iter().enumerate() {
-                        if *s != u32::MAX && *s != i as u32 {
-                            values[i] = values[*s as usize];
-                        }
-                    }
+                    fill_scalar_margin(&mut values, &nearest);
                     denoiser.denoise_gray(
                         &mut values,
                         options.resolution as usize,
                         options.resolution as usize,
                     )?;
+                    if let (Some(mask), Some(reliable)) = (&unique_mask, &mut reliable_values) {
+                        if options.cancel_path.exists() {
+                            return Err("任务已取消".into());
+                        }
+                        emit_bake_progress(
+                            &mut progress,
+                            format!("{material_label} · 可靠区域 AO 降噪"),
+                            "denoise",
+                            "ao_unique",
+                            material,
+                            position,
+                            material_total,
+                            map_index,
+                            map_total,
+                            0.90,
+                            None,
+                        );
+                        fill_scalar_margin(reliable, &nearest);
+                        denoiser.denoise_gray(
+                            reliable,
+                            options.resolution as usize,
+                            options.resolution as usize,
+                        )?;
+                        mask_unique_scalar_in_place(reliable, mask, 1.0);
+                    }
                 }
                 emit_bake_progress(
                     &mut progress,
@@ -1179,55 +1416,7 @@ pub fn run(
                     None,
                 );
                 let path = options.output.join(format!("{prefix}_ao.png"));
-                if options.bits == 16 {
-                    let data: Vec<u16> = nearest
-                        .iter()
-                        .map(|s| {
-                            let value = if *s == u32::MAX {
-                                1.
-                            } else {
-                                values[*s as usize]
-                            };
-                            (value * 65535.).round() as u16
-                        })
-                        .collect();
-                    save(
-                        &path,
-                        image::DynamicImage::ImageLuma16(
-                            image::ImageBuffer::from_raw(
-                                options.resolution,
-                                options.resolution,
-                                data,
-                            )
-                            .ok_or("AO 尺寸错误")?,
-                        ),
-                    )?;
-                } else {
-                    let data: Vec<u8> = nearest
-                        .iter()
-                        .enumerate()
-                        .map(|(index, s)| {
-                            let value = if *s == u32::MAX {
-                                1.
-                            } else {
-                                // TPDF 抖动打散 8 位缓坡条带；背景保持精确 255。
-                                values[*s as usize] + dither_lsb(index) / 255.0
-                            };
-                            (value * 255.).round().clamp(0., 255.) as u8
-                        })
-                        .collect();
-                    save(
-                        &path,
-                        image::DynamicImage::ImageLuma8(
-                            image::GrayImage::from_raw(
-                                options.resolution,
-                                options.resolution,
-                                data,
-                            )
-                            .ok_or("AO 尺寸错误")?,
-                        ),
-                    )?;
-                }
+                save_scalar_map(options, &path, &nearest, &values, 1.0)?;
                 result.files.push(Output {
                     material,
                     kind: "ao".into(),
@@ -1235,6 +1424,16 @@ pub fn run(
                 });
                 map_index += 1;
                 atomic_json(&options.output.join("result.json"), &result)?;
+                if let Some(safe_values) = &reliable_values {
+                    let path = options.output.join(format!("{prefix}_ao_unique.png"));
+                    save_scalar_map(options, &path, &nearest, safe_values, 1.0)?;
+                    result.files.push(Output {
+                        material,
+                        kind: "ao_unique".into(),
+                        path,
+                    });
+                    atomic_json(&options.output.join("result.json"), &result)?;
+                }
             }
             if options.thickness {
                 if gpu.is_none() {
@@ -1332,20 +1531,29 @@ pub fn run(
                 });
                 map_index += 1;
                 atomic_json(&options.output.join("result.json"), &result)?;
+                if let Some(mask) = &unique_mask {
+                    let path = options
+                        .output
+                        .join(format!("{prefix}_thickness_unique.png"));
+                    let safe_values = unique_scalar_values(&values, mask, 0.0);
+                    save_scalar_map(options, &path, &nearest, &safe_values, 0.0)?;
+                    result.files.push(Output {
+                        material,
+                        kind: "thickness_unique".into(),
+                        path,
+                    });
+                    atomic_json(&options.output.join("result.json"), &result)?;
+                }
             }
-            if significant_uv_reuse {
+            if let Some(mask) = unique_mask {
                 // 单张几何图不能同时表达共用纹素的多个表面。附带保守蒙版，
                 // 让智能材质仅在白色的唯一映射区域使用本次 Mesh Maps。
                 let path = options.output.join(format!("{prefix}_uv_unique_mask.png"));
                 save(
                     &path,
                     image::DynamicImage::ImageLuma8(
-                        image::GrayImage::from_raw(
-                            options.resolution,
-                            options.resolution,
-                            coverage.unique_mask(&covered),
-                        )
-                        .ok_or("UV 唯一映射蒙版尺寸错误")?,
+                        image::GrayImage::from_raw(options.resolution, options.resolution, mask)
+                            .ok_or("UV 唯一映射蒙版尺寸错误")?,
                     ),
                 )?;
                 result.files.push(Output {
@@ -1462,11 +1670,14 @@ pub fn run(
             "ao": "linear grayscale; 1 = unoccluded",
             "normal": "OpenGL tangent space; +Y",
             "world_normal": "RGB = world XYZ remapped from -1..1 to 0..1",
-            "curvature": "signed grayscale; 0.5 = flat, dark = concave, light = convex",
+            "curvature": "signed grayscale; 0.5 = flat, dark = concave, light = convex; neighbors are limited to edge-connected triangles in the same object and material",
+            "curvature_unique": "signed grayscale curvature limited to uniquely mapped UV pixels and edge-connected unique neighbors; shared covered pixels = neutral 0.5; margin inherits the nearest covered pixel",
             "position": "RGB = model-bounds normalized world XYZ",
             "thickness": "linear grayscale; normalized inward hit distance",
+            "thickness_unique": "linear grayscale thickness limited to uniquely mapped UV pixels; shared covered pixels = 0; margin inherits the nearest covered pixel",
             "id": "RGBA material color; see material-colors.json",
             "uv": "diagnostic wireframe only",
+            "ao_unique": "linear grayscale AO limited to uniquely mapped UV pixels; shared covered pixels = 1 (unoccluded); margin inherits the nearest covered pixel",
             "uv_unique_mask": "8-bit grayscale; 255 = uniquely mapped source-UV pixel, 0 = shared or uncovered; no dilation"
         },
         "uvCoverage": &result.uv_coverage,
@@ -1497,6 +1708,7 @@ fn cross(a: Vec2, b: Vec2) -> f32 {
     a.x * b.y - a.y * b.x
 }
 #[cfg(test)]
+#[cfg(test)]
 pub fn raster(
     model: &Model,
     material: usize,
@@ -1519,6 +1731,7 @@ pub struct RasterCoverage {
     pub shared_samples: usize,
     pub shared_samples_truncated: bool,
     shared_bits: Option<Vec<u64>>,
+    surface_components: Option<Vec<usize>>,
 }
 
 impl RasterCoverage {
@@ -1542,6 +1755,32 @@ impl RasterCoverage {
     }
 }
 
+/// 把无法唯一对应模型表面的标量图像素恢复为中性值。原图仍单独保存，
+/// 这个派生图可直接作为智能材质输入，避免首面获胜的值污染其他表面。
+pub(crate) fn unique_scalar_values(values: &[f32], unique_mask: &[u8], neutral: f32) -> Vec<f32> {
+    let mut unique = values.to_vec();
+    mask_unique_scalar_in_place(&mut unique, unique_mask, neutral);
+    unique
+}
+
+fn mask_unique_scalar_in_place(values: &mut [f32], unique_mask: &[u8], neutral: f32) {
+    assert_eq!(values.len(), unique_mask.len());
+    for (value, mask) in values.iter_mut().zip(unique_mask) {
+        if *mask != 255 {
+            *value = neutral;
+        }
+    }
+}
+
+fn fill_scalar_margin(values: &mut [f32], nearest: &[u32]) {
+    for (pixel, source) in nearest.iter().copied().enumerate() {
+        if source != u32::MAX && source != pixel as u32 {
+            values[pixel] = values[source as usize];
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn raster_with_stats(
     model: &Model,
     material: usize,
@@ -1550,12 +1789,35 @@ pub fn raster_with_stats(
     size: u32,
     draw_wire: bool,
     cancel: &Path,
+    heartbeat: impl FnMut(),
+) -> Result<(Vec<Surface>, Vec<bool>, Vec<u8>, RasterCoverage), String> {
+    raster_with_component_stats(
+        model, material, channel, objects, size, draw_wire, cancel, None, heartbeat,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raster_with_component_stats(
+    model: &Model,
+    material: usize,
+    channel: u32,
+    objects: &[usize],
+    size: u32,
+    draw_wire: bool,
+    cancel: &Path,
+    triangle_components: Option<&[usize]>,
     mut heartbeat: impl FnMut(),
 ) -> Result<(Vec<Surface>, Vec<bool>, Vec<u8>, RasterCoverage), String> {
+    if let Some(components) = triangle_components {
+        assert_eq!(components.len(), model.triangles.len());
+    }
     let n = size as usize;
     let mut covered = vec![false; n * n];
     let mut surfaces = vec![];
-    let mut coverage = RasterCoverage::default();
+    let mut coverage = RasterCoverage {
+        surface_components: triangle_components.map(|_| Vec::new()),
+        ..Default::default()
+    };
     let mut saturated = false;
     let mut wire = if draw_wire {
         vec![0; n * n * 4]
@@ -1565,10 +1827,11 @@ pub fn raster_with_stats(
     // UV 大面积重叠时单三角形 bbox 可扫满整图，光栅化可达分钟级：定期检查
     // 取消并喂看门狗，否则取消被无视、120 秒无输出会被父进程误杀。
     let mut visited = 0usize;
-    for t in model
+    for (triangle_index, t) in model
         .triangles
         .iter()
-        .filter(|t| t.material == material && objects.contains(&t.object))
+        .enumerate()
+        .filter(|(_, t)| t.material == material && objects.contains(&t.object))
     {
         visited += 1;
         if visited % 1024 == 0 {
@@ -1699,6 +1962,9 @@ pub fn raster_with_stats(
                             object: t.object as u32,
                             pixel: pixel as u32,
                         });
+                        if let Some(surface_components) = &mut coverage.surface_components {
+                            surface_components.push(triangle_components.unwrap()[triangle_index]);
+                        }
                     }
                 }
             }

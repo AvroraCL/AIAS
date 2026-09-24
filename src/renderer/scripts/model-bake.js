@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './model-bake.css';
-import { bakeDefaults as defaults, restoreBakeSettings } from './model-bake-state.mjs';
+import { bakeDefaults as defaults, restoreBakeSettings, selectReliablePreviewFiles, assessUvCoverage } from './model-bake-state.mjs';
 
 export function createModelBake({ root, desktop, invoke, open, openPath, convertFileSrc, listen, settings, save, busy, withLog, notify, syncSelect = () => {}, progress }) {
   const stored = restoreBakeSettings(settings);
@@ -84,7 +84,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       </div>
 
       <div class="bake-display-tools" aria-label="视图显示工具">
-        <label class="bake-map-preview-control">贴图预览<select id="bake-map-preview" aria-label="模型贴图预览"><option value="ao">环境遮蔽</option><option value="curvature">曲率</option><option value="world_normal">世界空间法线</option><option value="position">位置</option><option value="thickness">厚度</option><option value="normal">切线法线</option><option value="id">材质 ID</option><option value="uv">UV 线框</option><option value="uv_unique_mask">UV 唯一映射蒙版</option><option value="material">着色 + AO</option></select></label>
+        <label class="bake-map-preview-control">贴图预览<select id="bake-map-preview" aria-label="模型贴图预览"><option value="ao">环境遮蔽（原始）</option><option value="ao_unique">环境遮蔽（可靠区域）</option><option value="curvature">曲率（原始）</option><option value="curvature_unique">曲率（可靠区域）</option><option value="world_normal">世界空间法线</option><option value="position">位置</option><option value="thickness">厚度（原始）</option><option value="thickness_unique">厚度（可靠区域）</option><option value="normal">切线法线</option><option value="id">材质 ID</option><option value="uv">UV 线框</option><option value="uv_unique_mask">UV 唯一映射蒙版</option><option value="material">着色 + 可靠 AO</option></select></label>
         <button id="bake-focus" data-bake-display="focus" class="bake-floating-button" type="button" title="聚焦所选对象 · F" aria-label="聚焦所选对象"><i data-lucide="scan" aria-hidden="true"></i></button>
         <button id="bake-reset" data-bake-display="reset" class="bake-floating-button" type="button" title="复位视图" aria-label="复位视图"><i data-lucide="rotate-ccw" aria-hidden="true"></i></button>
         <button id="bake-projection" data-bake-display="projection" class="bake-floating-button" type="button" title="切换透视 / 正交">透视</button>
@@ -132,7 +132,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   const presets = { draft: [512, 32], standard: [2048, 128], high: [4096, 256] };
   const meshMapKeys = ['ao', 'curvature', 'worldNormal', 'position', 'thickness', 'normal', 'id', 'uv'];
   const status = text => { $('status').textContent = text; };
-  const progressMapNames = { ao: '环境遮蔽', curvature: '曲率', world_normal: '世界空间法线', position: '位置', thickness: '厚度', normal: '切线空间法线', id: '材质 ID', uv: 'UV 线框' };
+  const progressMapNames = { ao: '环境遮蔽', ao_unique: '可靠区域 AO', curvature: '曲率', curvature_unique: '可靠区域曲率', world_normal: '世界空间法线', position: '位置', thickness: '厚度', thickness_unique: '可靠区域厚度', normal: '切线空间法线', id: '材质 ID', uv: 'UV 线框' };
   function updateBakeProgress(data = {}) {
     const raw = Math.max(0, Math.min(1, Number(data.progress) || 0));
     const value = running ? Math.max(lastBakeProgress, raw) : raw;
@@ -390,6 +390,11 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
           throw Error('贴图预览已过期');
         }
         texture.colorSpace = usage === 'ao' ? THREE.NoColorSpace : THREE.SRGBColorSpace;
+        // 烘焙器把源 UV 的每个整数平铺区映射到同一张 0–1 贴图。
+        // Three.js 默认 ClampToEdge，模型的原生 UV 超出 0–1 时会把边缘纹素
+        // 拉满整个表面，造成“烘焙成功但模型预览不对”的错觉。
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
         texture.needsUpdate = true;
         resultTextures.set(key, texture);
         return texture;
@@ -413,34 +418,45 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     // 显式应用结果时消费掉“切回模型后应用默认结果”的待办，避免 setView('model')
     // 再启动一次默认预览并覆盖用户刚选择的贴图。
     pendingResultPreview = '';
-    if (!group || !model || !results.length) return;
+    if (!group || !model || !results.length) return { allFailed: true, failedTextures: 0, error: '缺少模型或烘焙结果' };
     const mismatched = new Set([...materials].filter(id => (resultChannels[id] ?? 0) !== (channels[id] ?? 0)));
     if (mismatched.size) {
       resetPreviewMaterials(mesh => mismatched.has(mesh.userData.material));
       status('烘焙结果使用了不同的 UV 通道，请切回烘焙通道后预览。');
-      return;
+      return { allFailed: true, failedTextures: 0, error: 'UV 通道不一致' };
     }
     const revision = ++previewMaterialRevision;
-    const sourceKind = kind === 'material' ? 'ao' : kind;
-    const files = results.filter(file => file.kind === sourceKind);
+    // 着色预览自动采用仅保留唯一 UV 区域的 AO；原始 AO 仍可单独检查。
+    const files = kind === 'material' || kind === 'ao_unique' || kind === 'curvature_unique' || kind === 'thickness_unique'
+      ? selectReliablePreviewFiles(results, kind === 'material' ? 'ao' : kind.replace('_unique', ''))
+      : results.filter(file => file.kind === kind);
     if (!files.length) {
       $('map-preview').value = stored.workspace.mapPreview;
       status(kind === 'material' ? '本次结果没有 AO，无法显示着色 + AO。' : '本次结果没有生成该贴图。');
-      return;
+      return { allFailed: true, failedTextures: 0, error: '没有对应的贴图' };
     }
     $('map-preview').value = kind;
     if (announce) status(`正在模型上载入${$('map-preview').selectedOptions[0]?.textContent || '贴图'}…`);
     const textures = new Map();
+    let failedTextures = 0;
+    let firstLoadError = '';
     for (const file of files) {
       try {
         textures.set(file.material, await loadResultTexture(file, kind === 'material' ? 'ao' : 'display'));
       } catch (error) {
-        if (revision === previewMaterialRevision) notify(`贴图预览加载失败：${error}`);
+        failedTextures++;
+        firstLoadError ||= String(error);
       }
       if (revision !== previewMaterialRevision || disposed) return;
       await nextPaint();
     }
     if (revision !== previewMaterialRevision || disposed) return;
+    if (!textures.size) {
+      $('map-preview').value = stored.workspace.mapPreview;
+      status(`贴图预览加载失败：${firstLoadError || '没有可显示的贴图'}。模型显示仍为原状态。`);
+      if (announce) notify(`贴图预览加载失败：${firstLoadError || '没有可显示的贴图'}`);
+      return { allFailed: true, failedTextures, error: firstLoadError };
+    }
     for (const mesh of group.children) {
       const texture = textures.get(mesh.userData.material) || null;
       const previous = mesh.material;
@@ -456,7 +472,13 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (switchView) setView('model');
     syncDisplayControls();
     persist();
-    if (announce) status(kind === 'material' ? '已在模型上显示着色 + AO 预览。' : `正在模型上预览${$('map-preview').selectedOptions[0]?.textContent || '贴图'}。`);
+    if (failedTextures) {
+      status(`已显示 ${textures.size} 个材质的贴图；另有 ${failedTextures} 个材质加载失败：${firstLoadError}`);
+      if (announce) notify(`${failedTextures} 个材质的贴图预览加载失败：${firstLoadError}`);
+    } else if (announce) {
+      status(kind === 'material' ? '已在模型上显示着色 + 可靠 AO 预览。' : `正在模型上预览${$('map-preview').selectedOptions[0]?.textContent || '贴图'}。`);
+    }
+    return { allFailed: false, failedTextures, error: firstLoadError };
   }
 
   // 一次性为全部 (对象,材质) 组合建立网格，并按对象预计算包围盒：之后选择变化只切
@@ -928,7 +950,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('live-progress').hidden = !running;
     $('viewport-note').hidden = !model || view !== 'model' || running || loading;
     const count = materials.size * meshMapKeys.filter(key => stored[key]).length;
-    $('output-summary').textContent = `${materials.size} 个材质 · 预计 ${count} 张贴图`;
+    $('output-summary').textContent = `${materials.size} 个材质 · 预计 ${count} 张基础贴图；UV 复用时另附蒙版与可靠 AO/厚度图`;
     const rayMaps = stored.ao || stored.thickness;
     $('quality-note').textContent = rayMaps ? `${stored.samples} 次光线采样 · ${stored.bits} 位灰度` : '几何 Mesh Map 不使用光线采样';
     for (const key of ['samples', 'bits', 'device', 'distance', 'selfOnly']) $(key).disabled = locked || !rayMaps;
@@ -953,7 +975,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     refreshOidnStatus();
     $('run').disabled = Boolean(reason);
     $('run').title = reason || '';
-    $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : exporting ? '正在导出结果…' : reason || `已就绪 · ${count} 张贴图`;
+    $('readiness').textContent = running ? (cancelling ? '正在取消…' : '正在烘焙') : loading ? '正在导入模型…' : exporting ? '正在导出结果…' : reason || `已就绪 · ${count} 张基础贴图`;
     $('open-output').disabled = exporting || !desktop || !outputDirectory;
     root.querySelectorAll('[data-bake-export]').forEach(button => button.disabled = exporting || !desktop || !results.length);
     // 新任务运行时，旧结果仍应能切换并应用到模型；这里只在导出切换句柄的
@@ -1143,21 +1165,23 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       details.append(summary, list);
       toolbar.append(details);
     }
-    const reusedUv = (data.uvCoverage || []).filter(item => item.coveredPixels > 0 && item.sharedPixels >= 1024 && item.sharedPixels * 20 >= item.coveredPixels);
+    const uvQuality = assessUvCoverage(data.uvCoverage);
+    const reusedUv = (data.uvCoverage || []).filter(item => item.coveredPixels > 0 && item.sharedPixels > 0);
     if (reusedUv.length) {
       const details = document.createElement('details');
       details.className = 'bake-coverage';
+      details.open = uvQuality.noReliablePixels > 0;
       const summary = document.createElement('summary');
-      summary.textContent = `${reusedUv.length} 个材质的原生 UV 存在多面共用像素 · 查看影响`;
+      summary.textContent = `${reusedUv.length} 个材质的原生 UV 存在多面共用像素${uvQuality.noReliablePixels ? ` · ${uvQuality.noReliablePixels} 个材质无可靠几何像素` : ''} · 查看影响`;
       const explanation = document.createElement('p');
       explanation.textContent = results.some(file => file.kind === 'uv_unique_mask')
-        ? '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、厚度、位置或世界法线图中分别表示；这些区域当前取先覆盖的面。附带蒙版的白色区域可使用几何图，黑色区域应避免直接使用。'
-        : '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、厚度、位置或世界法线图中分别表示；本次没有对应蒙版，请检查输出类型和失败提示。';
+        ? '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、曲率、厚度、位置或世界法线图中分别表示；原始几何图在这些区域取先覆盖的面。唯一映射蒙版白色区域可靠、黑色区域不宜直接使用；如启用 AO、曲率或厚度，附带的可靠区域版本会在共用的模型表面使用各自的中性值。'
+        : '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、曲率、厚度、位置或世界法线图中分别表示；本次没有对应蒙版，请检查输出类型和失败提示。';
       const list = document.createElement('ul');
       for (const item of reusedUv) {
         const row = document.createElement('li');
         const materialName = model?.materials.find(material => material.id === item.material)?.name || `材质 ${item.material}`;
-        row.textContent = `${materialName}：${Math.round(item.sharedPixels * 100 / item.coveredPixels)}% 像素共用`;
+        row.textContent = `${materialName}：${Math.round(item.sharedPixels * 100 / item.coveredPixels)}% 像素共用${item.sharedPixels >= item.coveredPixels ? '，无可靠几何像素' : ''}`;
         list.append(row);
       }
       details.append(summary, explanation, list);
@@ -1168,7 +1192,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       const card = document.createElement('div');
       card.className = 'bake-result';
       const materialName = model?.materials.find(item => item.id === file.material)?.name;
-      const kindNames = { ao: '环境遮蔽', normal: '切线法线', world_normal: '世界空间法线', curvature: '曲率', position: '位置', thickness: '厚度', id: '材质 ID', uv: 'UV 线框', uv_unique_mask: 'UV 唯一映射蒙版' };
+      const kindNames = { ao: '环境遮蔽（原始）', ao_unique: '环境遮蔽（可靠区域）', normal: '切线法线', world_normal: '世界空间法线', curvature: '曲率（原始）', curvature_unique: '曲率（可靠区域）', position: '位置', thickness: '厚度（原始）', thickness_unique: '厚度（可靠区域）', id: '材质 ID', uv: 'UV 线框', uv_unique_mask: 'UV 唯一映射蒙版' };
       const kindName = kindNames[file.kind] || file.kind.toUpperCase();
       const label = materialName ? `${materialName} · ${kindName}` : `材质 ${file.material} · ${kindName}`;
       const title = document.createElement('p');
@@ -1208,9 +1232,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (previousHandle && previousHandle !== resultHandle) invoke('bake_result_release', { resultHandle: previousHandle }).catch(() => {});
     lists(); // 失败材质在左侧列表同步打 ⚠ 标记
     const defaultPreview = results.some(file => file.kind === 'ao') ? 'material' : (results.find(file => file.kind !== 'uv')?.kind || 'uv');
+    let previewOutcome;
     if (view === 'model') {
       pendingResultPreview = '';
-      await applyMapPreview(defaultPreview, false, false);
+      previewOutcome = await applyMapPreview(defaultPreview, false, false);
     } else {
       // 不改变用户所在的 UV/结果页；切回模型时再解码贴图，避免隐藏视口一次性
       // 占用大量内存，也确保模型不会继续显示上一次烘焙或无贴图材质。
@@ -1218,7 +1243,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
     const warningCount = data.warnings?.length || 0;
     const warningSummary = warningCount ? ` · ${warningCount} 条提示（见结果详情）` : '';
-    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${view === 'model' ? ' · 已更新模型预览' : ' · 当前视图保持不变，切回模型后显示新结果'}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${warningSummary}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
+    const qualitySummary = uvQuality.noReliablePixels ? ` · ${uvQuality.noReliablePixels} 个材质无可靠几何像素` : '';
+    const previewSummary = view !== 'model' ? ' · 当前视图保持不变，切回模型后显示新结果' : previewOutcome?.allFailed ? ` · 模型预览加载失败（${previewOutcome.error || '未知原因'}）` : ` · 已更新模型预览${previewOutcome?.failedTextures ? `（${previewOutcome.failedTextures} 个材质加载失败）` : ''}`;
+    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${previewSummary}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${qualitySummary}${warningSummary}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
   }
 
   $('run').onclick = async () => {

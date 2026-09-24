@@ -45,6 +45,23 @@ export function restoreBakeSettings(value) {
   if (workspace.projection === 'perspective' || workspace.projection === 'orthographic') {
     out.workspace.projection = workspace.projection;
   }
-  if (['material', 'ao', 'normal', 'world_normal', 'curvature', 'position', 'thickness', 'id', 'uv', 'uv_unique_mask'].includes(workspace.mapPreview)) out.workspace.mapPreview = workspace.mapPreview;
+  if (['material', 'ao', 'ao_unique', 'normal', 'world_normal', 'curvature', 'curvature_unique', 'position', 'thickness', 'thickness_unique', 'id', 'uv', 'uv_unique_mask'].includes(workspace.mapPreview)) out.workspace.mapPreview = workspace.mapPreview;
   return out;
+}
+
+export function selectReliablePreviewFiles(files, kind) {
+  if (kind !== 'ao' && kind !== 'curvature' && kind !== 'thickness') return [];
+  const byMaterial = new Map();
+  for (const file of files) if (file.kind === kind) byMaterial.set(file.material, file);
+  for (const file of files) if (file.kind === `${kind}_unique`) byMaterial.set(file.material, file);
+  return [...byMaterial.values()];
+}
+
+export function assessUvCoverage(items) {
+  const covered = (Array.isArray(items) ? items : []).filter(item => Number(item.coveredPixels) > 0);
+  const shared = covered.filter(item => Number(item.sharedPixels) > 0);
+  return {
+    shared: shared.length,
+    noReliablePixels: shared.filter(item => Number(item.sharedPixels) >= Number(item.coveredPixels)).length,
+  };
 }

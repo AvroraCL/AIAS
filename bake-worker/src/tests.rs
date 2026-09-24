@@ -427,6 +427,21 @@ fn unique_mask_excludes_order_dependent_surface_data() {
     assert_eq!(mask, stats_b.unique_mask(&covered_b));
     let a: BTreeMap<_, _> = a.into_iter().map(|s| (s.pixel, s)).collect();
     let b: BTreeMap<_, _> = b.into_iter().map(|s| (s.pixel, s)).collect();
+    let mut raw_a = vec![1.0f32; mask.len()];
+    let mut raw_b = vec![1.0f32; mask.len()];
+    for (pixel, surface) in &a {
+        raw_a[*pixel as usize] = 0.2 + surface.position[2] * 0.05;
+    }
+    for (pixel, surface) in &b {
+        raw_b[*pixel as usize] = 0.2 + surface.position[2] * 0.05;
+    }
+    assert_ne!(raw_a, raw_b);
+    let safe_a = bake::unique_scalar_values(&raw_a, &mask, 1.0);
+    let safe_b = bake::unique_scalar_values(&raw_b, &mask, 1.0);
+    assert_eq!(safe_a, safe_b, "可靠区域 AO 不应依赖三角面顺序");
+    let thickness_a = bake::unique_scalar_values(&raw_a, &mask, 0.0);
+    let thickness_b = bake::unique_scalar_values(&raw_b, &mask, 0.0);
+    assert_eq!(thickness_a, thickness_b, "可靠区域厚度不应依赖三角面顺序");
     let mut unstable = 0;
     let mut reliable = 0;
     for (pixel, left) in &a {
@@ -443,6 +458,15 @@ fn unique_mask_excludes_order_dependent_surface_data() {
         unstable > 0,
         "the fixture must reproduce first-face dependence"
     );
+}
+
+#[test]
+fn reliable_scalar_neutral_stays_exact_under_8_bit_dither() {
+    for pixel in 0..4096 {
+        assert_eq!(bake::scalar_byte(1.0, 1.0, pixel), 255);
+        assert_eq!(bake::scalar_byte(0.0, 0.0, pixel), 0);
+    }
+    assert!(bake::scalar_byte(0.5, 1.0, 0) < 255);
 }
 
 #[test]
@@ -592,6 +616,158 @@ fn curvature_map_is_neutral_on_flats_and_marks_convex_bends() {
     ];
     let bent_pixels = bake::curvature_map(&bent, &nearest, 3);
     assert!(bent_pixels[4 * 4] > flat_pixels[4 * 4]);
+}
+
+#[test]
+fn reliable_curvature_does_not_read_shared_uv_neighbors() {
+    let nearest = [
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        3,
+        4,
+        5,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+    ];
+    let mut unique_mask = [0u8; 9];
+    unique_mask[4] = 255;
+    unique_mask[5] = 255;
+    let surfaces = |shared_normal_x: f32| {
+        vec![
+            Surface {
+                position: [-1., 0., 0.],
+                normal: [shared_normal_x, 1., 0.],
+                object: 0,
+                pixel: 3,
+            },
+            Surface {
+                position: [0., 0., 0.],
+                normal: [0., 1., 0.],
+                object: 0,
+                pixel: 4,
+            },
+            Surface {
+                position: [1., 0., 0.],
+                normal: [0.02, 1., 0.],
+                object: 0,
+                pixel: 5,
+            },
+        ]
+    };
+    let first = surfaces(-0.03);
+    let second = surfaces(0.03);
+    let raw_first = bake::curvature_map(&first, &nearest, 3);
+    let raw_second = bake::curvature_map(&second, &nearest, 3);
+    assert_ne!(raw_first[4 * 4], raw_second[4 * 4]);
+    let safe_first = bake::curvature_map_unique(&first, &nearest, 3, &unique_mask);
+    let safe_second = bake::curvature_map_unique(&second, &nearest, 3, &unique_mask);
+    assert_eq!(safe_first[4 * 4], safe_second[4 * 4]);
+    assert!(safe_first[4 * 4] > 128);
+    assert_eq!(safe_first[3 * 4], 128);
+    assert_eq!(safe_second[3 * 4], 128);
+    let safe_16_first = bake::curvature_map_16_unique(&first, &nearest, 3, &unique_mask);
+    let safe_16_second = bake::curvature_map_16_unique(&second, &nearest, 3, &unique_mask);
+    assert_eq!(safe_16_first[4 * 4], safe_16_second[4 * 4]);
+    assert_eq!(safe_16_first[3 * 4], 32768);
+}
+
+#[test]
+fn curvature_does_not_invent_a_bend_between_different_objects() {
+    let nearest = [
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        3,
+        4,
+        5,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+    ];
+    let center = Surface {
+        position: [0., 0., 0.],
+        normal: [0., 1., 0.],
+        object: 0,
+        pixel: 4,
+    };
+    let own_neighbor = Surface {
+        position: [1., 0., 0.],
+        pixel: 5,
+        ..center
+    };
+    let foreign_neighbor = Surface {
+        position: [-1., 0., 0.],
+        normal: [-0.2, 0.98, 0.],
+        object: 1,
+        pixel: 3,
+    };
+    let flat = bake::curvature_map(&[center, own_neighbor], &nearest, 3);
+    let adjacent = bake::curvature_map(&[foreign_neighbor, center, own_neighbor], &nearest, 3);
+    assert_eq!(adjacent[4 * 4], flat[4 * 4]);
+}
+
+#[test]
+fn curvature_uses_mesh_edges_to_reject_adjacent_disconnected_uv_islands() {
+    let first = triangle([[0., 0.], [0.5, 0.], [0., 0.5]], 0, 0);
+    let mut disconnected = first.clone();
+    for vertex in &mut disconnected.positions {
+        vertex[0] += 10.;
+    }
+    let mut connected = first.clone();
+    connected.positions = [first.positions[1], first.positions[2], [2., 0., 0.]];
+    let components = bake::mesh_components(&model(vec![first, disconnected, connected]));
+    assert_eq!(components[0], components[2]);
+    assert_ne!(components[0], components[1]);
+
+    let nearest = [
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        3,
+        4,
+        5,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+    ];
+    let surfaces = [
+        Surface {
+            position: [-1., 0., 0.],
+            normal: [-0.2, 0.98, 0.],
+            object: 0,
+            pixel: 3,
+        },
+        Surface {
+            position: [0., 0., 0.],
+            normal: [0., 1., 0.],
+            object: 0,
+            pixel: 4,
+        },
+        Surface {
+            position: [1., 0., 0.],
+            normal: [0., 1., 0.],
+            object: 0,
+            pixel: 5,
+        },
+    ];
+    let surface_components = [components[1], components[0], components[2]];
+    let previous = bake::curvature_map(&surfaces, &nearest, 3);
+    assert_eq!(previous[4 * 4], 255, "用例应复现同对象假折痕");
+    let corrected =
+        bake::curvature_map_with_mask(&surfaces, &nearest, 3, None, Some(&surface_components));
+    assert_eq!(corrected[4 * 4], 128);
+    let mut unique_mask = [0u8; 9];
+    unique_mask[3..=5].fill(255);
+    let safe = bake::curvature_map_16_with_mask(
+        &surfaces,
+        &nearest,
+        3,
+        Some(&unique_mask),
+        Some(&surface_components),
+    );
+    assert_eq!(safe[4 * 4], 32768);
 }
 
 #[test]
