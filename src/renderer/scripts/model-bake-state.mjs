@@ -15,6 +15,7 @@ export const bakeDefaults = Object.freeze({
   margin: 16,
   bits: 8,
   distanceRatio: 0.1,
+  aoDistanceRatio: 0.01,
   selfOnly: false,
   ao: true,
   normal: true,
@@ -36,7 +37,13 @@ export function restoreBakeSettings(value) {
   if (typeof source.deviceLuid === 'string' && source.deviceLuid.length <= 64) out.deviceLuid = source.deviceLuid;
   if (['preserveValid', 'regenerateAll', 'strictSource'].includes(source.uvMode)) out.uvMode = source.uvMode;
   if (Number.isInteger(source.margin) && source.margin >= 0 && source.margin <= 128) out.margin = source.margin;
-  if (Number.isFinite(source.distanceRatio) && source.distanceRatio > 0) out.distanceRatio = source.distanceRatio;
+  if (Number.isFinite(source.distanceRatio) && source.distanceRatio > 0) {
+    out.distanceRatio = source.distanceRatio;
+    // 旧版共用一个距离：只为显式自定义的旧值保留 AO 行为。旧默认 10%
+    // 在密集模型上过暗，迁移为新的局部 AO 默认 1%；厚度距离不变。
+    if (source.distanceRatio !== 0.1) out.aoDistanceRatio = source.distanceRatio;
+  }
+  if (Number.isFinite(source.aoDistanceRatio) && source.aoDistanceRatio > 0) out.aoDistanceRatio = source.aoDistanceRatio;
   for (const key of ['selfOnly', 'ao', 'normal', 'worldNormal', 'curvature', 'position', 'thickness', 'uv', 'id', 'denoise']) if (typeof source[key] === 'boolean') out[key] = source[key];
   const workspace = source.workspace && typeof source.workspace === 'object' ? source.workspace : {};
   for (const key of ['outlinerOpen', 'settingsOpen', 'wireframe']) {
@@ -45,12 +52,12 @@ export function restoreBakeSettings(value) {
   if (workspace.projection === 'perspective' || workspace.projection === 'orthographic') {
     out.workspace.projection = workspace.projection;
   }
-  if (['material', 'ao', 'ao_unique', 'normal', 'world_normal', 'curvature', 'curvature_unique', 'position', 'thickness', 'thickness_unique', 'id', 'uv', 'uv_unique_mask'].includes(workspace.mapPreview)) out.workspace.mapPreview = workspace.mapPreview;
+  if (['material', 'ao', 'ao_unique', 'normal', 'world_normal', 'world_normal_unique', 'curvature', 'curvature_unique', 'position', 'position_unique', 'thickness', 'thickness_unique', 'id', 'uv', 'uv_unique_mask'].includes(workspace.mapPreview)) out.workspace.mapPreview = workspace.mapPreview;
   return out;
 }
 
 export function selectReliablePreviewFiles(files, kind) {
-  if (kind !== 'ao' && kind !== 'curvature' && kind !== 'thickness') return [];
+  if (!['ao', 'curvature', 'thickness', 'world_normal', 'position'].includes(kind)) return [];
   const byMaterial = new Map();
   for (const file of files) if (file.kind === kind) byMaterial.set(file.material, file);
   for (const file of files) if (file.kind === `${kind}_unique`) byMaterial.set(file.material, file);

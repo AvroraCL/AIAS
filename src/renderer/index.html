@@ -27,6 +27,9 @@
             <button class="mode-tab" data-view="blk" type="button">
               <i data-lucide="file-code-2" aria-hidden="true"></i><span>BLK 生成</span>
             </button>
+            <button class="mode-tab" data-view="skin-pack" type="button">
+              <i data-lucide="package-check" aria-hidden="true"></i><span>涂装打包</span>
+            </button>
             <button class="mode-tab" data-view="split" type="button">
               <i data-lucide="split" aria-hidden="true"></i><span>PBR 拆分</span>
             </button>
@@ -198,7 +201,18 @@
                 <summary><strong>BLK 文本预览</strong><small id="blk-preview-status">等待选择目录</small></summary>
                 <pre class="blk-preview" id="blk-preview"></pre>
               </details>
+              <button id="blk-to-pack" class="secondary-action hidden" type="button">打包此目录</button>
               <input id="blk-browser-directory" type="file" webkitdirectory multiple hidden />
+            </section>
+
+            <section class="mode-view" id="view-skin-pack">
+              <div class="stage-heading"><div><span>交付准备</span><strong>涂装打包</strong></div><small id="pack-summary">等待选择目录</small></div>
+              <div class="blk-empty" id="pack-empty">选择包含 BLK 和 DDS/TGA 的涂装目录，检查后生成 ZIP。</div>
+              <div class="pack-check-heading"><strong id="pack-errors-heading">等待检查</strong><button id="pack-go-blk" class="secondary-action hidden" type="button">去 BLK 生成</button></div>
+              <ul id="pack-issues" class="pack-issues" aria-live="polite"></ul>
+              <div class="pack-file-section"><h3>将收入 ZIP</h3><ul id="pack-included" class="pack-file-list"></ul></div>
+              <details id="pack-excluded-wrap" class="blk-preview-wrap" hidden><summary><strong>未收录文件</strong><small>BLK 未引用</small></summary><ul id="pack-excluded" class="pack-file-list"></ul></details>
+              <input id="pack-browser-directory" type="file" webkitdirectory multiple hidden />
             </section>
 
             <section class="mode-view" id="view-split">
@@ -490,6 +504,17 @@
                   <small class="settings-hint" id="blk-output-hint">生成的 BLK 与 DDS 保存在同一目录。</small>
                 </div>
               </section>
+              <section class="inspector-group" data-modes="skin-pack">
+                <button class="group-toggle" type="button"><span>打包设置</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+                <div class="group-content">
+                  <label for="pack-directory">涂装目录</label>
+                  <div class="field-row"><input id="pack-directory" readonly aria-label="涂装目录" /><button id="pack-pick-directory" type="button">选择</button></div>
+                  <button id="pack-rescan" class="secondary-action blk-rescan" type="button">重新扫描</button>
+                  <div id="pack-blk-row"><label for="pack-blk">使用的 BLK</label><select id="pack-blk" aria-label="使用的 BLK"></select></div>
+                  <label for="pack-name">包名</label><input id="pack-name" aria-label="包名" placeholder="默认与 BLK 同名" />
+                  <small class="settings-hint">ZIP 内仅包含 BLK 及其引用的 DDS/TGA，解压到 UserSkins 即可。</small>
+                </div>
+              </section>
               <section class="inspector-group" data-modes="merge mipmap">
                 <button class="group-toggle" type="button"><span>输入</span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
                 <div class="group-content">
@@ -656,6 +681,7 @@
               <p id="run-hint">请选择输入和输出目录</p>
               <button id="run-merge" class="run-button" type="button"><i data-lucide="play" aria-hidden="true"></i><span>开始合成</span></button>
               <button id="run-blk" class="run-button hidden" type="button"><i data-lucide="file-code-2" aria-hidden="true"></i><span>生成 BLK</span></button>
+              <button id="run-skin-pack" class="run-button hidden" type="button"><i data-lucide="package-check" aria-hidden="true"></i><span>生成 ZIP</span></button>
               <button id="run-split" class="run-button hidden" type="button"><i data-lucide="play" aria-hidden="true"></i><span>开始拆分</span></button>
               <button id="run-mipmap" class="run-button hidden" type="button"><i data-lucide="play" aria-hidden="true"></i><span>生成 Mipmap</span></button>
               <button id="run-image-dds" class="run-button hidden" type="button"><i data-lucide="play" aria-hidden="true"></i><span>开始转换</span></button>
@@ -690,6 +716,7 @@
               <button id="copy-log" class="icon-button log-copy hidden" type="button" aria-label="复制当前日志"><i data-lucide="clipboard-copy"></i></button>
               <pre id="merge-log" class="task-log active"></pre>
               <pre id="blk-log" class="task-log"></pre>
+              <pre id="skin-pack-log" class="task-log"></pre>
               <pre id="split-log" class="task-log"></pre>
               <pre id="mipmap-log" class="task-log"></pre>
               <pre id="image-log" class="task-log"></pre>

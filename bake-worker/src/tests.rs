@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 #[test]
-fn output_estimate_counts_uv_and_doubles_precision_maps_at_16_bit() {
+fn output_estimate_counts_uv_and_reliable_precision_maps_at_16_bit() {
     let mut options = bake::Options {
         bits: 8,
         materials: vec![0, 1],
@@ -25,7 +25,7 @@ fn output_estimate_counts_uv_and_doubles_precision_maps_at_16_bit() {
     let precision_8 = bake::estimated_output_bytes(&options, pixels);
     options.bits = 16;
     let precision_16 = bake::estimated_output_bytes(&options, pixels);
-    assert_eq!(precision_16 - precision_8, pixels * 4 * 3 / 5 * 2);
+    assert_eq!(precision_16 - precision_8, pixels * 4 * 3 / 5 * 2 * 2);
 }
 
 #[test]
@@ -461,6 +461,25 @@ fn unique_mask_excludes_order_dependent_surface_data() {
 }
 
 #[test]
+fn rgba_unique_map_marks_shared_and_uncovered_pixels_invalid_at_both_bit_depths() {
+    // 0 唯一、1 复用、2/3 分别是它们的 margin、4 未覆盖。
+    let nearest = [0, 1, 0, 1, u32::MAX];
+    let mask = [255, 0, 0, 0, 0];
+    for max in [255u16, 65535u16] {
+        let raw = [
+            12, 34, 56, max, 78, 90, 123, max, 12, 34, 56, max, 78, 90, 123, max, 0, 0, 0, 0,
+        ];
+        let neutral = [max / 2 + 1, max / 2 + 1, max, 0];
+        let safe = bake::unique_rgba_pixels(&raw, &nearest, &mask, neutral);
+        assert_eq!(&safe[0..4], &raw[0..4]);
+        assert_eq!(&safe[4..8], &neutral);
+        assert_eq!(&safe[8..12], &raw[8..12]);
+        assert_eq!(&safe[12..16], &neutral);
+        assert_eq!(&safe[16..20], &neutral);
+    }
+}
+
+#[test]
 fn reliable_scalar_neutral_stays_exact_under_8_bit_dither() {
     for pixel in 0..4096 {
         assert_eq!(bake::scalar_byte(1.0, 1.0, pixel), 255);
@@ -768,6 +787,46 @@ fn curvature_uses_mesh_edges_to_reject_adjacent_disconnected_uv_islands() {
         Some(&surface_components),
     );
     assert_eq!(safe[4 * 4], 32768);
+}
+
+#[test]
+fn curvature_checks_connected_neighbors_across_tiled_uv_seam() {
+    let nearest = [
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        3,
+        u32::MAX,
+        5,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+    ];
+    let surfaces = [
+        Surface {
+            position: [0., 0., 0.],
+            normal: [0., 1., 0.],
+            object: 0,
+            pixel: 3,
+        },
+        Surface {
+            position: [1., 0., 0.],
+            normal: [0.2, 0.98, 0.],
+            object: 0,
+            pixel: 5,
+        },
+    ];
+    let connected = bake::curvature_map_with_mask(&surfaces, &nearest, 3, None, Some(&[0, 0]));
+    let disconnected = bake::curvature_map_with_mask(&surfaces, &nearest, 3, None, Some(&[0, 1]));
+    assert!(
+        connected[3 * 4] > 128,
+        "UV 平铺边缘的连通曲面应继续贡献曲率"
+    );
+    assert_eq!(
+        disconnected[3 * 4],
+        128,
+        "不连通的 UV 岛不能跨平铺边缘形成假折痕"
+    );
 }
 
 #[test]

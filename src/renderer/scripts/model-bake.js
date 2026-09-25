@@ -84,7 +84,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       </div>
 
       <div class="bake-display-tools" aria-label="视图显示工具">
-        <label class="bake-map-preview-control">贴图预览<select id="bake-map-preview" aria-label="模型贴图预览"><option value="ao">环境遮蔽（原始）</option><option value="ao_unique">环境遮蔽（可靠区域）</option><option value="curvature">曲率（原始）</option><option value="curvature_unique">曲率（可靠区域）</option><option value="world_normal">世界空间法线</option><option value="position">位置</option><option value="thickness">厚度（原始）</option><option value="thickness_unique">厚度（可靠区域）</option><option value="normal">切线法线</option><option value="id">材质 ID</option><option value="uv">UV 线框</option><option value="uv_unique_mask">UV 唯一映射蒙版</option><option value="material">着色 + 可靠 AO</option></select></label>
+        <label class="bake-map-preview-control">贴图预览<select id="bake-map-preview" aria-label="模型贴图预览"><option value="ao">环境遮蔽（原始）</option><option value="ao_unique">环境遮蔽（可靠区域）</option><option value="curvature">曲率（原始）</option><option value="curvature_unique">曲率（可靠区域）</option><option value="world_normal">世界空间法线（原始）</option><option value="world_normal_unique">世界空间法线（可靠区域）</option><option value="position">位置（原始）</option><option value="position_unique">位置（可靠区域）</option><option value="thickness">厚度（原始）</option><option value="thickness_unique">厚度（可靠区域）</option><option value="normal">切线法线</option><option value="id">材质 ID</option><option value="uv">UV 线框</option><option value="uv_unique_mask">UV 唯一映射蒙版</option><option value="material">着色 + 可靠 AO</option></select></label>
         <button id="bake-focus" data-bake-display="focus" class="bake-floating-button" type="button" title="聚焦所选对象 · F" aria-label="聚焦所选对象"><i data-lucide="scan" aria-hidden="true"></i></button>
         <button id="bake-reset" data-bake-display="reset" class="bake-floating-button" type="button" title="复位视图" aria-label="复位视图"><i data-lucide="rotate-ccw" aria-hidden="true"></i></button>
         <button id="bake-projection" data-bake-display="projection" class="bake-floating-button" type="button" title="切换透视 / 正交">透视</button>
@@ -110,7 +110,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
           <details class="bake-advanced"><summary>高级设置</summary>
           ${section('UV 工作流', `${select('uvMode', '导入时 UV 处理', [['preserveValid', '智能保留'], ['regenerateAll', '全部重新展开'], ['strictSource', '严格使用源 UV']])}<small>智能保留会使用原生 UV，包括 0–1 外的平铺坐标；仅在 UV 缺失或坐标无效时生成工作通道。镜像与分层重叠仍按源 UV 烘焙。</small>`)}
           ${section('计算设备', `${select('device', 'GPU', [[0, '检测设备中…']])}<small id="bake-device-note"></small>`)}
-          ${section('光线追踪与边缘', `${select('samples', 'AO / 厚度采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', '输出位深', [[8, '8 位'], [16, '16 位（AO/厚度/曲率/位置/世界法线）']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>射线距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%</small>${check('denoise', 'AI 降噪（仅用于 AO）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相影响'], ['true', '仅同一对象']])}<small>AO 与厚度使用 GPU；其余 Mesh Map 由模型几何直接生成。</small>`)}
+          ${section('光线追踪与边缘', `${select('samples', 'AO / 厚度采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', '输出位深', [[8, '8 位'], [16, '16 位（AO/厚度/曲率/位置/世界法线）']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>AO 半径<input id="bake-ao-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-ao-distance-note">默认包围盒对角线的 1%，控制局部遮蔽</small><label>厚度探测距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%，控制背面探测</small>${check('denoise', 'AI 降噪（仅用于 AO）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相影响'], ['true', '仅同一对象']])}<small>AO 与厚度使用 GPU；其余 Mesh Map 由模型几何直接生成。</small>`)}
           </details>
         </div>
       </aside>
@@ -196,7 +196,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (!model) return '请导入模型。';
     if (!materials.size) return '请选择输出材质。';
     if (!meshMapKeys.some(key => stored[key])) return '请选择输出类型。';
-    if (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0) return '遮蔽距离必须大于 0。';
+    if (stored.ao && (!Number.isFinite(+$('ao-distance').value) || +$('ao-distance').value <= 0)) return 'AO 半径必须大于 0。';
+    if (stored.thickness && (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0)) return '厚度探测距离必须大于 0。';
     if (!Number.isInteger(+$('margin').value) || +$('margin').value < 0 || +$('margin').value > 128) return '边缘扩展应为 0–128 的整数。';
     if ((stored.ao || stored.thickness) && !devices.find(device => device.index === +stored.device)?.supported) return '当前设备不支持 DXR 1.1 光线追踪。';
     if (stored.ao && stored.denoise && desktop && !oidnReady) {
@@ -427,7 +428,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }
     const revision = ++previewMaterialRevision;
     // 着色预览自动采用仅保留唯一 UV 区域的 AO；原始 AO 仍可单独检查。
-    const files = kind === 'material' || kind === 'ao_unique' || kind === 'curvature_unique' || kind === 'thickness_unique'
+    const files = kind === 'material' || ['ao_unique', 'curvature_unique', 'thickness_unique', 'world_normal_unique', 'position_unique'].includes(kind)
       ? selectReliablePreviewFiles(results, kind === 'material' ? 'ao' : kind.replace('_unique', ''))
       : results.filter(file => file.kind === kind);
     if (!files.length) {
@@ -953,7 +954,9 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('output-summary').textContent = `${materials.size} 个材质 · 预计 ${count} 张基础贴图；UV 复用时另附蒙版与可靠 AO/厚度图`;
     const rayMaps = stored.ao || stored.thickness;
     $('quality-note').textContent = rayMaps ? `${stored.samples} 次光线采样 · ${stored.bits} 位灰度` : '几何 Mesh Map 不使用光线采样';
-    for (const key of ['samples', 'bits', 'device', 'distance', 'selfOnly']) $(key).disabled = locked || !rayMaps;
+    for (const key of ['samples', 'bits', 'device', 'selfOnly']) $(key).disabled = locked || !rayMaps;
+    $('ao-distance').disabled = locked || !stored.ao;
+    $('distance').disabled = locked || !stored.thickness;
     root.querySelectorAll('[data-bake-preset]').forEach(button => {
       const [resolution, samples] = presets[button.dataset.bakePreset];
       button.setAttribute('aria-pressed', String(stored.resolution === resolution && stored.samples === samples));
@@ -1073,6 +1076,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       lists();
       updatePanelState('outliner'); updatePanelState('settings');
       resizeRenderer(); reset();
+      $('ao-distance').value = String(selectedBounds() * stored.aoDistanceRatio);
+      $('ao-distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.aoDistanceRatio * 100).toFixed(1)}%`;
       $('distance').value = String(selectedBounds() * stored.distanceRatio);
       $('distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
       focusMaterial(model.materials[0].id);
@@ -1175,7 +1180,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       summary.textContent = `${reusedUv.length} 个材质的原生 UV 存在多面共用像素${uvQuality.noReliablePixels ? ` · ${uvQuality.noReliablePixels} 个材质无可靠几何像素` : ''} · 查看影响`;
       const explanation = document.createElement('p');
       explanation.textContent = results.some(file => file.kind === 'uv_unique_mask')
-        ? '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、曲率、厚度、位置或世界法线图中分别表示；原始几何图在这些区域取先覆盖的面。唯一映射蒙版白色区域可靠、黑色区域不宜直接使用；如启用 AO、曲率或厚度，附带的可靠区域版本会在共用的模型表面使用各自的中性值。'
+        ? '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、曲率、厚度、位置或世界法线图中分别表示；原始几何图在这些区域取先覆盖的面。唯一映射蒙版白色区域可靠、黑色区域不宜直接使用。AO、曲率和厚度的可靠区域版本在冲突处使用中性值；世界法线和位置的可靠区域版本在冲突处写入中性占位色及透明 alpha，制作材质时必须遵守 alpha 或蒙版。'
         : '源 UV 没有改动。共用同一贴图像素的不同模型表面无法在一张 AO、曲率、厚度、位置或世界法线图中分别表示；本次没有对应蒙版，请检查输出类型和失败提示。';
       const list = document.createElement('ul');
       for (const item of reusedUv) {
@@ -1192,7 +1197,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       const card = document.createElement('div');
       card.className = 'bake-result';
       const materialName = model?.materials.find(item => item.id === file.material)?.name;
-      const kindNames = { ao: '环境遮蔽（原始）', ao_unique: '环境遮蔽（可靠区域）', normal: '切线法线', world_normal: '世界空间法线', curvature: '曲率（原始）', curvature_unique: '曲率（可靠区域）', position: '位置', thickness: '厚度（原始）', thickness_unique: '厚度（可靠区域）', id: '材质 ID', uv: 'UV 线框', uv_unique_mask: 'UV 唯一映射蒙版' };
+      const kindNames = { ao: '环境遮蔽（原始）', ao_unique: '环境遮蔽（可靠区域）', normal: '切线法线', world_normal: '世界空间法线（原始）', world_normal_unique: '世界空间法线（可靠区域）', curvature: '曲率（原始）', curvature_unique: '曲率（可靠区域）', position: '位置（原始）', position_unique: '位置（可靠区域）', thickness: '厚度（原始）', thickness_unique: '厚度（可靠区域）', id: '材质 ID', uv: 'UV 线框', uv_unique_mask: 'UV 唯一映射蒙版' };
       const kindName = kindNames[file.kind] || file.kind.toUpperCase();
       const label = materialName ? `${materialName} · ${kindName}` : `材质 ${file.material} · ${kindName}`;
       const title = document.createElement('p');
@@ -1261,7 +1266,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         const data = await invoke('bake_start', {
           handle: model.handle,
           jobId: job,
-          options: { ...options, device: +stored.device, objects: model.objects.map(item => item.id), materials: [...materials], channels: { ...channels }, distance: +$('distance').value },
+          options: { ...options, device: +stored.device, objects: model.objects.map(item => item.id), materials: [...materials], channels: { ...channels }, distance: +$('distance').value, aoDistance: +$('ao-distance').value },
         });
         if (data.files?.length) await showResults(data);
         else {
@@ -1338,6 +1343,17 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       if (!diagonal) return;
       stored.distanceRatio = value / diagonal;
       $('distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
+      persist();
+    }
+    refresh();
+  };
+  $('ao-distance').onchange = () => {
+    const value = +$('ao-distance').value;
+    if (geometry && value > 0 && Number.isFinite(value)) {
+      const diagonal = selectedBounds();
+      if (!diagonal) return;
+      stored.aoDistanceRatio = value / diagonal;
+      $('ao-distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.aoDistanceRatio * 100).toFixed(1)}%`;
       persist();
     }
     refresh();

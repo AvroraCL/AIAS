@@ -29,6 +29,9 @@ pub struct Options {
     /// 降噪组件 DLL 所在目录（由主应用按需下载后传入）。
     #[serde(default)]
     pub oidn_dir: Option<String>,
+    /// 局部 AO 半径；旧请求缺失时沿用公共 distance 以保持接口兼容。
+    #[serde(default)]
+    pub ao_distance: Option<f32>,
     pub distance: f32,
     pub margin: u32,
     pub self_only: bool,
@@ -98,10 +101,10 @@ pub struct Output {
 pub(crate) fn estimated_output_bytes(options: &Options, pixels: u64) -> u64 {
     let rgba8_maps =
         usize::from(options.uv) + usize::from(options.id) + usize::from(options.normal);
-    let precision_rgba_maps = usize::from(options.world_normal)
+    let precision_rgba_maps = usize::from(options.world_normal) * 2
         + usize::from(options.curvature) * 2
-        + usize::from(options.position);
-    // AO、厚度和曲率在复用 UV 上可能额外输出可靠区域版本。
+        + usize::from(options.position) * 2;
+    // 复用 UV 时，几何图可能额外输出可靠区域版本。
     let gray_maps = (usize::from(options.ao) + usize::from(options.thickness)) * 2;
     let may_need_unique_mask = options.ao
         || options.world_normal
@@ -456,12 +459,11 @@ fn curvature_values(
             (-1, 1),
             (1, 1),
         ] {
-            let nx = x as isize + dx;
-            let ny = y as isize + dy;
-            if nx < 0 || ny < 0 || nx >= size as isize || ny >= size as isize {
-                continue;
-            }
-            let other_index = surface_at[ny as usize * size + nx as usize];
+            // 源 UV 按 repeat 寻址：纹理左右和上下边缘也是相邻纹素。
+            // 连通分量与对象检查仍会排除边缘两侧不相关的几何岛。
+            let nx = (x as isize + dx).rem_euclid(size as isize) as usize;
+            let ny = (y as isize + dy).rem_euclid(size as isize) as usize;
+            let other_index = surface_at[ny * size + nx];
             if other_index == u32::MAX {
                 continue;
             }
@@ -541,6 +543,44 @@ fn write_rgba_map(
 enum SurfacePixels {
     Bits8(Vec<u8>),
     Bits16(Vec<u16>),
+}
+
+impl SurfacePixels {
+    fn unique(
+        &self,
+        nearest: &[u32],
+        unique_mask: &[u8],
+        neutral_8: [u8; 4],
+        neutral_16: [u16; 4],
+    ) -> Self {
+        match self {
+            Self::Bits8(raw) => {
+                Self::Bits8(unique_rgba_pixels(raw, nearest, unique_mask, neutral_8))
+            }
+            Self::Bits16(raw) => {
+                Self::Bits16(unique_rgba_pixels(raw, nearest, unique_mask, neutral_16))
+            }
+        }
+    }
+}
+
+/// 与原始 RGBA 数据图保持相同的唯一映射像素；共享与未覆盖像素清零 alpha，
+/// RGB 写入中性占位值。margin 仅继承唯一源像素的有效性。
+pub(crate) fn unique_rgba_pixels<T: Copy>(
+    raw: &[T],
+    nearest: &[u32],
+    unique_mask: &[u8],
+    neutral: [T; 4],
+) -> Vec<T> {
+    assert_eq!(raw.len(), nearest.len() * 4);
+    assert_eq!(unique_mask.len(), nearest.len());
+    let mut safe = raw.to_vec();
+    for (pixel, source) in nearest.iter().copied().enumerate() {
+        if source == u32::MAX || unique_mask[source as usize] != 255 {
+            safe[pixel * 4..pixel * 4 + 4].copy_from_slice(&neutral);
+        }
+    }
+    safe
 }
 
 /// 写表面编码图（AO 以外的 Mesh Map），按位深落盘 Rgba8/Rgba16。
@@ -737,6 +777,9 @@ pub fn run(
         || options.margin > 128
         || !options.distance.is_finite()
         || options.distance <= 0.
+        || options
+            .ao_distance
+            .is_some_and(|distance| !distance.is_finite() || distance <= 0.)
     {
         return Err("烘焙参数不合法".into());
     }
@@ -811,6 +854,7 @@ pub fn run(
         directory: options.output.clone(),
         ..Default::default()
     };
+    let ao_distance = options.ao_distance.unwrap_or(options.distance);
     // GPU 加速结构惰性构建：坏 UV 模型会在逐材质校验里提前失败，不应白付
     // DXR 初始化与 BLAS 构建（大模型数秒到十几秒），错误信息也不该被
     // 显存类问题抢先。
@@ -1126,6 +1170,9 @@ pub fn run(
                 } else {
                     SurfacePixels::Bits8(encode_surface_map(&surfaces, &nearest, encode_normal_8))
                 };
+                let unique_pixels = unique_mask.as_ref().map(|mask| {
+                    pixels.unique(&nearest, mask, [128, 128, 255, 0], [32768, 32768, 65535, 0])
+                });
                 write_surface_map(
                     options,
                     &mut result,
@@ -1134,6 +1181,16 @@ pub fn run(
                     "world_normal",
                     pixels,
                 )?;
+                if let Some(unique_pixels) = unique_pixels {
+                    write_surface_map(
+                        options,
+                        &mut result,
+                        material,
+                        &prefix,
+                        "world_normal_unique",
+                        unique_pixels,
+                    )?;
+                }
                 map_index += 1;
             }
             if options.position {
@@ -1175,7 +1232,20 @@ pub fn run(
                 } else {
                     SurfacePixels::Bits8(encode_surface_map(&surfaces, &nearest, encode_position_8))
                 };
+                let unique_pixels = unique_mask.as_ref().map(|mask| {
+                    pixels.unique(&nearest, mask, [128, 128, 128, 0], [32768, 32768, 32768, 0])
+                });
                 write_surface_map(options, &mut result, material, &prefix, "position", pixels)?;
+                if let Some(unique_pixels) = unique_pixels {
+                    write_surface_map(
+                        options,
+                        &mut result,
+                        material,
+                        &prefix,
+                        "position_unique",
+                        unique_pixels,
+                    )?;
+                }
                 map_index += 1;
             }
             if options.curvature {
@@ -1291,7 +1361,7 @@ pub fn run(
                 let diagonal = (Vec3::from_array(model.bounds[1])
                     - Vec3::from_array(model.bounds[0]))
                 .length();
-                let bias = (diagonal * 1e-5).max(1e-7).min(options.distance * 0.01);
+                let bias = (diagonal * 1e-5).max(1e-7).min(ao_distance * 0.01);
                 // 进度事件按"进展 ≥1% 或距上次 ≥100ms"节流：4096² 时 chunk 数
                 // 可达上万，逐条跨进程→Rust→IPC→WebView 四跳纯属空耗。
                 let mut last_emit = Instant::now();
@@ -1300,7 +1370,7 @@ pub fn run(
                     let hits = gpu.trace(
                         chunk,
                         options.samples,
-                        options.distance,
+                        ao_distance,
                         bias,
                         options.self_only,
                         || options.cancel_path.exists(),
@@ -1659,6 +1729,7 @@ pub fn run(
             "samples": options.samples,
             "bits": options.bits,
             "distance": options.distance,
+            "aoDistance": ao_distance,
             "margin": options.margin,
             "denoise": options.denoise,
             "units": model.units,
@@ -1670,9 +1741,11 @@ pub fn run(
             "ao": "linear grayscale; 1 = unoccluded",
             "normal": "OpenGL tangent space; +Y",
             "world_normal": "RGB = world XYZ remapped from -1..1 to 0..1",
-            "curvature": "signed grayscale; 0.5 = flat, dark = concave, light = convex; neighbors are limited to edge-connected triangles in the same object and material",
-            "curvature_unique": "signed grayscale curvature limited to uniquely mapped UV pixels and edge-connected unique neighbors; shared covered pixels = neutral 0.5; margin inherits the nearest covered pixel",
+            "world_normal_unique": "same RGB as world_normal on uniquely mapped source-UV pixels; shared pixels and background without a unique margin source use neutral RGB (0.5,0.5,1), alpha = 0; margin inherits validity from nearest covered source; consumers must honor alpha/uv_unique_mask",
+            "curvature": "signed grayscale; 0.5 = flat, dark = concave, light = convex; periodic UV edges; neighbors are limited to edge-connected triangles in the same object and material",
+            "curvature_unique": "signed grayscale curvature limited to uniquely mapped UV pixels and edge-connected unique neighbors across periodic UV edges; shared covered pixels = neutral 0.5; margin inherits the nearest covered pixel",
             "position": "RGB = model-bounds normalized world XYZ",
+            "position_unique": "same RGB as position on uniquely mapped source-UV pixels; shared pixels and background without a unique margin source use neutral RGB (0.5,0.5,0.5), alpha = 0; margin inherits validity from nearest covered source; consumers must honor alpha/uv_unique_mask",
             "thickness": "linear grayscale; normalized inward hit distance",
             "thickness_unique": "linear grayscale thickness limited to uniquely mapped UV pixels; shared covered pixels = 0; margin inherits the nearest covered pixel",
             "id": "RGBA material color; see material-colors.json",

@@ -16,6 +16,7 @@ const EN = {
   "PBR 合成": "PBR Merge",
   "PBR 拆分": "PBR Split",
   "BLK 生成": "BLK Generator",
+  "涂装打包": "Skin Packaging",
   "Mipmap": "Mipmap",
   "图片转 DDS": "Image to DDS",
   "图片转 ASCII": "Image to ASCII",
@@ -299,6 +300,55 @@ const EN = {
   "重新扫描": "Rescan",
   "生成 BLK": "Generate BLK",
   "浏览器预览会下载 BLK；桌面版直接写入 DDS 目录。": "The browser downloads the BLK; the desktop app writes it into the DDS folder.",
+  "交付准备": "Delivery Preparation",
+  "检查 BLK 与引用贴图，生成可分享的 ZIP": "Check the BLK and referenced textures, then create a shareable ZIP",
+  "选择包含 BLK 和 DDS/TGA 的涂装目录，检查后生成 ZIP。": "Choose a skin folder containing a BLK and DDS/TGA files, then create a ZIP.",
+  "等待选择目录": "Choose a folder",
+  "等待检查": "Waiting to check",
+  "检查未通过": "Checks failed",
+  "检查通过": "Checks passed",
+  "请选择一份 BLK": "Choose a BLK",
+  "将收入 ZIP": "Included in ZIP",
+  "未收录文件": "Excluded files",
+  "BLK 未引用": "Not referenced by BLK",
+  "去 BLK 生成": "Go to BLK Generator",
+  "打包此目录": "Package This Folder",
+  "打包设置": "Package Settings",
+  "涂装目录": "Skin Folder",
+  "使用的 BLK": "Selected BLK",
+  "包名": "Package Name",
+  "默认与 BLK 同名": "Defaults to the BLK name",
+  "ZIP 内仅包含 BLK 及其引用的 DDS/TGA，解压到 UserSkins 即可。": "The ZIP contains only the BLK and its referenced DDS/TGA files. Extract it into UserSkins.",
+  "生成 ZIP": "Create ZIP",
+  "BLK 配置": "BLK configuration",
+  "需修复": "Fix",
+  "建议": "Advice",
+  "包名无效。": "Invalid package name.",
+  "正在检查文件，请稍候。": "Checking files…",
+  "请重新扫描涂装目录。": "Rescan the skin folder.",
+  "请选择涂装目录。": "Choose a skin folder.",
+  "目录中没有 BLK，请先生成。": "No BLK found. Generate one first.",
+  "目录中有多份 BLK，请选择本次打包的一份。": "Multiple BLKs found. Select one to package.",
+  "所选 BLK 已不存在，请重新选择。": "The selected BLK is missing. Choose it again.",
+  "BLK 文件名不安全。": "Unsafe BLK filename.",
+  "BLK 没有可打包的贴图映射。": "The BLK has no texture mappings to package.",
+  "BLK 不是 UTF-8/ASCII 文本。": "The BLK is not UTF-8/ASCII text.",
+  "重复的 from 字段。": "Duplicate from field.",
+  "重复的 to 字段。": "Duplicate to field.",
+  "无法解析的映射字段。": "Could not parse a mapping field.",
+  "无法解析的 BLK 内容。": "Could not parse the BLK content.",
+  "涂装文件发生变化，请重新扫描。": "Skin files changed. Rescan the folder.",
+  "源文件在打包期间发生变化，请重新扫描。": "Source files changed during packaging. Rescan the folder.",
+  "贴图或 BLK 在预览后发生变化，请重新扫描。": "A texture or BLK changed after preview. Rescan the folder.",
+  "涂装检查未通过，请重新扫描。": "Skin checks failed. Rescan the folder.",
+  "目标 ZIP 在确认后发生变化，请重新选择保存位置。": "The destination ZIP changed after confirmation. Choose where to save it again.",
+  "目标 ZIP 在打包期间发生变化，旧文件未被覆盖。": "The destination ZIP changed during packaging. The old file was kept.",
+  "ZIP 目标不是文件。": "The ZIP destination is not a file.",
+  "请选择 ZIP 输出文件。": "Choose a ZIP output file.",
+  "请选择已有的涂装目录。": "Choose an existing skin folder.",
+  "DDS 没有完整 Mipmap 链，远景可能闪烁。": "This DDS has no full mipmap chain and may shimmer at a distance.",
+  "ZIP 已生成": "ZIP Created",
+  "确认覆盖 ZIP": "Overwrite ZIP?",
 
   // ASCII, style lab and material maps.
   "让图片变成字符画": "Turn an Image into ASCII Art",
@@ -592,6 +642,44 @@ const EN = {
 
 function translateCore(value) {
   if (Object.hasOwn(EN, value)) return EN[value];
+  let pack = value.match(/^(需修复|建议) · (?:(.+?) · )?(.+)$/);
+  if (pack) return `${translateCore(pack[1])} · ${pack[2] ? `${pack[2]} · ` : ''}${translateCore(pack[3])}`;
+  pack = value.match(/^(\d+) 个文件 · ([\d,]+) 字节$/);
+  if (pack) return `${pack[1]} files · ${pack[2]} bytes`;
+  pack = value.match(/^另有 (\d+) 个文件未被 BLK 引用，不会收入 ZIP。$/);
+  if (pack) return `${pack[1]} unreferenced files will be excluded from the ZIP.`;
+  pack = value.match(/^贴图尺寸 (\d+)×(\d+) 不属于常见投稿尺寸。$/);
+  if (pack) return `Texture size ${pack[1]}×${pack[2]} is unusual for submission.`;
+  pack = value.match(/^目录中存在大小写冲突的文件名：(.+)。$/);
+  if (pack) return `Filename case collision in this folder: ${pack[1]}.`;
+  pack = value.match(/^(.+) 在检查后发生变化，请重新扫描。$/);
+  if (pack) return `${pack[1]} changed after the checks. Rescan the folder.`;
+  pack = value.match(/^(.+) 在打包时发生变化，请重新扫描。$/);
+  if (pack) return `${pack[1]} changed during packaging. Rescan the folder.`;
+  pack = value.match(/^贴图 (.+) 的文件名大小写与 BLK 不一致。$/);
+  if (pack) return `Texture ${pack[1]} differs in letter case from the BLK.`;
+  pack = value.match(/^找不到贴图 (.+)。$/);
+  if (pack) return `Texture ${pack[1]} was not found.`;
+  pack = value.match(/^贴图路径 (.+) 不安全或不在当前目录。$/);
+  if (pack) return `Texture path ${pack[1]} is unsafe or outside this folder.`;
+  pack = value.match(/^贴图 (.+) 不是支持的 DDS\/TGA 格式。$/);
+  if (pack) return `Texture ${pack[1]} is not a supported DDS/TGA file.`;
+  pack = value.match(/^(DDS|TGA) 无法解码：(.+)$/);
+  if (pack) return `${pack[1]} could not be decoded: ${pack[2]}`;
+  pack = value.match(/^DDS 图像数据不完整：(.+)$/);
+  if (pack) return `DDS image data is incomplete: ${pack[1]}`;
+  pack = value.match(/^原贴图名 (.+) 重复。$/);
+  if (pack) return `Original texture name ${pack[1]} is duplicated.`;
+  pack = value.match(/^(replace_tex|set_tex) 缺少 from 或 to。$/);
+  if (pack) return `${pack[1]} is missing from or to.`;
+  pack = value.match(/^(replace_tex|set_tex) 规则块没有结束。$/);
+  if (pack) return `${pack[1]} block is not closed.`;
+  pack = value.match(/^无法解析的 BLK 规则块 (.+)。$/);
+  if (pack) return `Unsupported BLK rule block ${pack[1]}.`;
+  if (value === '无法解析的映射字段。') return 'Could not parse a mapping field.';
+  if (value === '无法解析的 BLK 内容。') return 'Could not parse the BLK content.';
+  if (value === '重复的 from 字段。') return 'Duplicate from field.';
+  if (value === '重复的 to 字段。') return 'Duplicate to field.';
   let match = value.match(/^当前版本 (.+)$/);
   if (match) return `Version ${match[1]}`;
   match = value.match(/^(\d+) 个材质 · 预计 (\d+) 张贴图$/);

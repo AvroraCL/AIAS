@@ -1,8 +1,10 @@
 import { createAscii } from "./ascii.js";
 import { createBlk } from "./blk.js";
+import { createSkinPack } from "./skin-pack.js";
 import { resolveOutputDirectory } from "./output-policy.mjs";
 import { createLocalization } from "./localization.mjs";
 let blkUI;
+let skinPackUI;
 let localization;
 import { createStyleLab } from "./style-lab.js";
 import { STYLE_IDS as STYLE_LAB_IDS, STYLE_LABELS as STYLE_LAB_LABELS, STYLE_DEFAULTS as STYLE_LAB_DEFAULTS } from "./style-lab-state.mjs";
@@ -104,6 +106,7 @@ import {
   Thermometer,
   Rainbow,
   FileCode2,
+  PackageCheck,
   FolderOutput,
   Languages,
   Sun,
@@ -117,6 +120,7 @@ const defaults = {
   pbrInputPath: "",
   pbrOutputPath: "",
   blkDirectory: "",
+  packDirectory: "",
   pbrAlpha: "black",
   pbrFormat: "DXT5",
   splitOutputPath: "",
@@ -186,6 +190,7 @@ const modeMeta = {
   "height-map": { title: "生成高度图", description: "从亮度或指定通道生成 8/16 位高度贴图" },
   merge: { title: "PBR 多通道合成", description: "生成游戏可用的 _c 与 _n 通道贴图" },
   blk: { title: "BLK 生成", description: "为 DDS 贴图建立游戏原贴图映射并生成涂装配置" },
+  "skin-pack": { title: "涂装打包", description: "检查 BLK 与引用贴图，生成可分享的 ZIP" },
   split: { title: "PBR 多通道拆分", description: "提取 BaseColor、Alpha、材质与法线通道" },
   mipmap: { title: "Mipmap 生成", description: "将分层图片序列组装为单个 DDS" },
   "image-dds": { title: "图片转 DDS", description: "批量转换图片并统一 DDS 压缩格式" },
@@ -201,6 +206,11 @@ const modeMeta = {
 // updateRunButtons / updateStatus / getRunBlocker / bindDragDrop 四处。
 const modeRegistry = {
   blk: { run: "run-blk", log: "blk-log", output: "blk-directory", blocker: () => blkUI ? blkUI.blocker() : "请选择 DDS 文件夹。" },
+  "skin-pack": {
+    run: "run-skin-pack", log: "skin-pack-log", output: "pack-directory",
+    blocker: () => skinPackUI ? skinPackUI.blocker() : "请选择涂装目录。",
+    drop(paths) { if (paths.length) skinPackUI?.setDirectory(paths[0]).catch(error => addActivity("涂装打包", error.message || String(error), "error")); }
+  },
   merge: {
     run: "run-merge", log: "merge-log", output: "pbr-output",
     blocker() {
@@ -447,6 +457,7 @@ const iconSet = {
   Thermometer,
   Rainbow,
   FileCode2,
+  PackageCheck,
   Box,
   ListTree,
   SlidersHorizontal,
@@ -513,6 +524,7 @@ function basename(value) {
 }
 
 function getModeOutputPath(mode = state.activeMode) {
+  if (mode === "skin-pack") return skinPackUI?.outputPath() || "";
   const stored = $(modeRegistry[mode]?.output)?.value || "";
   if (mode === "merge") return effectiveOutputDir(stored, $("pbr-input")?.value, true);
   if (mode === "split") return effectiveOutputDir(stored, state.splitFiles[0]);
@@ -2730,6 +2742,7 @@ function collectSettings() {
     pbrInputPath: $("pbr-input")?.value || "",
     pbrOutputPath: $("pbr-output")?.value || "",
     blkDirectory: $("blk-directory")?.value || "",
+    packDirectory: $("pack-directory")?.value || "",
     pbrAlpha: $("pbr-alpha")?.value || "black",
     pbrFormat: $("pbr-format")?.value || "DXT5",
     splitOutputPath: $("split-output")?.value || "",
@@ -2766,6 +2779,7 @@ function applySettingsToForm() {
     "pbr-input": settings.pbrInputPath,
     "pbr-output": settings.pbrOutputPath,
     "blk-directory": settings.blkDirectory,
+    "pack-directory": settings.packDirectory || settings.blkDirectory,
     "pbr-alpha": settings.pbrAlpha,
     "pbr-format": settings.pbrFormat,
     "split-output": settings.splitOutputPath,
@@ -2872,7 +2886,7 @@ function updateStatus() {
     ? (outputPath && outputStrategy !== "ask" ? `输出到 ${outputPath}` : "配置完成，可开始运行")
     : blocker || "当前模式无需运行");
   const outputField = $(modeRegistry[mode]?.output);
-  if (outputField?.tagName === "INPUT" && !["blk", "model-bake", "normal-map", "height-map"].includes(mode)) {
+  if (outputField?.tagName === "INPUT" && !["blk", "skin-pack", "model-bake", "normal-map", "height-map"].includes(mode)) {
     outputField.placeholder = outputStrategy === "ask" ? "" : outputPath || "请配置全局输出目录";
     outputField.title = outputStrategy === "ask" ? outputField.getAttribute("aria-label") || "输出目录" : outputPath || "请配置全局输出目录";
   }
@@ -2888,7 +2902,7 @@ function updateStatus() {
       || (mode === "superres-general" && !isSuperresModelReady("general"));
   }
 
-  $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnable || (!isTauriRuntime && mode === "blk"));
+  $("open-current-output")?.classList.toggle("hidden", !outputPath || !runnable || (!isTauriRuntime && ["blk", "skin-pack"].includes(mode)));
 }
 
 function getRunBlocker(mode) {
@@ -3365,6 +3379,14 @@ function bindRunActions() {
     if (result) {
       addActivity("BLK 已生成", result, "success");
       appendLogLine($("blk-log"), `生成 ${result}`, "success");
+      $("blk-to-pack")?.classList.remove("hidden");
+    }
+  });
+  bindRunAction("run-skin-pack", async () => {
+    const result = await skinPackUI.generate();
+    if (result) {
+      addActivity("ZIP 已生成", result, "success");
+      appendLogLine($("skin-pack-log"), `生成 ${result}`, "success");
     }
   });
   bindRunAction("run-merge", async (button) => {
@@ -3715,6 +3737,21 @@ async function boot() {
     confirm: openPreviewConfirm,
     notify: (message, tone) => addActivity("BLK 生成", message, tone),
     changed: updateStatus
+  });
+  skinPackUI = createSkinPack({
+    desktop: isTauriRuntime, invoke, saveDialog,
+    syncSelect: syncCustomSelect,
+    pickDirectory: () => api.dialog.selectDirectory(),
+    saveDirectory: () => saveSettings(),
+    confirm: openPreviewConfirm,
+    notify: (message, tone) => addActivity("涂装打包", message, tone),
+    changed: updateStatus,
+    goBlk: () => applyMode("blk")
+  });
+  $("blk-to-pack")?.addEventListener("click", () => {
+    skinPackUI.setDirectory($("blk-directory").value)
+      .then(() => applyMode("skin-pack"))
+      .catch(error => addActivity("涂装打包", error.message || String(error), "error"));
   });
   if (isTauriRuntime && $("blk-directory")?.value) {
     $("blk-file-name").value = basename($("blk-directory").value);
