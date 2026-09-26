@@ -1287,7 +1287,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     const warningSummary = warningCount ? ` · ${warningCount} 条提示（见结果详情）` : '';
     const qualitySummary = uvQuality.noReliablePixels ? ` · ${uvQuality.noReliablePixels} 个材质无可靠几何像素` : '';
     const previewSummary = view !== 'model' ? ' · 当前视图保持不变，切回模型后显示新结果' : previewOutcome?.allFailed ? ` · 模型预览加载失败（${previewOutcome.error || '未知原因'}）` : ` · 已更新模型预览${previewOutcome?.failedTextures ? `（${previewOutcome.failedTextures} 个材质加载失败）` : ''}`;
-    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${previewSummary}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${qualitySummary}${warningSummary}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
+    status(`${data.cancelled ? '已取消' : data.failures?.length ? '部分完成' : '烘焙完成'} · ${results.length} 张贴图${data.deviceUsed ? ` · GPU ${data.deviceUsed}` : ' · 未使用 GPU（仅几何贴图或设备未启用）'}${previewSummary}${data.elapsedMs != null ? ` · ${(data.elapsedMs / 1000).toFixed(1)} 秒` : ''}${qualitySummary}${warningSummary}${data.failures?.length ? `。${data.failures.join('；')}` : ''}`);
   }
 
   $('run').onclick = async () => {

@@ -1,5 +1,5 @@
 use crate::{
-    gpu::{Gpu, Surface},
+    gpu::{self, Gpu, Surface},
     model::{inspect, Model},
 };
 use glam::{Vec2, Vec3};
@@ -101,6 +101,9 @@ pub struct ResultSet {
     /// 记录源 UV 在实际分辨率下的像素复用量，不能仅凭“出图成功”推断数据图无歧义。
     #[serde(default)]
     pub uv_coverage: Vec<UvCoverage>,
+    /// 本次任务实际使用的 GPU（DXR 初始化成功时记录），便于确认光追通道生效。
+    #[serde(default)]
+    pub device_used: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -826,7 +829,9 @@ pub fn run(
     let start = Instant::now();
     if ![512, 1024, 2048, 4096].contains(&options.resolution)
         || ![32, 64, 128, 256].contains(&options.samples)
-        || options.thickness_samples.is_some_and(|value| ![32, 64, 128, 256].contains(&value))
+        || options
+            .thickness_samples
+            .is_some_and(|value| ![32, 64, 128, 256].contains(&value))
         || ![8, 16].contains(&options.bits)
         || options.margin > 128
         || !options.distance.is_finite()
@@ -835,11 +840,20 @@ pub fn run(
             .ao_distance
             .is_some_and(|distance| !distance.is_finite() || distance <= 0.)
         || [options.ao_strength, options.thickness_strength]
-            .into_iter().flatten().any(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
+            .into_iter()
+            .flatten()
+            .any(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
         || [options.ao_contrast, options.thickness_contrast]
-            .into_iter().flatten().any(|value| !value.is_finite() || !(0.25..=4.0).contains(&value))
-        || [options.curvature_convex_strength, options.curvature_concave_strength]
-            .into_iter().flatten().any(|value| !value.is_finite() || !(0.0..=4.0).contains(&value))
+            .into_iter()
+            .flatten()
+            .any(|value| !value.is_finite() || !(0.25..=4.0).contains(&value))
+        || [
+            options.curvature_convex_strength,
+            options.curvature_concave_strength,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_finite() || !(0.0..=4.0).contains(&value))
     {
         return Err("烘焙参数不合法".into());
     }
@@ -1422,6 +1436,14 @@ pub fn run(
                         &objects,
                         options.self_only,
                     )?);
+                    if result.device_used.is_none() {
+                        result.device_used = gpu::capabilities()
+                            .ok()
+                            .and_then(|devices| {
+                                devices.into_iter().find(|d| d.index == options.device)
+                            })
+                            .map(|d| d.name);
+                    }
                 }
                 let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
                 let mut values = vec![1f32; covered.len()];
@@ -1543,9 +1565,13 @@ pub fn run(
                 let ao_strength = options.ao_strength.unwrap_or(1.0);
                 let ao_contrast = options.ao_contrast.unwrap_or(1.0);
                 if ao_strength != 1.0 || ao_contrast != 1.0 {
-                    values.iter_mut().for_each(|value| *value = adjust_ao(*value, ao_strength, ao_contrast));
+                    values
+                        .iter_mut()
+                        .for_each(|value| *value = adjust_ao(*value, ao_strength, ao_contrast));
                     if let Some(reliable) = &mut reliable_values {
-                        reliable.iter_mut().for_each(|value| *value = adjust_ao(*value, ao_strength, ao_contrast));
+                        reliable
+                            .iter_mut()
+                            .for_each(|value| *value = adjust_ao(*value, ao_strength, ao_contrast));
                     }
                 }
                 emit_bake_progress(
@@ -1609,6 +1635,14 @@ pub fn run(
                         &objects,
                         options.self_only,
                     )?);
+                    if result.device_used.is_none() {
+                        result.device_used = gpu::capabilities()
+                            .ok()
+                            .and_then(|devices| {
+                                devices.into_iter().find(|d| d.index == options.device)
+                            })
+                            .map(|d| d.name);
+                    }
                 }
                 let gpu = gpu.as_mut().ok_or("GPU 加速结构未初始化")?;
                 let diagonal = (Vec3::from_array(model.bounds[1])
@@ -1630,8 +1664,9 @@ pub fn run(
                     )?;
                     result.peak_device_bytes = result.peak_device_bytes.max(gpu.peak_device_bytes);
                     for (surface, sum) in chunk.iter().zip(sums) {
-                        values[surface.pixel as usize] =
-                            sum as f32 / (options.thickness_samples.unwrap_or(options.samples) as f32 * 65535.0);
+                        values[surface.pixel as usize] = sum as f32
+                            / (options.thickness_samples.unwrap_or(options.samples) as f32
+                                * 65535.0);
                     }
                     let done = (chunk_index * block + chunk.len()) as f64 / surfaces.len() as f64;
                     let percent = (done * 100.0) as i64;
@@ -1671,7 +1706,9 @@ pub fn run(
                 let thickness_strength = options.thickness_strength.unwrap_or(1.0);
                 let thickness_contrast = options.thickness_contrast.unwrap_or(1.0);
                 if thickness_strength != 1.0 || thickness_contrast != 1.0 {
-                    values.iter_mut().for_each(|value| *value = adjust_thickness(*value, thickness_strength, thickness_contrast));
+                    values.iter_mut().for_each(|value| {
+                        *value = adjust_thickness(*value, thickness_strength, thickness_contrast)
+                    });
                 }
                 let path = options.output.join(format!("{prefix}_thickness.png"));
                 save_scalar_map(options, &path, &nearest, &values, 0.0)?;
