@@ -14,3 +14,9 @@ test('dynamic status values translate without changing filenames or paths', () =
   assert.equal(translateText('sample.blk · 3 条规则', 'en'), 'sample.blk · 3 rules');
   assert.equal(translateText('F:\\测试区\\材质.dds', 'en'), 'F:\\测试区\\材质.dds');
 });
+
+test('bake effect settings and previous-result status translate', () => {
+  assert.equal(translateText('AO 强度（%）', 'en'), 'AO Strength (%)');
+  assert.equal(translateText('自定义 · 16 位 · 留边 8 px', 'en'), 'Custom · 16-bit · 8 px padding');
+  assert.match(translateText('上次烘焙设置 · 烘焙贴图与清单缓存在应用数据目录，导出时选择目标文件夹；贴图供智能材质制作使用', 'en'), /^Earlier bake settings · Maps/);
+});

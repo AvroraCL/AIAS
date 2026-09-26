@@ -14,6 +14,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   const resultTextures = new Map();
   let previewMaterialRevision = 0, resultTextureEpoch = 0, lastBakeProgress = 0, pendingResultPreview = '';
   let resultChannels = {};
+  let resultSettingsSignature = '', launchedSettingsSignature = '';
   let capabilitiesRequested = false;
   let saveTimer, renderFrame, unlisten, outputDirectory = '', resultHandle = '', reportRevision = 0, orthographicHeight = 2, renderWidth = 0, renderHeight = 0;
   let importRevision = 0, previewRequest = 0, uvDrawRevision = 0;
@@ -45,20 +46,30 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   const section = (name, html) => `<section class="bake-control-section"><h3>${name}</h3>${html}</section>`;
   const select = (id, title, entries) => `<label>${title}<select id="bake-${id}" aria-label="${title}">${entries.map(([value, text]) => `<option value="${value}">${text}</option>`).join('')}</select></label>`;
   const check = (id, title) => `<label class="toggle-label"><input id="bake-${id}" type="checkbox"><span class="toggle-track"><span class="toggle-thumb"></span></span>${title}</label>`;
+  const numeric = (id, title, min, max, step, value) => `<label>${title}<input id="bake-${id}" type="number" min="${min}"${max == null ? '' : ` max="${max}"`} step="${step}" value="${value}"></label>`;
+  const mapSettings = (key, title, html) => `<details class="bake-map-settings" data-bake-map="${key}" ${key === 'ao' ? 'open' : ''}><summary>${title}</summary><div class="bake-map-settings-body">${html}<button class="bake-reset-map secondary-action" data-bake-reset="${key}" type="button">恢复此组默认</button></div></details>`;
+  const mapSettingsHtml = [
+    mapSettings('ao', '环境遮蔽 AO', [
+      numeric('ao-distance', 'AO 半径', 0.000001, null, 'any', 1), '<small id="bake-ao-distance-note"></small>',
+      numeric('ao-strength', 'AO 强度（%）', 0, 200, 1, 100), numeric('ao-contrast', 'AO 对比度（倍）', 0.25, 4, 0.05, 1),
+      select('samples', 'AO 采样', [32, 64, 128, 256].map(value => [value, `${value} 次`])), check('denoise', 'AI 降噪'),
+      '<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>',
+    ].join('')),
+    mapSettings('thickness', '厚度 Thickness', [
+      numeric('distance', '厚度探测距离', 0.000001, null, 'any', 1), '<small id="bake-distance-note"></small>',
+      numeric('thickness-strength', '厚度强度（%）', 0, 200, 1, 100), numeric('thickness-contrast', '厚度对比度（倍）', 0.25, 4, 0.05, 1),
+      select('thicknessSamples', '厚度采样', [32, 64, 128, 256].map(value => [value, `${value} 次`])),
+    ].join('')),
+    mapSettings('curvature', '曲率 Curvature', [
+      numeric('curvatureConvexStrength', '凸面强度（倍）', 0, 4, 0.05, 1), numeric('curvatureConcaveStrength', '凹面强度（倍）', 0, 4, 0.05, 1),
+    ].join('')),
+  ].join('');
 
   root.innerHTML = `<section class="bake-workspace" aria-label="模型烘焙三维工作区">
     <div id="bake-stage" class="bake-viewport">
       <div id="bake-three"></div>
       <canvas id="bake-uv-canvas" hidden aria-label="UV 检查，红色标记问题面"></canvas>
       <div id="bake-results" hidden></div>
-      <div id="bake-empty">
-        <span class="bake-empty-glyph"><i data-lucide="box" aria-hidden="true"></i></span>
-        <span class="bake-eyebrow">MODEL BAKING</span><h2>从一个模型开始</h2>
-        <p>生成智能材质识别所需的 Mesh Maps，并直接在模型上检查结果。</p>
-        <button id="bake-empty-import" class="primary-compact" type="button">选择模型</button>
-        <small id="bake-entry-note">支持 OBJ、GLB、glTF · 静态三角网格</small>
-        <div class="bake-entry-steps"><span>01　导入模型</span><span>02　检查 UV</span><span>03　烘焙贴图</span></div>
-      </div>
 
       <header class="bake-overlay bake-viewport-header">
         <div class="bake-header-actions">
@@ -105,12 +116,13 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
         <header class="bake-panel-heading"><h2>烘焙参数</h2><button data-bake-panel-toggle="settings" class="bake-floating-button bake-panel-close" type="button" aria-label="收起烘焙参数面板">×</button></header>
         <div class="bake-panel-scroll bake-controls">
           ${section('01 / 智能材质 Mesh Maps', `${check('ao', '环境遮蔽 AO')}${check('curvature', '曲率 Curvature')}${check('worldNormal', '世界空间法线')}${check('position', '位置 Position')}${check('thickness', '厚度 Thickness')}${check('normal', '切线空间法线（同模平面）')}${check('id', '材质 ID')}${check('uv', 'UV 线框（检查用）')}<small id="bake-output-summary">按所选材质分别导出</small>`)}
-          ${section('02 / 烘焙质量', `<div class="bake-presets" aria-label="质量预设"><button data-bake-preset="draft" type="button">快速</button><button data-bake-preset="standard" type="button">标准</button><button data-bake-preset="high" type="button">精细</button></div>${select('resolution', '贴图尺寸', [512, 1024, 2048, 4096].map(value => [value, `${value} × ${value}`]))}<small id="bake-quality-note"></small>`)}
-          ${section('03 / 导出', `<button id="bake-export" class="secondary-action output-action" data-bake-export type="button"><i data-lucide="download" aria-hidden="true"></i>导出全部贴图</button><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开缓存目录</button><small>结果先缓存在应用数据目录，导出时选择目标文件夹</small>`)}
+          ${section('02 / 烘焙质量', `<div class="bake-presets" aria-label="质量预设"><button data-bake-preset="draft" type="button">快速</button><button data-bake-preset="standard" type="button">标准</button><button data-bake-preset="high" type="button">精细</button></div>${select('resolution', '贴图尺寸', [512, 1024, 2048, 4096].map(value => [value, `${value} × ${value}`]))}${select('bits', '输出位深', [[8, '8 位'], [16, '16 位（AO / 厚度 / 曲率 / 位置 / 世界法线）']])}${numeric('margin', '边缘扩展（px）', 0, 128, 1, 16)}<small id="bake-quality-note"></small>`)}
+          ${section('03 / 贴图效果', mapSettingsHtml)}
+          ${section('04 / 导出', `<button id="bake-export" class="secondary-action output-action" data-bake-export type="button"><i data-lucide="download" aria-hidden="true"></i>导出全部贴图</button><button id="bake-open-output" class="secondary-action output-action" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>打开缓存目录</button><small id="bake-result-age"></small><small>结果先缓存在应用数据目录，导出时选择目标文件夹</small>`)}
           <details class="bake-advanced"><summary>高级设置</summary>
           ${section('UV 工作流', `${select('uvMode', '导入时 UV 处理', [['preserveValid', '智能保留'], ['regenerateAll', '全部重新展开'], ['strictSource', '严格使用源 UV']])}<small>智能保留会使用原生 UV，包括 0–1 外的平铺坐标；仅在 UV 缺失或坐标无效时生成工作通道。镜像与分层重叠仍按源 UV 烘焙。</small>`)}
           ${section('计算设备', `${select('device', 'GPU', [[0, '检测设备中…']])}<small id="bake-device-note"></small>`)}
-          ${section('光线追踪与边缘', `${select('samples', 'AO / 厚度采样', [32, 64, 128, 256].map(value => [value, `${value} 次`]))}${select('bits', '输出位深', [[8, '8 位'], [16, '16 位（AO/厚度/曲率/位置/世界法线）']])}<label>边缘扩展（px）<input id="bake-margin" type="number" min="0" max="128" value="16"></label><label>AO 半径<input id="bake-ao-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-ao-distance-note">默认包围盒对角线的 1%，控制局部遮蔽</small><label>厚度探测距离<input id="bake-distance" type="number" min="0.000001" step="any" value="1"></label><small id="bake-distance-note">默认包围盒对角线的 10%，控制背面探测</small>${check('denoise', 'AI 降噪（仅用于 AO）')}<button id="bake-oidn-download" class="secondary-action" type="button" hidden>下载降噪组件</button><small id="bake-oidn-note"></small>${select('selfOnly', '遮挡范围', [['false', '全部对象互相影响'], ['true', '仅同一对象']])}<small>AO 与厚度使用 GPU；其余 Mesh Map 由模型几何直接生成。</small>`)}
+          ${section('光线追踪', `${select('selfOnly', '遮挡范围', [['false', '全部对象互相影响'], ['true', '仅同一对象']])}<small>AO 与厚度使用 GPU；其余 Mesh Map 由模型几何直接生成。</small>`)}
           </details>
         </div>
       </aside>
@@ -127,9 +139,23 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (element.type === 'checkbox') element.checked = Boolean(stored[key]);
     else element.value = String(stored[key]);
   }
+  // 尚无模型时使用包围盒对角线百分比，导入后再换算为模型单位。
+  $('ao-distance').value = String(stored.aoDistanceRatio * 100);
+  $('distance').value = String(stored.distanceRatio * 100);
+  $('ao-distance-note').textContent = `导入前按模型对角线百分比设置：${$('ao-distance').value}%`;
+  $('distance-note').textContent = `导入前按模型对角线百分比设置：${$('distance').value}%`;
+  for (const key of ['aoStrength', 'thicknessStrength']) $(`${key === 'aoStrength' ? 'ao-strength' : 'thickness-strength'}`).value = String(Math.round(stored[key] * 100));
+  $('ao-contrast').value = String(stored.aoContrast);
+  $('thickness-contrast').value = String(stored.thicknessContrast);
 
   let devices = [];
   const presets = { draft: [512, 32], standard: [2048, 128], high: [4096, 256] };
+  const mapDefaults = {
+    ao: ['aoStrength', 'aoContrast', 'samples', 'aoDistanceRatio', 'denoise'],
+    thickness: ['thicknessStrength', 'thicknessContrast', 'thicknessSamples', 'distanceRatio'],
+    curvature: ['curvatureConvexStrength', 'curvatureConcaveStrength'],
+  };
+  const settingsSignature = () => JSON.stringify(Object.entries(stored).filter(([key]) => key !== 'workspace' && key !== 'deviceLuid'));
   const meshMapKeys = ['ao', 'curvature', 'worldNormal', 'position', 'thickness', 'normal', 'id', 'uv'];
   const status = text => { $('status').textContent = text; };
   const progressMapNames = { ao: '环境遮蔽', ao_unique: '可靠区域 AO', curvature: '曲率', curvature_unique: '可靠区域曲率', world_normal: '世界空间法线', position: '位置', thickness: '厚度', thickness_unique: '可靠区域厚度', normal: '切线空间法线', id: '材质 ID', uv: 'UV 线框' };
@@ -199,6 +225,10 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     if (stored.ao && (!Number.isFinite(+$('ao-distance').value) || +$('ao-distance').value <= 0)) return 'AO 半径必须大于 0。';
     if (stored.thickness && (!Number.isFinite(+$('distance').value) || +$('distance').value <= 0)) return '厚度探测距离必须大于 0。';
     if (!Number.isInteger(+$('margin').value) || +$('margin').value < 0 || +$('margin').value > 128) return '边缘扩展应为 0–128 的整数。';
+    for (const [id, min, max] of [['ao-strength', 0, 200], ['thickness-strength', 0, 200], ['ao-contrast', 0.25, 4], ['thickness-contrast', 0.25, 4], ['curvatureConvexStrength', 0, 4], ['curvatureConcaveStrength', 0, 4]]) {
+      const field = $(id);
+      if (field.value === '' || !Number.isFinite(+field.value) || +field.value < min || +field.value > max) return `${field.closest('label').textContent.trim()}必须在 ${min}–${max} 之间。`;
+    }
     if ((stored.ao || stored.thickness) && !devices.find(device => device.index === +stored.device)?.supported) return '当前设备不支持 DXR 1.1 光线追踪。';
     if (stored.ao && stored.denoise && desktop && !oidnReady) {
       // 首次状态查询未返回前不判定"未下载"：内置组件的查询是毫秒级，
@@ -210,7 +240,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
 
   function updatePanelState(panel) {
     const narrow = root.clientWidth < 900;
-    const open = Boolean(model) && view !== 'results' && stored.workspace[workspaceKey(panel)] && (!narrow || narrowPanel === panel);
+    const open = (panel === 'settings' || Boolean(model)) && view !== 'results' && stored.workspace[workspaceKey(panel)] && (!narrow || narrowPanel === panel);
     const element = $(`${panel}-panel`);
     if (element) element.hidden = !open;
     root.querySelector('.bake-workspace').classList.toggle(`${panel}-open`, open);
@@ -910,7 +940,6 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       empty.textContent = '尚无烘焙结果。完成任务后将在这里预览贴图。';
       $('results').append(empty);
     }
-    $('empty').hidden = Boolean(model) || next !== 'model';
     $('issues').hidden = next !== 'uv';
     root.querySelector('.bake-workspace').dataset.view = next;
     if (next === 'uv' && model) { stored.workspace.outlinerOpen = true; narrowPanel = 'outliner'; persist(); }
@@ -939,11 +968,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       element.disabled = locked && !staysInteractive;
     });
     $('import').disabled = locked || !desktop;
-    $('empty-import').disabled = locked || !desktop;
-    $('empty-import').textContent = loading ? '正在导入…' : '选择模型';
-    $('entry-note').textContent = desktop ? '支持 OBJ、GLB、glTF · 静态三角网格' : '浏览器可查看界面；导入与烘焙请在桌面软件中使用。';
     $('import').textContent = model ? '更换模型' : '导入模型';
-    root.querySelectorAll('[data-bake-panel-toggle], [data-bake-display]').forEach(el => el.disabled = !model);
+    root.querySelectorAll('[data-bake-panel-toggle="outliner"], [data-bake-display]').forEach(el => el.disabled = !model);
     root.querySelectorAll('[data-bake-view]').forEach(el => el.disabled = el.dataset.bakeView === 'uv' ? !model : el.dataset.bakeView === 'results' ? !results.length : false);
     $('check-uv').disabled = !model || locked || inspecting;
     $('cancel').disabled = cancelling;
@@ -951,15 +977,23 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     $('live-progress').hidden = !running;
     $('viewport-note').hidden = !model || view !== 'model' || running || loading;
     const count = materials.size * meshMapKeys.filter(key => stored[key]).length;
-    $('output-summary').textContent = `${materials.size} 个材质 · 预计 ${count} 张基础贴图；UV 复用时另附蒙版与可靠 AO/厚度图`;
+    $('output-summary').textContent = model
+      ? `${materials.size} 个材质 · 预计 ${count} 张基础贴图；UV 复用时另附蒙版与可靠 AO/厚度图`
+      : '导入模型后按材质生成所选贴图';
     const rayMaps = stored.ao || stored.thickness;
-    $('quality-note').textContent = rayMaps ? `${stored.samples} 次光线采样 · ${stored.bits} 位灰度` : '几何 Mesh Map 不使用光线采样';
-    for (const key of ['samples', 'bits', 'device', 'selfOnly']) $(key).disabled = locked || !rayMaps;
-    $('ao-distance').disabled = locked || !stored.ao;
-    $('distance').disabled = locked || !stored.thickness;
+    const preset = Object.entries(presets).find(([, [resolution, samples]]) => stored.resolution === resolution && stored.samples === samples && stored.thicknessSamples === samples)?.[0];
+    $('quality-note').textContent = `${preset ? { draft: '快速', standard: '标准', high: '精细' }[preset] : '自定义'} · ${stored.bits} 位 · 留边 ${stored.margin} px`;
+    $('bits').disabled = locked || !['ao', 'thickness', 'curvature', 'position', 'worldNormal'].some(key => stored[key]);
+    $('device').disabled = locked || !rayMaps;
+    $('selfOnly').disabled = locked || !rayMaps;
+    for (const [map, controls] of Object.entries({ ao: ['samples', 'ao-distance', 'ao-strength', 'ao-contrast', 'denoise'], thickness: ['thicknessSamples', 'distance', 'thickness-strength', 'thickness-contrast'], curvature: ['curvatureConvexStrength', 'curvatureConcaveStrength'] })) {
+      for (const id of controls) $(id).disabled = locked || !stored[map];
+      root.querySelector(`[data-bake-reset="${map}"]`).disabled = locked || !stored[map];
+      root.querySelector(`[data-bake-map="${map}"]`).classList.toggle('is-disabled', !stored[map]);
+    }
     root.querySelectorAll('[data-bake-preset]').forEach(button => {
       const [resolution, samples] = presets[button.dataset.bakePreset];
-      button.setAttribute('aria-pressed', String(stored.resolution === resolution && stored.samples === samples));
+      button.setAttribute('aria-pressed', String(stored.resolution === resolution && stored.samples === samples && stored.thicknessSamples === samples));
     });
     const device = devices.find(item => item.index === +stored.device);
     $('ao').disabled = locked || !device?.supported;
@@ -985,7 +1019,8 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     // 短窗口内锁定，避免用户误以为旧结果已消失。
     $('map-preview').disabled = exporting || !results.length;
     const resultHint = root.querySelector('.bake-results-toolbar small');
-    if (resultHint?.dataset.baseText) resultHint.textContent = running ? `上次结果 · ${resultHint.dataset.baseText}` : resultHint.dataset.baseText;
+    if (resultHint?.dataset.baseText) resultHint.textContent = running ? `上次结果 · ${resultHint.dataset.baseText}` : resultSettingsSignature && resultSettingsSignature !== settingsSignature() ? `上次烘焙设置 · ${resultHint.dataset.baseText}` : resultHint.dataset.baseText;
+    $('result-age').textContent = results.length && (running || (resultSettingsSignature && resultSettingsSignature !== settingsSignature())) ? '当前结果使用上次烘焙设置；重新烘焙后更新。' : '';
     $('cancel').hidden = !running || !active;
     root.querySelectorAll('select').forEach(syncSelect);
   }
@@ -1060,6 +1095,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
       channels = nextChannels;
       results = [];
       resultHandle = '';
+      resultSettingsSignature = '';
       pendingResultPreview = '';
       $('results').replaceChildren();
       installMeshes(prepared); prepared = null;
@@ -1135,6 +1171,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     resetPreviewMaterials();
     results = data.files || [];
     resultHandle = data.resultHandle || '';
+    resultSettingsSignature = launchedSettingsSignature;
     // 以 worker 返回的实际通道为准。任务运行期间 UI 仍可切换视图，后续版本也
     // 可能允许调整通道；用当前 UI 状态会让不匹配的贴图被错误套到模型上。
     resultChannels = { ...(data.selectedChannels || channels) };
@@ -1255,6 +1292,7 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
 
   $('run').onclick = async () => {
     if (blocker()) return;
+    launchedSettingsSignature = settingsSignature();
     job = crypto.randomUUID();
     running = true; cancelling = false; lastBakeProgress = 0; $('progress').value = 0;
     refresh();
@@ -1338,26 +1376,65 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
   };
   $('distance').onchange = () => {
     const value = +$('distance').value;
-    if (geometry && value > 0 && Number.isFinite(value)) {
-      const diagonal = selectedBounds();
+    if (value > 0 && Number.isFinite(value)) {
+      const diagonal = geometry ? selectedBounds() : 100;
       if (!diagonal) return;
       stored.distanceRatio = value / diagonal;
-      $('distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
+      if (!geometry) $('distance-note').textContent = `导入前按模型对角线百分比设置：${value}%`;
+      else $('distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.distanceRatio * 100).toFixed(1)}%`;
       persist();
     }
     refresh();
   };
   $('ao-distance').onchange = () => {
     const value = +$('ao-distance').value;
-    if (geometry && value > 0 && Number.isFinite(value)) {
-      const diagonal = selectedBounds();
+    if (value > 0 && Number.isFinite(value)) {
+      const diagonal = geometry ? selectedBounds() : 100;
       if (!diagonal) return;
       stored.aoDistanceRatio = value / diagonal;
-      $('ao-distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.aoDistanceRatio * 100).toFixed(1)}%`;
+      if (!geometry) $('ao-distance-note').textContent = `导入前按模型对角线百分比设置：${value}%`;
+      else $('ao-distance-note').textContent = `单位：${model.units === '模型单位' ? '相对单位' : model.units}；所选包围盒对角线的 ${(stored.aoDistanceRatio * 100).toFixed(1)}%`;
       persist();
     }
     refresh();
   };
+  const effectFields = [
+    ['ao-strength', 'aoStrength', 100, 0, 200],
+    ['ao-contrast', 'aoContrast', 1, 0.25, 4],
+    ['thickness-strength', 'thicknessStrength', 100, 0, 200],
+    ['thickness-contrast', 'thicknessContrast', 1, 0.25, 4],
+    ['curvatureConvexStrength', 'curvatureConvexStrength', 1, 0, 4],
+    ['curvatureConcaveStrength', 'curvatureConcaveStrength', 1, 0, 4],
+  ];
+  for (const [id, key, scale, min, max] of effectFields) {
+    $(id).addEventListener('change', () => {
+      const value = +$(id).value;
+      if ($(id).value === '' || !Number.isFinite(value) || value < min || value > max) {
+        $(id).value = String(stored[key] * scale);
+        notify(`${$(id).closest('label').textContent.trim()}应在 ${min}–${max} 之间。`);
+        return;
+      }
+      stored[key] = value / scale;
+      persist(); refresh();
+    });
+  }
+  root.querySelectorAll('[data-bake-reset]').forEach(button => {
+    button.onclick = () => {
+      const key = button.dataset.bakeReset;
+      for (const field of mapDefaults[key]) stored[field] = defaults[field];
+      for (const [id, field, scale] of effectFields) if (mapDefaults[key].includes(field)) $(id).value = String(stored[field] * scale);
+      if (key === 'ao') {
+        $('samples').value = String(stored.samples); $('denoise').checked = stored.denoise;
+        $('ao-distance').value = String((geometry ? selectedBounds() : 100) * stored.aoDistanceRatio);
+        $('ao-distance').dispatchEvent(new Event('change'));
+      } else if (key === 'thickness') {
+        $('thicknessSamples').value = String(stored.thicknessSamples);
+        $('distance').value = String((geometry ? selectedBounds() : 100) * stored.distanceRatio);
+        $('distance').dispatchEvent(new Event('change'));
+      }
+      persist(); refresh();
+    };
+  });
   {
     // UV 视图交互：滚轮以光标为锚缩放，拖拽平移，缩到 1 即复位
     const canvas = $('uv-canvas');
@@ -1427,12 +1504,12 @@ export function createModelBake({ root, desktop, invoke, open, openPath, convert
     }).then(unsubscribe => { if (disposed) unsubscribe(); else unlisten = unsubscribe; });
   }
 
-  $('empty-import').onclick = () => $('import').click();
   $('check-uv').onclick = () => { setView('uv'); scheduleRefreshReports(); };
   root.querySelectorAll('[data-bake-preset]').forEach(button => {
     button.onclick = () => {
       [stored.resolution, stored.samples] = presets[button.dataset.bakePreset];
-      $('resolution').value = String(stored.resolution); $('samples').value = String(stored.samples);
+      stored.thicknessSamples = stored.samples;
+      $('resolution').value = String(stored.resolution); $('samples').value = String(stored.samples); $('thicknessSamples').value = String(stored.thicknessSamples);
       persist(); refresh();
     };
   });

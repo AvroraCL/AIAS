@@ -9,6 +9,56 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 #[test]
+fn map_effects_preserve_neutral_values_and_default_identity() {
+    for value in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        assert_eq!(bake::adjust_ao(value, 1.0, 1.0), value);
+        assert_eq!(bake::adjust_thickness(value, 1.0, 1.0), value);
+        assert_eq!(bake::adjust_curvature(value, 1.0, 1.0), value);
+    }
+    assert_eq!(bake::adjust_ao(1.0, 2.0, 4.0), 1.0);
+    assert_eq!(bake::adjust_ao(0.2, 0.0, 2.0), 1.0);
+    assert_eq!(bake::adjust_thickness(0.0, 2.0, 4.0), 0.0);
+    assert_eq!(bake::adjust_curvature(0.5, 4.0, 0.0), 0.5);
+    assert!(bake::adjust_curvature(0.75, 2.0, 1.0) > bake::adjust_curvature(0.75, 1.0, 1.0));
+    assert_eq!(bake::adjust_curvature(0.25, 1.0, 0.0), 0.5);
+}
+
+#[test]
+fn old_bake_request_keeps_legacy_effect_defaults() {
+    let options: bake::Options = serde_json::from_value(serde_json::json!({
+        "samples": 64, "resolution": 512, "bits": 8, "distance": 1.0,
+        "device": 0, "objects": [], "materials": [], "channels": {}, "margin": 0,
+        "selfOnly": false, "ao": false, "uv": false, "id": false,
+        "jobId": "old", "modelPath": "model.json", "output": "out", "cancelPath": "cancel"
+    })).unwrap();
+    assert_eq!(options.thickness_samples.unwrap_or(options.samples), 64);
+    assert_eq!(options.ao_strength.unwrap_or(1.0), 1.0);
+    assert_eq!(options.curvature_convex_strength.unwrap_or(1.0), 1.0);
+}
+
+#[test]
+fn bake_rejects_invalid_map_effect_options_before_opening_model() {
+    let mut options = bake::Options {
+        resolution: 512,
+        samples: 32,
+        bits: 8,
+        distance: 1.0,
+        ..Default::default()
+    };
+    for (strength, contrast, thickness_samples) in [
+        (Some(f32::NAN), None, None),
+        (Some(2.1), None, None),
+        (None, Some(0.1), None),
+        (None, None, Some(17)),
+    ] {
+        options.ao_strength = strength;
+        options.ao_contrast = contrast;
+        options.thickness_samples = thickness_samples;
+        assert_eq!(bake::run(&options, |_| {}).err().unwrap(), "烘焙参数不合法");
+    }
+}
+
+#[test]
 fn output_estimate_counts_uv_and_reliable_precision_maps_at_16_bit() {
     let mut options = bake::Options {
         bits: 8,

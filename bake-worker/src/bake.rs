@@ -23,6 +23,20 @@ pub struct Options {
     pub channels: BTreeMap<usize, u32>,
     pub resolution: u32,
     pub samples: u32,
+    #[serde(default)]
+    pub thickness_samples: Option<u32>,
+    #[serde(default)]
+    pub ao_strength: Option<f32>,
+    #[serde(default)]
+    pub ao_contrast: Option<f32>,
+    #[serde(default)]
+    pub thickness_strength: Option<f32>,
+    #[serde(default)]
+    pub thickness_contrast: Option<f32>,
+    #[serde(default)]
+    pub curvature_convex_strength: Option<f32>,
+    #[serde(default)]
+    pub curvature_concave_strength: Option<f32>,
     /// AI 降噪（OIDN）：开启时烘焙完成后对 AO 灰度执行降噪。
     #[serde(default)]
     pub denoise: bool,
@@ -49,6 +63,19 @@ pub struct Options {
     #[serde(default)]
     pub thickness: bool,
     pub bits: u8,
+}
+
+pub(crate) fn adjust_ao(value: f32, strength: f32, contrast: f32) -> f32 {
+    (1.0 - (1.0 - value.clamp(0.0, 1.0).powf(contrast)) * strength).clamp(0.0, 1.0)
+}
+
+pub(crate) fn adjust_thickness(value: f32, strength: f32, contrast: f32) -> f32 {
+    (value.clamp(0.0, 1.0).powf(contrast) * strength).clamp(0.0, 1.0)
+}
+
+pub(crate) fn adjust_curvature(value: f32, convex: f32, concave: f32) -> f32 {
+    let delta = value - 0.5;
+    (0.5 + delta * if delta >= 0.0 { convex } else { concave }).clamp(0.0, 1.0)
 }
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -367,6 +394,7 @@ pub(crate) fn curvature_map_unique(
     curvature_map_with_mask(surfaces, nearest, size, Some(unique_mask), None)
 }
 
+#[cfg(test)]
 pub(crate) fn curvature_map_with_mask(
     surfaces: &[Surface],
     nearest: &[u32],
@@ -374,10 +402,22 @@ pub(crate) fn curvature_map_with_mask(
     unique_mask: Option<&[u8]>,
     components: Option<&[usize]>,
 ) -> Vec<u8> {
+    curvature_map_with_settings(surfaces, nearest, size, unique_mask, components, 1.0, 1.0)
+}
+
+pub(crate) fn curvature_map_with_settings(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    size: usize,
+    unique_mask: Option<&[u8]>,
+    components: Option<&[usize]>,
+    convex: f32,
+    concave: f32,
+) -> Vec<u8> {
     let values = curvature_values(surfaces, nearest, size, unique_mask, components);
     let mut pixels = vec![0u8; nearest.len() * 4];
     for (rgba, value) in pixels.chunks_exact_mut(4).zip(&values) {
-        let v = unit_byte(*value);
+        let v = unit_byte(adjust_curvature(*value, convex, concave));
         rgba[..4].copy_from_slice(&[v, v, v, 255]);
     }
     pixels
@@ -394,6 +434,7 @@ pub(crate) fn curvature_map_16_unique(
     curvature_map_16_with_mask(surfaces, nearest, size, Some(unique_mask), None)
 }
 
+#[cfg(test)]
 pub(crate) fn curvature_map_16_with_mask(
     surfaces: &[Surface],
     nearest: &[u32],
@@ -401,10 +442,22 @@ pub(crate) fn curvature_map_16_with_mask(
     unique_mask: Option<&[u8]>,
     components: Option<&[usize]>,
 ) -> Vec<u16> {
+    curvature_map_16_with_settings(surfaces, nearest, size, unique_mask, components, 1.0, 1.0)
+}
+
+pub(crate) fn curvature_map_16_with_settings(
+    surfaces: &[Surface],
+    nearest: &[u32],
+    size: usize,
+    unique_mask: Option<&[u8]>,
+    components: Option<&[usize]>,
+    convex: f32,
+    concave: f32,
+) -> Vec<u16> {
     let values = curvature_values(surfaces, nearest, size, unique_mask, components);
     let mut pixels = vec![0u16; nearest.len() * 4];
     for (rgba, value) in pixels.chunks_exact_mut(4).zip(&values) {
-        let v = (value.clamp(0.0, 1.0) * 65535.0).round() as u16;
+        let v = (adjust_curvature(*value, convex, concave) * 65535.0).round() as u16;
         rgba[..4].copy_from_slice(&[v, v, v, 65535]);
     }
     pixels
@@ -773,6 +826,7 @@ pub fn run(
     let start = Instant::now();
     if ![512, 1024, 2048, 4096].contains(&options.resolution)
         || ![32, 64, 128, 256].contains(&options.samples)
+        || options.thickness_samples.is_some_and(|value| ![32, 64, 128, 256].contains(&value))
         || ![8, 16].contains(&options.bits)
         || options.margin > 128
         || !options.distance.is_finite()
@@ -780,6 +834,12 @@ pub fn run(
         || options
             .ao_distance
             .is_some_and(|distance| !distance.is_finite() || distance <= 0.)
+        || [options.ao_strength, options.thickness_strength]
+            .into_iter().flatten().any(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
+        || [options.ao_contrast, options.thickness_contrast]
+            .into_iter().flatten().any(|value| !value.is_finite() || !(0.25..=4.0).contains(&value))
+        || [options.curvature_convex_strength, options.curvature_concave_strength]
+            .into_iter().flatten().any(|value| !value.is_finite() || !(0.0..=4.0).contains(&value))
     {
         return Err("烘焙参数不合法".into());
     }
@@ -1264,20 +1324,24 @@ pub fn run(
                     None,
                 );
                 let pixels = if options.bits == 16 {
-                    SurfacePixels::Bits16(curvature_map_16_with_mask(
+                    SurfacePixels::Bits16(curvature_map_16_with_settings(
                         &surfaces,
                         &nearest,
                         options.resolution as usize,
                         None,
                         components,
+                        options.curvature_convex_strength.unwrap_or(1.0),
+                        options.curvature_concave_strength.unwrap_or(1.0),
                     ))
                 } else {
-                    SurfacePixels::Bits8(curvature_map_with_mask(
+                    SurfacePixels::Bits8(curvature_map_with_settings(
                         &surfaces,
                         &nearest,
                         options.resolution as usize,
                         None,
                         components,
+                        options.curvature_convex_strength.unwrap_or(1.0),
+                        options.curvature_concave_strength.unwrap_or(1.0),
                     ))
                 };
                 write_surface_map(options, &mut result, material, &prefix, "curvature", pixels)?;
@@ -1299,20 +1363,24 @@ pub fn run(
                         None,
                     );
                     let pixels = if options.bits == 16 {
-                        SurfacePixels::Bits16(curvature_map_16_with_mask(
+                        SurfacePixels::Bits16(curvature_map_16_with_settings(
                             &surfaces,
                             &nearest,
                             options.resolution as usize,
                             Some(mask),
                             components,
+                            options.curvature_convex_strength.unwrap_or(1.0),
+                            options.curvature_concave_strength.unwrap_or(1.0),
                         ))
                     } else {
-                        SurfacePixels::Bits8(curvature_map_with_mask(
+                        SurfacePixels::Bits8(curvature_map_with_settings(
                             &surfaces,
                             &nearest,
                             options.resolution as usize,
                             Some(mask),
                             components,
+                            options.curvature_convex_strength.unwrap_or(1.0),
+                            options.curvature_concave_strength.unwrap_or(1.0),
                         ))
                     };
                     write_surface_map(
@@ -1472,6 +1540,14 @@ pub fn run(
                         mask_unique_scalar_in_place(reliable, mask, 1.0);
                     }
                 }
+                let ao_strength = options.ao_strength.unwrap_or(1.0);
+                let ao_contrast = options.ao_contrast.unwrap_or(1.0);
+                if ao_strength != 1.0 || ao_contrast != 1.0 {
+                    values.iter_mut().for_each(|value| *value = adjust_ao(*value, ao_strength, ao_contrast));
+                    if let Some(reliable) = &mut reliable_values {
+                        reliable.iter_mut().for_each(|value| *value = adjust_ao(*value, ao_strength, ao_contrast));
+                    }
+                }
                 emit_bake_progress(
                     &mut progress,
                     format!("{material_label} · 保存 AO"),
@@ -1546,7 +1622,7 @@ pub fn run(
                 for (chunk_index, chunk) in surfaces.chunks(block).enumerate() {
                     let sums = gpu.trace_thickness(
                         chunk,
-                        options.samples,
+                        options.thickness_samples.unwrap_or(options.samples),
                         options.distance,
                         bias,
                         options.self_only,
@@ -1555,7 +1631,7 @@ pub fn run(
                     result.peak_device_bytes = result.peak_device_bytes.max(gpu.peak_device_bytes);
                     for (surface, sum) in chunk.iter().zip(sums) {
                         values[surface.pixel as usize] =
-                            sum as f32 / (options.samples as f32 * 65535.0);
+                            sum as f32 / (options.thickness_samples.unwrap_or(options.samples) as f32 * 65535.0);
                     }
                     let done = (chunk_index * block + chunk.len()) as f64 / surfaces.len() as f64;
                     let percent = (done * 100.0) as i64;
@@ -1592,6 +1668,11 @@ pub fn run(
                     0.94,
                     Some(block),
                 );
+                let thickness_strength = options.thickness_strength.unwrap_or(1.0);
+                let thickness_contrast = options.thickness_contrast.unwrap_or(1.0);
+                if thickness_strength != 1.0 || thickness_contrast != 1.0 {
+                    values.iter_mut().for_each(|value| *value = adjust_thickness(*value, thickness_strength, thickness_contrast));
+                }
                 let path = options.output.join(format!("{prefix}_thickness.png"));
                 save_scalar_map(options, &path, &nearest, &values, 0.0)?;
                 result.files.push(Output {
@@ -1727,7 +1808,14 @@ pub fn run(
         "bakeSettings": {
             "resolution": options.resolution,
             "samples": options.samples,
+            "thicknessSamples": options.thickness_samples.unwrap_or(options.samples),
             "bits": options.bits,
+            "aoStrength": options.ao_strength.unwrap_or(1.0),
+            "aoContrast": options.ao_contrast.unwrap_or(1.0),
+            "thicknessStrength": options.thickness_strength.unwrap_or(1.0),
+            "thicknessContrast": options.thickness_contrast.unwrap_or(1.0),
+            "curvatureConvexStrength": options.curvature_convex_strength.unwrap_or(1.0),
+            "curvatureConcaveStrength": options.curvature_concave_strength.unwrap_or(1.0),
             "distance": options.distance,
             "aoDistance": ao_distance,
             "margin": options.margin,
@@ -1738,15 +1826,15 @@ pub fn run(
         "meshMapConventions": {
             "uvAddressing": "repeat; each integer UV tile maps to the same 0-1 texture",
             "padding": "margin px of exact euclidean nearest-covered dilation; background: ao/thickness constant, curvature 0.5",
-            "ao": "linear grayscale; 1 = unoccluded",
+            "ao": "grayscale; 1 = unoccluded; optional contrast and strength in bakeSettings preserve white",
             "normal": "OpenGL tangent space; +Y",
             "world_normal": "RGB = world XYZ remapped from -1..1 to 0..1",
             "world_normal_unique": "same RGB as world_normal on uniquely mapped source-UV pixels; shared pixels and background without a unique margin source use neutral RGB (0.5,0.5,1), alpha = 0; margin inherits validity from nearest covered source; consumers must honor alpha/uv_unique_mask",
-            "curvature": "signed grayscale; 0.5 = flat, dark = concave, light = convex; periodic UV edges; neighbors are limited to edge-connected triangles in the same object and material",
+            "curvature": "signed grayscale; 0.5 = flat, dark = concave, light = convex; optional side-specific strengths in bakeSettings; periodic UV edges; neighbors are limited to edge-connected triangles in the same object and material",
             "curvature_unique": "signed grayscale curvature limited to uniquely mapped UV pixels and edge-connected unique neighbors across periodic UV edges; shared covered pixels = neutral 0.5; margin inherits the nearest covered pixel",
             "position": "RGB = model-bounds normalized world XYZ",
             "position_unique": "same RGB as position on uniquely mapped source-UV pixels; shared pixels and background without a unique margin source use neutral RGB (0.5,0.5,0.5), alpha = 0; margin inherits validity from nearest covered source; consumers must honor alpha/uv_unique_mask",
-            "thickness": "linear grayscale; normalized inward hit distance",
+            "thickness": "grayscale normalized inward hit distance; optional contrast and strength in bakeSettings preserve zero",
             "thickness_unique": "linear grayscale thickness limited to uniquely mapped UV pixels; shared covered pixels = 0; margin inherits the nearest covered pixel",
             "id": "RGBA material color; see material-colors.json",
             "uv": "diagnostic wireframe only",

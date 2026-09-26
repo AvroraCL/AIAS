@@ -53,6 +53,7 @@
 .bake-control-section .field-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
 .bake-control-section .field-row input { min-width: 0; }
 .bake-control-section .output-action { width: 100%; margin-top: 7px; }
+#bake-oidn-download[hidden] { display: none; }
 
 .bake-status-panel { display: grid; gap: 3px; min-width: 0; color: var(--text-dim); font-size: 11px; line-height: 1.5; }
 #bake-status:empty { display: none; }
@@ -67,15 +68,6 @@
 .bake-run-actions #bake-cancel { min-height: 36px; padding-inline: 13px; }
 .bake-run-actions #bake-cancel[hidden] { display: none; }
 
-#bake-empty { position: absolute; inset: 52px 0 78px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; color: var(--text-dim); text-align: center; }
-#bake-empty[hidden] { display: none; }
-#bake-empty h2 { margin: 12px 0 8px; color: var(--text); font-size: 25px; font-weight: 600; }
-#bake-empty p { margin: 0 0 24px; font-size: 13px; }
-#bake-empty small { margin-top: 14px; font-size: 11px; }
-.bake-empty-glyph { display: grid; place-items: center; width: 68px; height: 68px; margin-bottom: 22px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface-raised); color: var(--text-soft); }
-.bake-empty-glyph svg { width: 32px; height: 32px; }
-.bake-eyebrow { font-size: 10px; letter-spacing: .18em; }
-.bake-entry-steps { display: flex; gap: 30px; margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--border); font-size: 11px; }
 #bake-uv-canvas { position: absolute; z-index: 2; left: var(--bake-left); right: var(--bake-right); top: 112px; bottom: 100px; margin: auto; max-width: calc(100% - var(--bake-left) - var(--bake-right) - 24px); max-height: calc(100% - 212px); object-fit: contain; border: 1px solid var(--border); background: var(--bg-deep); }
 #bake-uv-canvas[hidden], #bake-three[hidden], #bake-results[hidden] { display: none; }
 #bake-results { position: absolute; z-index: 2; inset: 68px 16px 92px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 220px)); align-content: start; justify-content: center; gap: 13px; overflow: auto; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: none; }
@@ -145,6 +137,14 @@
 .bake-presets button { padding: 7px; font-size: 11px; }
 .bake-presets button[aria-pressed=true] { border-color: var(--text-dim); background: var(--surface-hover); color: var(--text); }
 .bake-advanced summary { padding: 16px 0; cursor: pointer; color: var(--text-dim); font-size: 11px; }
+.bake-map-settings { margin: 6px 0; border-top: 1px solid var(--border); }
+.bake-map-settings > summary { padding: 10px 2px; color: var(--text-soft); font-size: 11px; font-weight: 650; cursor: pointer; }
+.bake-map-settings[open] > summary { color: var(--text); }
+.bake-map-settings.is-disabled > summary { opacity: .55; }
+.bake-map-settings-body { padding: 2px 2px 12px 12px; }
+.bake-map-settings-body small { margin: -5px 0 10px; }
+.bake-reset-map { width: 100%; min-height: 28px; margin-top: 4px; font-size: 10px; }
+#bake-result-age:empty { display: none; }
 .bake-footer { position: absolute; z-index: 8; bottom: 0; left: 0; right: 0; min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 18px; background: var(--surface); border-top: 1px solid var(--border); }
 #bake-readiness { color: var(--text-soft); font-size: 12px; }
 #bake-status { max-width: 65ch; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
@@ -169,7 +169,6 @@
 @container bake (max-width: 600px) {
   .bake-workspace.settings-open, .bake-workspace.outliner-open { --bake-left: 16px; --bake-right: 16px; }
   .bake-float-panel { z-index: 7; width: min(292px,calc(100% - 32px)); top: 118px; bottom: 92px; max-height: calc(100% - 210px); }
-  .bake-entry-steps { gap: 12px; flex-wrap: wrap; }
   .bake-view-tabs button { min-width: 38px; padding: 0 6px; }
   .bake-footer { gap: 10px; }
   .bake-status-panel { max-width: calc(100% - 120px); }

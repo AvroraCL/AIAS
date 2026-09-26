@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 export function createSkinPack({ desktop, invoke, saveDialog, pickDirectory, saveDirectory, confirm, notify, changed, goBlk, syncSelect }) {
   const input = $('pack-browser-directory');
   const directory = $('pack-directory');
+  if (!desktop) directory.value = '';
   const name = $('pack-name');
   const select = $('pack-blk');
   let scan = null;

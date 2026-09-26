@@ -12,8 +12,15 @@ export const bakeDefaults = Object.freeze({
   uvMode: 'preserveValid',
   resolution: 2048,
   samples: 128,
+  thicknessSamples: 128,
   margin: 16,
   bits: 8,
+  aoStrength: 1,
+  aoContrast: 1,
+  thicknessStrength: 1,
+  thicknessContrast: 1,
+  curvatureConvexStrength: 1,
+  curvatureConcaveStrength: 1,
   distanceRatio: 0.1,
   aoDistanceRatio: 0.01,
   selfOnly: false,
@@ -33,6 +40,11 @@ export function restoreBakeSettings(value) {
   const source = value && typeof value === 'object' ? value : {};
   const out = { ...bakeDefaults, workspace: { ...bakeWorkspaceDefaults } };
   for (const [key, choices] of [['resolution', [512, 1024, 2048, 4096]], ['samples', [32, 64, 128, 256]], ['bits', [8, 16]]]) if (choices.includes(source[key])) out[key] = source[key];
+  out.thicknessSamples = [32, 64, 128, 256].includes(source.thicknessSamples) ? source.thicknessSamples : out.samples;
+  for (const [key, max] of [['aoStrength', 2], ['aoContrast', 4], ['thicknessStrength', 2], ['thicknessContrast', 4], ['curvatureConvexStrength', 4], ['curvatureConcaveStrength', 4]]) {
+    const min = key.endsWith('Contrast') ? 0.25 : 0;
+    if (Number.isFinite(source[key]) && source[key] >= min && source[key] <= max) out[key] = source[key];
+  }
   if (Number.isInteger(source.device) && source.device >= 0 && source.device < 64) out.device = source.device;
   if (typeof source.deviceLuid === 'string' && source.deviceLuid.length <= 64) out.deviceLuid = source.deviceLuid;
   if (['preserveValid', 'regenerateAll', 'strictSource'].includes(source.uvMode)) out.uvMode = source.uvMode;

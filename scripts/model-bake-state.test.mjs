@@ -19,6 +19,21 @@ test('bake settings restore defaults without model handles and reject invalid qu
   assert.equal(restoreBakeSettings({ uvMode: 'invalid' }).uvMode, 'preserveValid');
 });
 
+test('map effect settings migrate old sampling and reject invalid strengths', () => {
+  const old = restoreBakeSettings({ samples: 64 });
+  assert.equal(old.thicknessSamples, 64);
+  for (const key of ['aoStrength', 'aoContrast', 'thicknessStrength', 'thicknessContrast', 'curvatureConvexStrength', 'curvatureConcaveStrength']) assert.equal(old[key], 1);
+  const custom = restoreBakeSettings({ thicknessSamples: 256, aoStrength: 0, aoContrast: 2, thicknessStrength: 1.5, curvatureConcaveStrength: 3 });
+  assert.equal(custom.thicknessSamples, 256);
+  assert.equal(custom.aoStrength, 0);
+  assert.equal(custom.aoContrast, 2);
+  assert.equal(custom.thicknessStrength, 1.5);
+  assert.equal(custom.curvatureConcaveStrength, 3);
+  const invalid = restoreBakeSettings({ thicknessSamples: 17, aoStrength: 3, aoContrast: NaN, thicknessStrength: -1, curvatureConvexStrength: Infinity });
+  assert.equal(invalid.thicknessSamples, 128);
+  for (const key of ['aoStrength', 'aoContrast', 'thicknessStrength', 'curvatureConvexStrength']) assert.equal(invalid[key], 1);
+});
+
 test('workspace preferences have independent safe defaults and accept known display options', () => {
   const defaults = restoreBakeSettings(null);
   assert.deepEqual(defaults.workspace, {

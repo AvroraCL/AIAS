@@ -39,11 +39,11 @@ AIAS 把 PBR 通道合成与拆分、Mipmap 生成、DDS 批量转换、风格�
 - 涂装管理：自动检测 War Thunder UserSkins 目录，导入、启停、删除涂装
 - 启动时自动检查新版本，一键下载安装并升级（GitHub Releases 主源，不可达时自动回退 GitCode 镜像）
 
-### 下载 v5.7.3
+### 下载 v5.7.4
 
 | 文件 | 说明 |
 |---|---|
-| [AIAS_5.7.3_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.7.3/AIAS_5.7.3_x64-setup.exe) | Windows 安装包，按当前用户安装无需管理员权限 |
+| [AIAS_5.7.4_x64-setup.exe](https://github.com/AvroraCL/AIAS/releases/download/v5.7.4/AIAS_5.7.4_x64-setup.exe) | Windows 安装包，按当前用户安装无需管理员权限 |
 
 安装包 SHA-256：`827cf9b638f8265ebabb939fc53471e6c990ef99f54278bb21ebc51b50191b64`。完整更新说明见 [v5.7.0 正式发布页](https://github.com/AvroraCL/AIAS/releases/tag/v5.7.0)；应用内自动更新清单也已更新至 5.7.0。
 

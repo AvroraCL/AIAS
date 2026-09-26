@@ -427,6 +427,8 @@ const EN = {
   // Mesh-map baking.
   "01 / 智能材质 Mesh Maps": "01 / Smart Material Mesh Maps",
   "02 / 烘焙质量": "02 / Bake Quality",
+  "03 / 贴图效果": "03 / Map Effects",
+  "04 / 导出": "04 / Export",
   "03 / 导出": "03 / Export",
   "01　导入模型": "01  Import Model",
   "02　检查 UV": "02  Inspect UV",
@@ -447,6 +449,24 @@ const EN = {
   "正在检测 GPU…": "Detecting GPU…",
   "0 个材质 · 预计 0 张贴图": "0 materials · 0 expected maps",
   "贴图尺寸": "Map Size",
+  "输出位深": "Output Bit Depth",
+  "16 位（AO / 厚度 / 曲率 / 位置 / 世界法线）": "16-bit (AO / thickness / curvature / position / world normal)",
+  "AO 半径": "AO Radius",
+  "AO 强度（%）": "AO Strength (%)",
+  "AO 对比度（倍）": "AO Contrast (×)",
+  "AO 采样": "AO Samples",
+  "厚度探测距离": "Thickness Distance",
+  "厚度强度（%）": "Thickness Strength (%)",
+  "厚度对比度（倍）": "Thickness Contrast (×)",
+  "厚度采样": "Thickness Samples",
+  "凸面强度（倍）": "Convex Strength (×)",
+  "凹面强度（倍）": "Concave Strength (×)",
+  "恢复此组默认": "Reset This Map",
+  "当前结果使用上次烘焙设置；重新烘焙后更新。": "Current results use earlier bake settings. Bake again to update them.",
+  "烘焙贴图与清单缓存在应用数据目录，导出时选择目标文件夹；贴图供智能材质制作使用": "Maps and their manifest are cached in app data; choose a folder when exporting for smart-material work.",
+  "AI 降噪": "AI Denoising",
+  "光线追踪": "Ray Tracing",
+  "自定义": "Custom",
   "16 位（AO/厚度/曲率/位置/世界法线）": "16-bit (AO / thickness / curvature / position / world normal)",
   "AO / 厚度采样": "AO / Thickness Samples",
   "128 次光线采样 · 8 位灰度": "128 ray samples · 8-bit grayscale",
@@ -567,6 +587,7 @@ const EN = {
   "更新可用": "Update Available",
   "材质输出文件夹": "Material Output Folder",
   "模型烘焙三维工作区": "Model Baking 3D Workspace",
+  "导入模型后按材质生成所选贴图": "Selected maps will be generated per material after import",
   "模型贴图预览": "Model Map Preview",
   "烘焙视图": "Bake Views",
   "烘焙进度": "Bake Progress",
@@ -642,6 +663,14 @@ const EN = {
 
 function translateCore(value) {
   if (Object.hasOwn(EN, value)) return EN[value];
+  const bakeDistance = value.match(/^导入前按模型对角线百分比设置：(.+)%$/);
+  if (bakeDistance) return `Before import: ${bakeDistance[1]}% of the model bounding-box diagonal`;
+  let bakePrevious = value.match(/^(上次结果|上次烘焙设置) · (.+)$/);
+  if (bakePrevious) return `${bakePrevious[1] === '上次结果' ? 'Previous results' : 'Earlier bake settings'} · ${translateCore(bakePrevious[2])}`;
+  bakePrevious = value.match(/^(.+)应在 (.+)–(.+) 之间。$/);
+  if (bakePrevious) return `${translateCore(bakePrevious[1])} must be between ${bakePrevious[2]} and ${bakePrevious[3]}.`;
+  bakePrevious = value.match(/^(.+)必须在 (.+)–(.+) 之间。$/);
+  if (bakePrevious) return `${translateCore(bakePrevious[1])} must be between ${bakePrevious[2]} and ${bakePrevious[3]}.`;
   let pack = value.match(/^(需修复|建议) · (?:(.+?) · )?(.+)$/);
   if (pack) return `${translateCore(pack[1])} · ${pack[2] ? `${pack[2]} · ` : ''}${translateCore(pack[3])}`;
   pack = value.match(/^(\d+) 个文件 · ([\d,]+) 字节$/);
@@ -692,6 +721,8 @@ function translateCore(value) {
   if (match) return `${match[1]} items`;
   match = value.match(/^(\d+) 次$/);
   if (match) return `${match[1]} samples`;
+  match = value.match(/^(快速|标准|精细|自定义) · (8|16) 位 · 留边 (\d+) px$/);
+  if (match) return `${{快速:'Fast',标准:'Standard',精细:'Fine',自定义:'Custom'}[match[1]]} · ${match[2]}-bit · ${match[3]} px padding`;
   match = value.match(/^内存：已用 (.+) \/ 共 (.+)\n(.+) · 显存已用 (.+) \/ 共 (.+)$/);
   if (match) return `Memory: ${match[1]} / ${match[2]}\n${match[3]} · VRAM: ${match[4]} / ${match[5]}`;
   match = value.match(/^输出到 (.+)$/);
